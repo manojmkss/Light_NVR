@@ -461,14 +461,3 @@ async def _fetch_camera_profiles(host: str, port: int, username: str, password: 
         codec=codec,
         has_audio=has_audio,
     )
-
-
-def inject_credentials(rtsp_url: str, username: str, password: str) -> str:
-    """Embed credentials into an RTSP URL returned by GetStreamUri (which omits them)."""
-    if not username:
-        return rtsp_url
-    parsed = urlparse(rtsp_url)
-    netloc = f"{username}:{password}@{parsed.hostname}"
-    if parsed.port:
-        netloc += f":{parsed.port}"
-    return parsed._replace(netloc=netloc).geturl()

@@ -26,6 +26,23 @@ server {
     ssl_certificate /certs/cert.pem;
     ssl_certificate_key /certs/key.pem;
 
+    # Modern TLS only. TLS 1.0/1.1 are disabled; the cipher list drops
+    # everything without forward secrecy.
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Security headers (applied to every response, including proxied ones and
+    # errors, via `always`). HSTS is a no-op on the default self-signed cert
+    # (browsers ignore it over an untrusted connection) and only takes effect
+    # once a real cert is installed - safe to send unconditionally.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
     location /api/ {
         proxy_pass http://backend_upstream/api/;
         proxy_http_version 1.1;
@@ -34,6 +51,12 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 3600s;
+        # MJPEG live view and in-progress-segment playback are effectively
+        # infinite streams - buffering them adds latency and unbounded memory.
+        proxy_buffering off;
+        # Config-restore uploads can be large (the backend caps them at 500M);
+        # this must not be lower than that or the upload 413s at the proxy.
+        client_max_body_size 512M;
     }
 
     location / {

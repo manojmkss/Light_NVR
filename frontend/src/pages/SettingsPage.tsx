@@ -792,6 +792,7 @@ function formatBackupSize(bytes: number): string {
 }
 
 function BackupTab() {
+  const { fmtDateTime } = useSettings();
   const [settings, setSettings] = useState<BackupSettings | null>(null);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [saving, setSaving] = useState(false);
@@ -936,7 +937,7 @@ function BackupTab() {
         <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 12 }}>
           {settings.last_backup_at ? (
             <>
-              Last backup: {new Date(settings.last_backup_at).toLocaleString()} ({settings.last_backup_location})
+              Last backup: {fmtDateTime(settings.last_backup_at)} ({settings.last_backup_location})
             </>
           ) : (
             "No backup yet"
@@ -973,7 +974,7 @@ function BackupTab() {
               <tbody>
                 {backups.map((b) => (
                   <tr key={b.filename}>
-                    <td>{new Date(b.created_at).toLocaleString()}</td>
+                    <td>{fmtDateTime(b.created_at)}</td>
                     <td style={{ textTransform: "capitalize" }}>{b.location}</td>
                     <td>{formatBackupSize(b.size_bytes)}</td>
                     <td>
@@ -1004,7 +1005,7 @@ function BackupTab() {
           performance statistics. No action needed, but you can run it on demand here.
         </p>
         <p style={{ fontSize: 13, color: "var(--text-dim)" }}>
-          {settings.last_optimize_at ? `Last optimized: ${new Date(settings.last_optimize_at).toLocaleString()}` : "Not run yet"}
+          {settings.last_optimize_at ? `Last optimized: ${fmtDateTime(settings.last_optimize_at)}` : "Not run yet"}
         </p>
         <button className="btn btn-sm" onClick={handleOptimize} disabled={optimizing}>
           {optimizing ? "Optimizing..." : "Optimize now"}
@@ -1016,6 +1017,7 @@ function BackupTab() {
 }
 
 function TlsTab() {
+  const { fmtDateTime } = useSettings();
   const [tls, setTls] = useState<TlsSettings | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionResult, setActionResult] = useState<string | null>(null);
@@ -1064,7 +1066,7 @@ function TlsTab() {
         </div>
         {tls.last_renewal_at && (
           <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
-            Last renewed: {new Date(tls.last_renewal_at).toLocaleString()}
+            Last renewed: {fmtDateTime(tls.last_renewal_at)}
           </div>
         )}
         {tls.last_renewal_error && <div className="error-text">{tls.last_renewal_error}</div>}
@@ -1404,6 +1406,7 @@ function KioskViewForm({
 }
 
 export function KioskTab() {
+  const { fmtDateTime } = useSettings();
   const [views, setViews] = useState<KioskView[]>([]);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1504,7 +1507,7 @@ export function KioskTab() {
               </div>
               {view.last_viewed_at && (
                 <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
-                  Last viewed: {new Date(view.last_viewed_at).toLocaleString()}
+                  Last viewed: {fmtDateTime(view.last_viewed_at)}
                 </div>
               )}
               <div className="field">
@@ -1762,10 +1765,10 @@ function ChangePasswordCard() {
 const SUGGESTED_TIMEZONES = typeof (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf === "function"
   ? (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf("timeZone")
   : ["UTC", "America/New_York", "America/Chicago", "America/Los_Angeles", "Europe/London", "Europe/Paris",
-     "Asia/Kolkata", "Asia/Kolkata", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"];
+     "Asia/Kolkata", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"];
 
 function SystemTab() {
-  const { reload: reloadSettings } = useSettings();
+  const { reload: reloadSettings, fmtDateTime } = useSettings();
   const [timezone, setTimezone] = useState("");
   const [ntpServer, setNtpServer] = useState("pool.ntp.org");
   const [serverTime, setServerTime] = useState<string | null>(null);
@@ -1799,14 +1802,7 @@ function SystemTab() {
     }
   };
 
-  const fmtTime = (iso: string | null) => {
-    if (!iso) return "—";
-    try {
-      return new Date(iso).toLocaleString();
-    } catch {
-      return iso;
-    }
-  };
+  const fmtTime = (iso: string | null) => (iso ? fmtDateTime(iso) : "—");
 
   return (
     <div className="card" style={{ maxWidth: 520 }}>

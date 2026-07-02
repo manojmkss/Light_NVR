@@ -1,8 +1,16 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# httpx/httpcore log every outbound request at INFO, including the full URL.
+# For Telegram that URL embeds the bot token (…/bot<TOKEN>/sendMessage), so
+# leaving it at INFO writes the secret into the container logs on every alert.
+# Raise the floor to WARNING to keep those out of the logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from app.api.routes import auth, backup, cameras, kiosk, live, push, recordings, remote_access, storage, system, tls
 from app.core.bootstrap import (

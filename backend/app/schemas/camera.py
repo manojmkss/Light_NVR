@@ -1,12 +1,31 @@
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import AfterValidator, BaseModel
 
 from app.schemas.common import UtcDatetime
 
 
+def _check_rtsp_scheme(v: str | None) -> str | None:
+    """Reject anything that isn't an RTSP(S) URL. ffprobe/ffmpeg will otherwise
+    open file://, http://, concat: and other protocols, turning a stream-URL
+    field into a local-file-read / SSRF vector (admin-only, but cheap to close).
+    """
+    if v is None or v == "":
+        return v
+    if not v.startswith(("rtsp://", "rtsps://")):
+        raise ValueError("Stream URL must start with rtsp:// or rtsps://")
+    return v
+
+
+# Reusable annotated types: required and optional RTSP URL fields.
+RtspUrl = Annotated[str, AfterValidator(_check_rtsp_scheme)]
+OptionalRtspUrl = Annotated[str | None, AfterValidator(_check_rtsp_scheme)]
+
+
 class CameraCreate(BaseModel):
     name: str
-    rtsp_main_url: str
-    rtsp_sub_url: str | None = None
+    rtsp_main_url: RtspUrl
+    rtsp_sub_url: OptionalRtspUrl = None
     onvif_address: str | None = None
     username: str | None = None
     password: str | None = None
@@ -21,8 +40,8 @@ class CameraCreate(BaseModel):
 
 class CameraUpdate(BaseModel):
     name: str | None = None
-    rtsp_main_url: str | None = None
-    rtsp_sub_url: str | None = None
+    rtsp_main_url: OptionalRtspUrl = None
+    rtsp_sub_url: OptionalRtspUrl = None
     username: str | None = None
     password: str | None = None
     codec: str | None = None
@@ -112,7 +131,7 @@ class ProbeResponseOut(BaseModel):
 
 
 class TestConnectionRequest(BaseModel):
-    rtsp_url: str
+    rtsp_url: RtspUrl
 
 
 class TestConnectionResponse(BaseModel):

@@ -14,8 +14,14 @@ services:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    # Bound to localhost only: the frontend and nginx reach the backend over
+    # the internal docker network (backend:8000), so the API never needs to be
+    # exposed on the LAN. Publishing it there would (a) serve JWT traffic over
+    # plain HTTP, bypassing the HTTPS redirect, and (b) let any LAN host spoof
+    # the X-Real-IP header the login-lockout keys on. 127.0.0.1 keeps it
+    # curl-able on the host itself for debugging without either risk.
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./data:/data
       - ./storage:/storage

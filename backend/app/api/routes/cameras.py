@@ -28,11 +28,10 @@ from app.services.onvif_discovery import (
     discover_onvif_devices,
     fetch_camera_profiles,
     find_onvif_port,
-    inject_credentials,
     scan_ip_range,
     scan_subnets,
 )
-from app.services.stream_probe import probe_rtsp_stream
+from app.services.stream_probe import inject_rtsp_credentials, probe_rtsp_stream
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
@@ -158,7 +157,7 @@ async def probe_camera(payload: ProbeRequest, _: User = Depends(require_admin)):
     profiles_out = []
     for p in info.profiles:
         # URI is already credential-injected when validated_main_url is set
-        uri = p.stream_uri if info.validated_main_url else inject_credentials(
+        uri = p.stream_uri if info.validated_main_url else inject_rtsp_credentials(
             p.stream_uri, effective_user, payload.password
         )
         profiles_out.append({

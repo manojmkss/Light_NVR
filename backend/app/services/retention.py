@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 1800
 
+# Events are a log / timeline-marker table. Motion events inside a recording's
+# window are already removed when that clip is purged, but connectivity events
+# (offline/online/error), system notices, and low-storage warnings have no
+# recording to tie them to and would otherwise accumulate forever on a 24/7
+# system. This age cap is the backstop for those. 90 days is comfortably beyond
+# any typical retention window, so recordings still on disk keep their markers.
+EVENT_RETENTION_DAYS = 90
+
 
 async def delete_recording_files(recording: Recording) -> None:
     for path in (recording.file_path, recording.thumbnail_path):
@@ -103,7 +111,19 @@ async def enforce_retention() -> None:
     if storage_config.max_storage_gb > 0:
         await _enforce_storage_cap(storage_config.max_storage_gb)
 
+    await _prune_old_events()
     await _check_low_storage()
+
+
+async def _prune_old_events() -> None:
+    # Same tz-aware cutoff pattern used for recordings above.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(delete(Event).where(Event.created_at < cutoff))
+        removed = result.rowcount or 0
+        if removed:
+            await db.commit()
+            logger.info("Retention: pruned %d event(s) older than %d days", removed, EVENT_RETENTION_DAYS)
 
 
 async def _enforce_storage_cap(max_storage_gb: int) -> None:

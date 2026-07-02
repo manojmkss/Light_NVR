@@ -104,19 +104,29 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
+async def refresh(payload: RefreshRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    # Rate-limited per client IP, same mechanism as /login, so a flood of
+    # invalid refresh attempts can't be used to hammer the endpoint. A valid
+    # refresh clears the counter.
+    key = f"refresh:{_client_ip(request)}"
+    check_lockout(key)
+
     try:
         decoded = decode_token(payload.refresh_token)
     except ValueError as exc:
+        record_failure(key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
 
     if decoded.get("type") != "refresh":
+        record_failure(key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
 
     user = await db.get(User, int(decoded["sub"]))
     if user is None:
+        record_failure(key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
+    clear(key)
     access_token = create_token(str(user.id), user.role, "access")
     new_refresh_token = create_token(str(user.id), user.role, "refresh")
     return TokenResponse(access_token=access_token, refresh_token=new_refresh_token)

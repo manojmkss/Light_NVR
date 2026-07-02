@@ -29,9 +29,14 @@ def strip_onvif_params(url: str) -> str:
 
 
 def inject_rtsp_credentials(url: str, username: str, password: str) -> str:
-    """Inject username:password into an RTSP/RTSPS URL, replacing any existing credentials."""
+    """Inject username:password into an RTSP/RTSPS URL, replacing any existing
+    credentials. Percent-encodes both so a password containing @ : / # etc.
+    doesn't corrupt the URL. Returns the URL unchanged when username is blank.
+    """
+    if not username:
+        return url
     parsed = urlparse(url)
-    netloc = f"{quote(username, safe='')}:{quote(password, safe='')}@{parsed.hostname}"
+    netloc = f"{quote(username, safe='')}:{quote(password or '', safe='')}@{parsed.hostname}"
     if parsed.port:
         netloc += f":{parsed.port}"
     return parsed._replace(netloc=netloc).geturl()
