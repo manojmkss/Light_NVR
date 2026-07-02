@@ -337,7 +337,11 @@ def _pick_main_and_sub(profiles: list[MediaProfile]) -> tuple[str | None, str | 
     return by_area[-1].token, by_area[0].token
 
 
-PROBE_TIMEOUT_SECONDS = 50  # includes ONVIF handshake + RTSP validation attempts
+# Outer budget for the whole probe: ONVIF handshake (~10s) + RTSP validation
+# (2 schemes x 2 usernames x ~10s worst case = 40s) + sub-stream detection
+# (max ~16s). Keep this above the sum of the per-attempt timeouts below or
+# slow cameras get cut off mid-fallback with a confusing timeout error.
+PROBE_TIMEOUT_SECONDS = 75
 
 
 async def fetch_camera_profiles(host: str, port: int, username: str, password: str) -> CameraProfileInfo:
@@ -404,7 +408,7 @@ async def _fetch_camera_profiles(host: str, port: int, username: str, password: 
         raw_main = inject_rtsp_credentials(main_profile.stream_uri, username, password)
         try:
             working_main, stream_info = await probe_rtsp_with_fallbacks(
-                raw_main, username, password, timeout=6.0
+                raw_main, username, password, timeout=5.0
             )
             validated_main_url = working_main
             codec = stream_info.codec
@@ -431,15 +435,16 @@ async def _fetch_camera_profiles(host: str, port: int, username: str, password: 
             if sub_profile and sub_token != main_token:
                 # ONVIF returned a distinct sub profile - validate it
                 try:
-                    await probe_rtsp_stream(sub_profile.stream_uri, timeout=5.0)
+                    await probe_rtsp_stream(sub_profile.stream_uri, timeout=4.0)
                     validated_sub_url = sub_profile.stream_uri  # already has creds from above loop
                 except ConnectionError:
                     validated_sub_url = sub_profile.stream_uri  # use it anyway; ONVIF said it exists
             else:
-                # No distinct ONVIF sub profile — try common URL mutations
-                for candidate in candidate_sub_urls(working_main):
+                # No distinct ONVIF sub profile - try the two most likely URL
+                # mutations only, so this step stays inside the probe budget.
+                for candidate in candidate_sub_urls(working_main)[:2]:
                     try:
-                        await probe_rtsp_stream(candidate, timeout=4.0)
+                        await probe_rtsp_stream(candidate, timeout=3.0)
                         validated_sub_url = candidate
                         break
                     except ConnectionError:

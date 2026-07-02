@@ -1,4 +1,5 @@
 import asyncio
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -201,18 +202,46 @@ async def test_connection(payload: TestConnectionRequest, _: User = Depends(requ
     )
 
 
+def _strip_url_credentials(url: str | None) -> str | None:
+    """Remove any user:pass@ from a stream URL."""
+    if not url:
+        return url
+    parsed = urlparse(url)
+    if parsed.username is None:
+        return url
+    netloc = parsed.hostname or ""
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    return parsed._replace(netloc=netloc).geturl()
+
+
+def _camera_for_user(camera: Camera, user: User) -> Camera | CameraOut:
+    """Admins get the record as-is (the edit form round-trips the full RTSP
+    URL). Viewers get a copy with credentials stripped from the URLs and the
+    username blanked - they watch streams decoded server-side and never need
+    the camera's login, so it shouldn't cross the wire to them at all.
+    """
+    if user.role == "admin":
+        return camera
+    out = CameraOut.model_validate(camera)
+    out.rtsp_main_url = _strip_url_credentials(out.rtsp_main_url)
+    out.rtsp_sub_url = _strip_url_credentials(out.rtsp_sub_url)
+    out.username = None
+    return out
+
+
 @router.get("", response_model=list[CameraOut])
-async def list_cameras(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def list_cameras(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     result = await db.execute(select(Camera))
-    return result.scalars().all()
+    return [_camera_for_user(c, user) for c in result.scalars().all()]
 
 
 @router.get("/{camera_id}", response_model=CameraOut)
-async def get_camera(camera_id: int, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def get_camera(camera_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     camera = await db.get(Camera, camera_id)
     if camera is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
-    return camera
+    return _camera_for_user(camera, user)
 
 
 @router.post("", response_model=CameraOut, status_code=status.HTTP_201_CREATED)
@@ -241,6 +270,65 @@ async def update_camera(
 
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(camera, field, value)
+
+    await db.commit()
+    await db.refresh(camera)
+
+    from app.services.camera_supervisor import supervisor
+
+    await supervisor.sync_camera(camera)
+    return camera
+
+
+@router.post("/{camera_id}/redetect", response_model=CameraOut)
+async def redetect_camera_streams(
+    camera_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Re-runs the validated ONVIF/RTSP probe for an existing camera using its
+    stored credentials, updating stream URLs, codec, and audio flag in place.
+    Fixes cameras added before probe-time validation existed (missing
+    sub-stream, wrong rtsp/rtsps scheme, wrong codec) without the user having
+    to delete and re-add them.
+    """
+    camera = await db.get(Camera, camera_id)
+    if camera is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
+    if not camera.onvif_address:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This camera was added manually (no ONVIF address) - edit its stream URLs directly instead",
+        )
+
+    host, _sep, port_str = camera.onvif_address.partition(":")
+    preferred_port = int(port_str) if port_str.isdigit() else None
+
+    try:
+        port = await find_onvif_port(host, preferred_port=preferred_port)
+        info = await fetch_camera_profiles(host, port, camera.username or "", camera.password or "")
+    except ConnectionError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not connect to ONVIF device: {exc}"
+        ) from exc
+
+    if not info.validated_main_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ONVIF responded but no RTSP stream could be validated - camera left unchanged",
+        )
+
+    camera.rtsp_main_url = info.validated_main_url
+    if info.validated_sub_url:
+        camera.rtsp_sub_url = info.validated_sub_url
+    if info.resolved_username:
+        camera.username = info.resolved_username
+    if info.codec in ("h264", "h265"):
+        camera.codec = info.codec
+    camera.has_audio = info.has_audio
+    camera.onvif_address = f"{host}:{port}"
 
     await db.commit()
     await db.refresh(camera)

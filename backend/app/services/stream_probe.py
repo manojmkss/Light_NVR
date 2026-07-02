@@ -128,7 +128,7 @@ async def probe_rtsp_with_fallbacks(
     - Strips ONVIF-only URL params (unicast=true, proto=Onvif) that confuse clients
     - Tries rtsp:// first, then rtsps:// (RTSP-over-TLS) if the server closes
       the connection immediately (common on NVRs whose ONVIF is HTTPS-only)
-    - Tries the given username first, then falls back to 'admin' and 'root' on
+    - Tries the given username first, then falls back to 'admin' on
       401 Unauthorized (some NVRs use separate ONVIF and RTSP account namespaces)
 
     Returns (working_url_with_embedded_credentials, StreamInfo).
@@ -138,11 +138,14 @@ async def probe_rtsp_with_fallbacks(
     alt = _alternate_scheme(base)
     schemes = [base] if base == alt else [base, alt]
 
-    # Try given username first, then common admin fallbacks
+    # Try the supplied username first, then 'admin' as the single fallback -
+    # many NVRs keep separate ONVIF and RTSP account namespaces where the RTSP
+    # side only knows 'admin'. Wider guessing (root, administrator, ...) was
+    # dropped deliberately: hammering extra accounts trips brute-force
+    # lockouts on some cameras and blows the probe's time budget.
     usernames = [username]
-    for fb in ("admin", "root", "administrator"):
-        if fb.lower() != username.lower():
-            usernames.append(fb)
+    if username.lower() != "admin":
+        usernames.append("admin")
 
     last_err = "no attempts made"
     tried: list[str] = []

@@ -36,6 +36,13 @@ export function deleteCamera(id: number): Promise<void> {
   return apiFetch<void>(`/cameras/${id}`, { method: "DELETE" });
 }
 
+/** Re-run stream auto-detection (scheme, sub-stream, codec, audio) for an
+ *  existing ONVIF camera using its saved credentials. Slow: the backend
+ *  probes ONVIF + RTSP with fallbacks, up to ~75s worst case. */
+export function redetectCamera(id: number): Promise<Camera> {
+  return apiFetch<Camera>(`/cameras/${id}/redetect`, { method: "POST" });
+}
+
 export function discoverCameras(): Promise<DiscoveredDevice[]> {
   return apiFetch<DiscoveredDevice[]>("/cameras/discover");
 }

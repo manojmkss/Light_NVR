@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createCamera, deleteCamera, listCameras, updateCamera } from "../api/cameras";
+import { createCamera, deleteCamera, listCameras, redetectCamera, updateCamera } from "../api/cameras";
 import type { Camera, CameraCreatePayload } from "../api/types";
 import { CameraDetailsForm } from "../components/CameraDetailsForm";
 import { CameraSetupModal } from "../components/CameraSetupModal";
@@ -15,6 +15,8 @@ export function CamerasPage() {
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [redetectingId, setRedetectingId] = useState<number | null>(null);
+  const [redetectNotice, setRedetectNotice] = useState<string | null>(null);
 
   const refresh = () => {
     listCameras()
@@ -73,6 +75,22 @@ export function CamerasPage() {
     refresh();
   };
 
+  const handleRedetect = async (camera: Camera) => {
+    setRedetectingId(camera.id);
+    setRedetectNotice(null);
+    try {
+      const updated = await redetectCamera(camera.id);
+      setRedetectNotice(
+        `${updated.name}: streams re-detected (${updated.codec.toUpperCase()}${updated.rtsp_sub_url ? ", sub-stream found" : ", no sub-stream"})`
+      );
+      refresh();
+    } catch (err) {
+      setRedetectNotice(`${camera.name}: ${(err as Error).message}`);
+    } finally {
+      setRedetectingId(null);
+    }
+  };
+
   return (
     <div className="page">
       <div className="page-header">
@@ -83,6 +101,10 @@ export function CamerasPage() {
           </button>
         )}
       </div>
+
+      {redetectNotice && (
+        <p style={{ color: "var(--text-dim)", fontSize: 13, marginTop: -8 }}>{redetectNotice}</p>
+      )}
 
       {loading ? (
         <p style={{ color: "var(--text-dim)" }}>Loading...</p>
@@ -134,6 +156,16 @@ export function CamerasPage() {
                   {isAdmin && (
                     <td>
                       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        {cam.onvif_address && (
+                          <button
+                            className="btn btn-sm"
+                            disabled={redetectingId !== null}
+                            title="Re-run stream auto-detection (URLs, sub-stream, codec) using the camera's saved credentials"
+                            onClick={() => handleRedetect(cam)}
+                          >
+                            {redetectingId === cam.id ? "Detecting..." : "Re-detect"}
+                          </button>
+                        )}
                         <button className="btn btn-sm" onClick={() => setEditingCamera(cam)}>
                           Edit
                         </button>
