@@ -1,0 +1,99 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lightnvr-backend
+    restart: unless-stopped
+    # No env_file here on purpose - .env is fully optional. Everything below
+    # has a working default; these only take effect if you create a .env
+    # with overrides (see .env.example). Accounts, email, storage, and
+    # retention are all configured from the web UI after first boot instead.
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/lightnvr.db}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./data:/data
+      - ./storage:/storage
+      # /mnt/primary and /mnt/backup are where the backend mounts your NAS
+      # share (SMB/NFS) at runtime, configured from Settings -> Storage.
+      # For a "local" type instead of a network share, point the host side
+      # of these at your dedicated drive (e.g. "D:/NVR_Primary:/mnt/primary")
+      # and restart - Docker can't attach a new host path to a running
+      # container, so that one edit + restart is unavoidable for local disks.
+      - ./primary-storage:/mnt/primary
+      - ./backup-storage:/mnt/backup
+      - ./certs:/certs
+    # SYS_ADMIN: lets the backend mount SMB/NFS shares itself (the `mount`
+    # syscall needs it) - if you'd rather avoid it, mount the share on the
+    # host OS instead and bind-mount it like /mnt/primary above; see README.
+    # NET_ADMIN + /dev/net/tun: required only if you enable Tailscale from
+    # Settings -> Remote Access (it creates a VPN network interface). Both
+    # are static container-level grants that can't be toggled at runtime, so
+    # they're requested up front even if you never turn Tailscale on.
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - lightnvr
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    container_name: lightnvr-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - lightnvr
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: lightnvr-nginx
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    ports:
+      - "${WEB_PORT:-8080}:80"
+      # HTTPS is required for PWA install and push notifications - browsers
+      # refuse service workers/push over plain HTTP. A self-signed cert is
+      # generated automatically (Settings -> Security -> HTTPS lets you swap
+      # it for a custom or Let's Encrypt cert instead). For Let's Encrypt
+      # specifically, your router must forward external port 80 to this
+      # host's WEB_PORT - the CA always checks port 80 for domain validation.
+      - "${HTTPS_PORT:-8443}:443"
+    environment:
+      # Plain HTTP (port 80) redirects to HTTPS by default - this tells the
+      # redirect which externally-mapped port to send browsers to.
+      HTTPS_PORT: ${HTTPS_PORT:-8443}
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+      - ./docker/nginx/certs-watch.sh:/certs-watch.sh:ro
+      - ./docker/nginx/start.sh:/start.sh:ro
+      - ./certs:/certs
+    command: ["/bin/sh", "/start.sh"]
+    networks:
+      - lightnvr
+
+networks:
+  lightnvr:
+    driver: bridge

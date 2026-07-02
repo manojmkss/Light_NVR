@@ -1,0 +1,44 @@
+server {
+    listen 80;
+
+    # Let's Encrypt's HTTP-01 challenge always uses plain port 80,
+    # regardless of what port this app is normally reached on - certbot
+    # (running in the backend container) writes challenge files here,
+    # shared via the /certs volume. Must stay reachable over plain HTTP,
+    # so it's excluded from the redirect below.
+    location /.well-known/acme-challenge/ {
+        root /certs/acme-webroot;
+    }
+
+    # Everything else redirects to HTTPS - browsers refuse PWA install and
+    # push notifications over plain HTTP, so this app is HTTPS-only by
+    # default. ${HTTPS_PORT} is substituted at container start from the
+    # same env var that controls the host port mapping in docker-compose.yml,
+    # so the redirect lands on the port the user actually has forwarded.
+    location / {
+        return 301 https://$host:${HTTPS_PORT}$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+
+    ssl_certificate /certs/cert.pem;
+    ssl_certificate_key /certs/key.pem;
+
+    location /api/ {
+        proxy_pass http://backend_upstream/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 3600s;
+    }
+
+    location / {
+        proxy_pass http://frontend_upstream/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+}
