@@ -18,6 +18,11 @@ frontend/tsconfig.tsbuildinfo
 /storage/
 /primary-storage/
 /backup-storage/
+# Ad-hoc pre-migration/manual backups of the above (e.g. data-backup-<timestamp>/)
+# - these can contain the raw SQLite DB and Tailscale private key material,
+# so this pattern exists even though such folders are also outside any
+# directory the app itself writes to by default.
+/data-backup-*/
 
 # TLS certificates & private keys (generated at runtime, never commit)
 /certs/

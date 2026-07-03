@@ -23,7 +23,15 @@ services:
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./data:/data
+      # SQLite DB (and Tailscale state) live here. This is a named Docker
+      # volume, not a Windows bind mount, on purpose: the DB runs in WAL mode,
+      # and WAL's POSIX locking + mmap of the -shm file are unreliable across
+      # Docker Desktop's Windows<->Linux file-sharing layer (spurious "database
+      # is locked" errors and WAL/main desync after an unclean shutdown). A
+      # named volume lives on the Docker VM's native ext4 filesystem where
+      # those work correctly. Back up / move the DB via the in-app Backup
+      # feature (Settings -> Backup) rather than reaching for the file directly.
+      - lightnvr-data:/data
       - ./storage:/storage
       # /mnt/primary and /mnt/backup are where the backend mounts your NAS
       # share (SMB/NFS) at runtime, configured from Settings -> Storage.
@@ -99,6 +107,12 @@ services:
     command: ["/bin/sh", "/start.sh"]
     networks:
       - lightnvr
+
+volumes:
+  # Named volume backing /data (see the backend service's volumes for why).
+  # Explicit name so it's stable regardless of the compose project name.
+  lightnvr-data:
+    name: lightnvr-data
 
 networks:
   lightnvr:
