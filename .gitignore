@@ -27,8 +27,13 @@ frontend/tsconfig.tsbuildinfo
 # TLS certificates & private keys (generated at runtime, never commit)
 /certs/
 
-# Editor/OS
+# Editor/OS/tooling (local machine config, not project source)
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
+
+# Generated clean export for uploading to GitHub (see scripts/make-github-upload.sh) -
+# a copy of tracked content, not itself a source of truth.
+/github-upload/
