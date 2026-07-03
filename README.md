@@ -4,11 +4,33 @@ A self-hosted home NVR. FastAPI + SQLite backend, React frontend, FFmpeg for rec
 
 ## Quick start
 
+**Automated (recommended)** — installs Docker if missing, prepares data
+directories, optionally opens LAN-only firewall rules, and brings the stack
+up in one step:
+
+```bash
+# Linux
+sudo ./scripts/install-linux.sh
+```
+```powershell
+# Windows (run PowerShell as Administrator)
+.\scripts\install-windows.ps1
+```
+
+Both prompt before any system-level change (installing Docker, touching the
+firewall) — pass `-y`/`-Yes` to skip prompts, or `--dry-run`/`-DryRun` to
+preview with no changes at all. Windows note: Docker Desktop's first-run
+setup (WSL2 enablement, EULA, sometimes a restart) can't be fully automated
+blind — if Docker isn't already installed, the script starts the winget
+install and tells you to finish that setup once, then re-run it.
+
+**Manual:**
+
 ```bash
 docker compose up -d --build
 ```
 
-No `.env` file needed. Open `https://<host>:8443` (your browser will warn
+No `.env` file needed either way. Open `https://<host>:8443` (your browser will warn
 about the self-signed certificate on first visit — that's expected; accept
 it to continue, or install a real cert later from Settings → Security) and
 the setup wizard walks you through creating the first admin account, picking

@@ -6,6 +6,13 @@ further than the README's quick start: network/firewall planning, storage
 on a real disk, boot-time recovery, backups, and how to upgrade later
 without losing data.
 
+**Fast path:** once the code is on the box (§3), `sudo ./scripts/install-linux.sh`
+does §2 and §4 for you — installs Docker if it's missing, creates the data
+directories, optionally opens LAN-only firewall rules (§5), enables Docker
+on boot, and brings the stack up, prompting before anything system-level
+unless you pass `-y`. Sections 2-5 below are what it automates, spelled out
+for understanding, customizing, or doing by hand if you'd rather.
+
 ## 1. Choosing hardware
 
 There's no GPU/hardware video acceleration in this project — every stream
@@ -65,6 +72,10 @@ you'll need `gh auth login` or an SSH deploy key set up first.)
 ```bash
 docker compose up -d --build
 ```
+
+(This is the one command `scripts/install-linux.sh` runs after handling §2
+and §5 for you — run it directly here if you've already got Docker and just
+want to start the stack.)
 
 This builds the backend and frontend images and starts all three
 containers (backend, frontend, nginx). First build takes a few minutes;
