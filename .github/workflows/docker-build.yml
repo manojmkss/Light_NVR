@@ -1,0 +1,39 @@
+name: Docker build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose file
+        run: docker compose config -q
+
+      - name: Build backend + frontend images
+        run: docker compose build backend frontend
+
+      - name: Boot the stack and smoke-test the API
+        run: |
+          docker compose up -d backend frontend nginx
+          # nginx only starts once the backend's own healthcheck passes
+          # (start_period 15s + up to 30s between retries) - generous budget
+          # here so a slow CI runner doesn't produce a false failure.
+          for i in $(seq 1 40); do
+            curl -fsk https://localhost:8443/api/health && break
+            sleep 3
+          done
+          curl -fsk https://localhost:8443/api/health
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

@@ -5,12 +5,22 @@ A self-hosted home NVR. FastAPI + SQLite backend, React frontend, FFmpeg for rec
 ## Quick start
 
 ```bash
-cp .env.example .env
-# edit .env: at minimum set JWT_SECRET_KEY and ADMIN_PASSWORD
 docker compose up -d --build
 ```
 
-Open `http://<host>:8080`. Log in with `ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env` (defaults: `admin` / `admin` — change this).
+No `.env` file needed. Open `https://<host>:8443` (your browser will warn
+about the self-signed certificate on first visit — that's expected; accept
+it to continue, or install a real cert later from Settings → Security) and
+the setup wizard walks you through creating the first admin account, picking
+a storage location, and (optionally) scanning for cameras — all through the
+browser. The JWT signing secret is generated automatically on first boot and
+persisted, so it survives restarts without you having to invent or paste in
+a random string.
+
+`.env` is only for advanced/scripted setups (pinning ports, unattended admin
+bootstrap, a custom database path) — see `.env.example` for what's available
+and why you'd want it. For a permanent home-server install, see
+[docs/linux-production-install.md](docs/linux-production-install.md).
 
 ## Architecture
 
@@ -105,3 +115,13 @@ npm install
 npm run dev
 ```
 Proxies `/api` to `http://localhost:8000` by default (see `vite.config.ts`).
+
+## Contributing
+
+Bug reports and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
+dev setup and conventions. Found a security issue? See
+[SECURITY.md](SECURITY.md) instead of opening a public issue.
+
+## License
+
+[MIT](LICENSE)

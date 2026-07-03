@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # Backend Python dependencies (security-sensitive: this app handles camera
+  # and account credentials, so staying current on cryptography/fastapi/etc.
+  # matters more than in a typical hobby project).
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+
+  # Frontend npm dependencies.
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+
+  # Base images (python:3.11-slim, node, nginx:1.27-alpine).
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+
+  # The CI workflow's own actions (actions/checkout, etc.).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
