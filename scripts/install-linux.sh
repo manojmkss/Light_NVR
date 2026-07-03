@@ -108,14 +108,55 @@ run systemctl start docker
 # ---------------------------------------------------------------------------
 # 2. Bind-mount directories
 # ---------------------------------------------------------------------------
+# Note: /data (the SQLite DB + Tailscale state) is a named Docker volume, not
+# a bind-mount directory - see docker-compose.yml for why (WAL-mode locking
+# is unreliable across Docker Desktop's Windows<->Linux file-sharing layer;
+# Linux with the native driver doesn't strictly need this, but keeping one
+# scheme for both platforms means an install is portable between them).
+# Nothing to create here for it; Docker creates the volume itself.
 
 log "Preparing data directories."
-for dir in data storage primary-storage backup-storage certs; do
+for dir in storage primary-storage backup-storage certs; do
   run mkdir -p "$REPO_ROOT/$dir"
 done
 
 # ---------------------------------------------------------------------------
-# 3. Firewall (LAN-only - never opens anything to the internet)
+# 3. Migrate an old bind-mounted ./data into the named volume, if present
+# ---------------------------------------------------------------------------
+# Handles upgrading an existing install that predates the named-volume
+# change: if there's a database sitting in the old ./data/ bind-mount
+# location and the named volume is missing or empty, offer to copy it
+# forward so accounts/cameras survive the upgrade instead of silently
+# starting fresh against an empty volume. The old ./data/ folder is left
+# untouched either way - this only ever copies forward, never deletes.
+
+VOLUME_NAME="lightnvr-data"
+OLD_DATA_DB="$REPO_ROOT/data/lightnvr.db"
+
+if [[ -f "$OLD_DATA_DB" ]] && ! $DRY_RUN; then
+  volume_has_data=false
+  if docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
+    if docker run --rm -v "${VOLUME_NAME}:/check" alpine sh -c "[ -f /check/lightnvr.db ]" >/dev/null 2>&1; then
+      volume_has_data=true
+    fi
+  fi
+
+  if $volume_has_data; then
+    log "Named volume '$VOLUME_NAME' already has a database - not touching the old ./data/ folder."
+  elif confirm "Found an existing database at ./data/lightnvr.db (pre-upgrade layout). Migrate it into the new named volume before starting?"; then
+    log "Migrating ./data/ into the '$VOLUME_NAME' volume..."
+    docker volume create "$VOLUME_NAME" >/dev/null
+    docker run --rm -v "$REPO_ROOT/data:/from:ro" -v "${VOLUME_NAME}:/to" alpine sh -c "cp -a /from/. /to/"
+    log "Migrated. ./data/ is left in place as a safety copy - remove it yourself once you've confirmed everything works."
+  else
+    warn "Skipping migration - the backend will start with an EMPTY database until you migrate ./data/ manually."
+  fi
+elif [[ -f "$OLD_DATA_DB" ]] && $DRY_RUN; then
+  log "[DRY RUN] Would check whether ./data/lightnvr.db needs migrating into the '$VOLUME_NAME' volume."
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Firewall (LAN-only - never opens anything to the internet)
 # ---------------------------------------------------------------------------
 
 if $SKIP_FIREWALL; then
@@ -130,7 +171,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Bring the stack up
+# 5. Bring the stack up
 # ---------------------------------------------------------------------------
 
 log "Building and starting LightNVR (this can take a few minutes on first run)."
@@ -141,7 +182,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Wait for it to come up
+# 7. Wait for it to come up
 # ---------------------------------------------------------------------------
 
 if ! $DRY_RUN; then
@@ -158,7 +199,7 @@ if ! $DRY_RUN; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Summary
+# 8. Summary
 # ---------------------------------------------------------------------------
 
 LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
@@ -170,7 +211,10 @@ echo "  Open:  https://${LAN_IP}:8443"
 echo "  Your browser will warn about the self-signed certificate on first visit - that's expected."
 echo "  The setup wizard creates your first admin account and walks through storage/cameras."
 echo
-echo "  Note: containers run as root inside, so files under data/, storage/, primary-storage/,"
+echo "  The database lives in the '$VOLUME_NAME' Docker volume, not a plain folder - use the"
+echo "  in-app Backup feature (Settings -> Backup) to back it up, not a direct file copy."
+echo
+echo "  Note: containers run as root inside, so files under storage/, primary-storage/,"
 echo "  backup-storage/ will be root-owned on the host - that's expected, not a bug."
 echo
 echo "  For remote access away from home (no port-forwarding needed), see"

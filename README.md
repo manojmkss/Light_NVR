@@ -52,12 +52,14 @@ and why you'd want it. For a permanent home-server install, see
 | frontend | React SPA, built and served as static files via nginx              |
 | nginx    | Reverse proxy: routes `/api` to backend, everything else to frontend |
 
-Data persists on the host via bind mounts:
-- `./data` — SQLite database
+Data persists across restarts:
+- The SQLite database (accounts, cameras, settings, Tailscale state) lives in a named Docker volume (`lightnvr-data`), not a plain host folder — SQLite's WAL mode needs real POSIX locking, which is unreliable across Docker Desktop's Windows/Mac file-sharing layer on a bind mount. Back it up from **Settings → Backup** in the app, not by copying a file directly.
 - `./storage` — local recording cache (see Storage management below)
 - `./primary-storage`, `./backup-storage` — default local primary/backup destinations
 
-These are mounted into the backend container, so `docker compose down && docker compose up -d` (or a host reboot, with Docker configured to start on boot) picks up exactly where it left off — cameras, users, and recordings all survive restarts.
+The recording directories are bind-mounted, so `docker compose down && docker compose up -d` (or a host reboot, with Docker configured to start on boot) picks up exactly where it left off — cameras, users, and recordings all survive restarts.
+
+Upgrading from a version that predated the named volume? `scripts/install-linux.sh` / `install-windows.ps1` detect an old `./data/lightnvr.db` and offer to migrate it into the volume automatically (see the scripts for the manual steps if you'd rather not use them).
 
 ## Adding a camera
 

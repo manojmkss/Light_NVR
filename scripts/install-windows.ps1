@@ -131,15 +131,55 @@ if ($dockerOk) {
 # ---------------------------------------------------------------------------
 # 2. Bind-mount directories
 # ---------------------------------------------------------------------------
+# Note: /data (the SQLite DB + Tailscale state) is a named Docker volume, not
+# a bind-mount directory - see docker-compose.yml for why (WAL-mode locking
+# is unreliable across Docker Desktop's Windows<->Linux file-sharing layer).
+# Nothing to create here for it; Docker creates the volume itself.
 
 Write-Step "Preparing data directories."
-foreach ($dir in @("data", "storage", "primary-storage", "backup-storage", "certs")) {
+foreach ($dir in @("storage", "primary-storage", "backup-storage", "certs")) {
     $path = Join-Path $RepoRoot $dir
     Invoke-MaybeDry "Create $path" { New-Item -ItemType Directory -Force -Path $path | Out-Null }
 }
 
 # ---------------------------------------------------------------------------
-# 3. Firewall (Private/Domain profiles only - never Public/internet-facing)
+# 3. Migrate an old bind-mounted .\data into the named volume, if present
+# ---------------------------------------------------------------------------
+# Handles upgrading an existing install that predates the named-volume
+# change: if there's a database sitting in the old .\data\ bind-mount
+# location and the named volume is missing or empty, offer to copy it
+# forward so accounts/cameras survive the upgrade instead of silently
+# starting fresh against an empty volume. The old .\data\ folder is left
+# untouched either way - this only ever copies forward, never deletes.
+
+$VolumeName = "lightnvr-data"
+$OldDataDb = Join-Path $RepoRoot "data\lightnvr.db"
+
+if ((Test-Path $OldDataDb) -and (-not $DryRun)) {
+    $volumeHasData = $false
+    docker volume inspect $VolumeName | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        docker run --rm -v "${VolumeName}:/check" alpine sh -c "[ -f /check/lightnvr.db ]" | Out-Null
+        if ($LASTEXITCODE -eq 0) { $volumeHasData = $true }
+    }
+
+    if ($volumeHasData) {
+        Write-Step "Named volume '$VolumeName' already has a database - not touching the old data\ folder."
+    } elseif (Confirm-Step "Found an existing database at data\lightnvr.db (pre-upgrade layout). Migrate it into the new named volume before starting?") {
+        Write-Step "Migrating data\ into the '$VolumeName' volume..."
+        docker volume create $VolumeName | Out-Null
+        $oldDataDir = Join-Path $RepoRoot "data"
+        docker run --rm -v "${oldDataDir}:/from:ro" -v "${VolumeName}:/to" alpine sh -c "cp -a /from/. /to/"
+        Write-Step "Migrated. data\ is left in place as a safety copy - remove it yourself once you've confirmed everything works."
+    } else {
+        Write-Warn2 "Skipping migration - the backend will start with an EMPTY database until you migrate data\ manually."
+    }
+} elseif ((Test-Path $OldDataDb) -and $DryRun) {
+    Write-Host "[DRY RUN] Would check whether data\lightnvr.db needs migrating into the '$VolumeName' volume." -ForegroundColor DarkGray
+}
+
+# ---------------------------------------------------------------------------
+# 4. Firewall (Private/Domain profiles only - never Public/internet-facing)
 # ---------------------------------------------------------------------------
 
 if ($SkipFirewall) {
@@ -157,7 +197,7 @@ if ($SkipFirewall) {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Bring the stack up
+# 5. Bring the stack up
 # ---------------------------------------------------------------------------
 
 Write-Step "Building and starting LightNVR (this can take a few minutes on first run)."
@@ -167,7 +207,7 @@ Invoke-MaybeDry "docker compose up -d --build" {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Wait for it to come up
+# 6. Wait for it to come up
 # ---------------------------------------------------------------------------
 
 if (-not $DryRun) {
@@ -182,7 +222,7 @@ if (-not $DryRun) {
 }
 
 # ---------------------------------------------------------------------------
-# 6. Summary
+# 7. Summary
 # ---------------------------------------------------------------------------
 
 $lanIp = $null
@@ -199,6 +239,9 @@ Write-Step "Done."
 Write-Host "  Open:  https://${lanIp}:8443"
 Write-Host "  Your browser will warn about the self-signed certificate on first visit - that's expected."
 Write-Host "  The setup wizard creates your first admin account and walks through storage/cameras."
+Write-Host ""
+Write-Host "  The database lives in the '$VolumeName' Docker volume, not a plain folder - use the"
+Write-Host "  in-app Backup feature (Settings -> Backup) to back it up, not a direct file copy."
 Write-Host ""
 Write-Host "  For remote access away from home (no port-forwarding needed), see"
 Write-Host "  Settings -> Remote Access in the app once you're logged in (Tailscale or Cloudflare Tunnel)."
