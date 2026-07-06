@@ -59,13 +59,23 @@ an LXC container or VM, not on the Proxmox host itself.
 
 ## 3. Get the code onto the box
 
+**With git:**
+
 ```bash
-git clone https://github.com/<you>/lightnvr.git
-cd lightnvr
+git clone https://github.com/manojmkss/Light_NVR.git
+cd Light_NVR
 ```
 
-(Swap in your actual repo URL once it's published. If the repo is private,
-you'll need `gh auth login` or an SSH deploy key set up first.)
+**Without git** (skip installing it) — pull a tarball straight from GitHub:
+
+```bash
+curl -fsSL https://github.com/manojmkss/Light_NVR/archive/refs/heads/main.tar.gz | tar xz
+cd Light_NVR-main
+```
+
+With git you can update later with `git pull`; with the tarball, re-download
+it and extract over the top. If the repo is private, the git route
+(`gh auth login` or an SSH deploy key) is easier than a tokenized tarball URL.
 
 ## 4. First boot
 

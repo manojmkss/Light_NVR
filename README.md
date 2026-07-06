@@ -4,6 +4,30 @@ A self-hosted home NVR. FastAPI + SQLite backend, React frontend, FFmpeg for rec
 
 ## Quick start
 
+### 1. Get the code onto the machine
+
+**With git** (if you have it):
+
+```bash
+git clone https://github.com/manojmkss/Light_NVR.git
+cd Light_NVR
+```
+
+**Without git** — most Windows PCs won't have git installed, and you don't
+need it. Download the code as a ZIP straight from GitHub:
+
+1. Open **https://github.com/manojmkss/Light_NVR**
+2. Click the green **`<> Code`** button → **Download ZIP**
+3. Extract it. On Windows: right-click the downloaded ZIP → *Extract All*.
+   You'll get a folder named `Light_NVR-main`.
+4. Open a terminal **inside** that folder. On Windows: hold **Shift**,
+   right-click the folder → *Open in Terminal* (or *Open PowerShell window here*).
+
+To update later: with git, `git pull`; without git, download a fresh ZIP and
+extract it over the old folder.
+
+### 2. Install it
+
 **Automated (recommended)** — installs Docker if missing, prepares data
 directories, optionally opens LAN-only firewall rules, and brings the stack
 up in one step:
@@ -13,8 +37,10 @@ up in one step:
 sudo ./scripts/install-linux.sh
 ```
 ```powershell
-# Windows (run PowerShell as Administrator)
-.\scripts\install-windows.ps1
+# Windows — run PowerShell as Administrator, from inside the folder.
+# The -ExecutionPolicy Bypass is only needed if you downloaded the ZIP:
+# Windows blocks scripts that came from a downloaded file by default.
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
 Both prompt before any system-level change (installing Docker, touching the
@@ -24,7 +50,8 @@ setup (WSL2 enablement, EULA, sometimes a restart) can't be fully automated
 blind — if Docker isn't already installed, the script starts the winget
 install and tells you to finish that setup once, then re-run it.
 
-**Manual:**
+**Manual** — works the same whether you used git or the ZIP; just needs
+Docker already installed and running:
 
 ```bash
 docker compose up -d --build
