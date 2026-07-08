@@ -1,0 +1,15 @@
+# Normalize text files to LF inside the repo; check out platform-native by default.
+* text=auto
+
+# Shell scripts and nginx configs are executed inside Linux containers - some
+# of them via bind mounts straight from the checkout (docker/nginx/*.sh) - so
+# they must be checked out with LF line endings even on Windows. Without this,
+# git's default autocrlf conversion gives them CRLF and the nginx container
+# crash-loops with "/start.sh: set: illegal option -" on a fresh Windows clone.
+*.sh text eol=lf
+*.conf text eol=lf
+*.template text eol=lf
+Dockerfile text eol=lf
+
+# PowerShell is CRLF-native on Windows.
+*.ps1 text eol=crlf
