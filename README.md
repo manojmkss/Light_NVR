@@ -175,4 +175,16 @@ dev setup and conventions. Found a security issue? See
 
 ## License
 
-[MIT](LICENSE)
+[GNU Affero General Public License v3.0](LICENSE) — `AGPL-3.0-or-later`.
+
+Copyright (C) 2026 manojmkss
+
+LightNVR is free software: everyone may use, study, share, and modify it at no
+cost, forever. The AGPL is what *guarantees* that — anyone who distributes it,
+or runs a modified version as a network service, must pass those same freedoms
+on and make their source available under this same license. In plain terms: it
+stays free and open for everyone, and it can't be taken closed-source or turned
+into a paid, locked-down product.
+
+Third-party dependencies keep their own (permissive) licenses; the above covers
+LightNVR's own code.

@@ -17,8 +17,8 @@ directly.
 
 **Full stack (Docker):**
 ```bash
-git clone https://github.com/<you>/lightnvr.git
-cd lightnvr
+git clone https://github.com/manojmkss/Light_NVR.git
+cd Light_NVR
 docker compose up -d --build
 ```
 Open `http://localhost:8080` and go through the setup wizard.
@@ -80,3 +80,10 @@ dependencies.
 
 Use the issue templates. For security issues, see [SECURITY.md](SECURITY.md)
 instead of opening a public issue.
+
+## License of contributions
+
+LightNVR is licensed under the GNU Affero General Public License v3.0 (see
+[LICENSE](LICENSE)). By submitting a contribution you agree to license it
+under those same terms (inbound = outbound), which is what keeps the whole
+project free and open — and unable to be taken closed-source — for everyone.
