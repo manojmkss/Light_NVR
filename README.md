@@ -101,15 +101,7 @@ The "Scan network" button uses WS-Discovery, which relies on UDP multicast. Mult
 
 This doesn't block setup: the **"connect directly by IP"** field next to the scan button does a direct (unicast) ONVIF connection, which works fine over the default bridge network and still gives you automatic RTSP/profile configuration. Manual RTSP entry works unconditionally too.
 
-If you specifically want the broadcast scan to work and you're on Linux/Proxmox, add this to the `backend` service in `docker-compose.yml`:
-
-```yaml
-backend:
-  network_mode: "host"
-  # remove the `ports:` entry under backend when using host networking
-```
-
-This is Linux-only — Docker Desktop on Windows/Mac doesn't support host networking.
+If you want the broadcast scan itself to work on Linux, use the optional `docker-compose.macvlan.yml` override instead of `network_mode: host` — host networking would sever nginx's connection to the backend (they talk to each other by Docker DNS name on the shared network, which host mode drops out of), taking down the whole app rather than just fixing discovery. The macvlan override gives the backend container a second, LAN-facing network interface without touching how nginx reaches it. See [docs/linux-production-install.md](docs/linux-production-install.md) for the full walkthrough (it needs a few values specific to your machine - network interface name, subnet, a free IP - so there's no one-line snippet that works for everyone).
 
 ## Recording modes
 

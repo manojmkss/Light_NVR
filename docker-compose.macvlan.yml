@@ -1,0 +1,36 @@
+# Optional override that gives the backend container a second network
+# interface with a real IP on your LAN, so ONVIF's "Scan network" button
+# (WS-Discovery multicast) can find cameras automatically instead of every
+# camera needing to be added by IP.
+#
+# Off by default - it needs network details specific to your machine (see
+# .env.example), doesn't work over Wi-Fi (macvlan needs a wired NIC), and on
+# a VM may need "promiscuous mode" allowed on that VM's virtual network
+# device (Proxmox/VMware) before it'll pass traffic. See
+# docs/linux-production-install.md for the full walkthrough, including how
+# to find the values below.
+#
+# The backend's existing "lightnvr" bridge network is untouched by this file
+# - nginx and the frontend keep reaching it exactly as before, so this can't
+# break anything else even if these settings are wrong for your network; the
+# stack just fails to bring up the extra interface.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.macvlan.yml up -d --build
+
+services:
+  backend:
+    networks:
+      lightnvr: {}
+      lan:
+        ipv4_address: ${LAN_SCAN_BACKEND_IP:?Set LAN_SCAN_BACKEND_IP in .env - see .env.example}
+
+networks:
+  lan:
+    driver: macvlan
+    driver_opts:
+      parent: ${LAN_SCAN_INTERFACE:?Set LAN_SCAN_INTERFACE in .env - see .env.example}
+    ipam:
+      config:
+        - subnet: ${LAN_SCAN_SUBNET:?Set LAN_SCAN_SUBNET in .env - see .env.example}
+          gateway: ${LAN_SCAN_GATEWAY:?Set LAN_SCAN_GATEWAY in .env - see .env.example}

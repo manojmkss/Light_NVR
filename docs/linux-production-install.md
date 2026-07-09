@@ -176,15 +176,79 @@ common ONVIF ports automatically, tries both `rtsp://` and `rtsps://`, and
 falls back to the `admin` account if your typed username gets a 401 — so
 typing the camera's IP is usually all you need).
 
-The README mentions `network_mode: "host"` as a way to make the multicast
-scan itself work, since Linux (unlike Docker Desktop) supports it. **For a
-production install, avoid this.** Host networking bypasses Docker's port
-publishing entirely, which means the backend's port binds directly to the
+You may see `network_mode: "host"` suggested elsewhere as a way to make the
+multicast scan itself work, since Linux (unlike Docker Desktop) supports it.
+**Don't do this.** It's not just a security tradeoff — it actually breaks
+the app. nginx reaches the backend by Docker DNS name (`backend:8000`) over
+their shared network; host networking pulls the backend off that network
+entirely, so the hostname stops resolving and nginx can no longer reach it
+at all. On top of that, the backend's port would bind directly to the
 host's `0.0.0.0` instead of the loopback-only mapping this project sets up
-deliberately (localhost-only, precisely so the API is never reachable
-except through nginx's HTTPS/security-header layer). Losing that is a real
-regression for a small discovery convenience you don't need — "connect
-directly by IP" gets you the same end result safely.
+deliberately. Both problems are avoided by the option below instead.
+
+### Making "Scan network" itself work: the macvlan override
+
+If you want the actual broadcast scan to find cameras (rather than typing
+each camera's IP), use the optional `docker-compose.macvlan.yml` override.
+It gives the backend container a second network interface with its own real
+IP directly on your LAN — enough for WS-Discovery's multicast probes to
+reach your cameras — without touching how nginx reaches the backend on the
+existing internal network. Nothing else about the app changes.
+
+**Requirements:** a wired Ethernet connection to this box (macvlan doesn't
+work reliably over Wi-Fi — most Wi-Fi drivers/access points reject one
+radio presenting multiple MAC addresses). If this box is a VM, the VM's own
+virtual NIC behaves like normal Ethernet regardless of what the physical
+host underneath uses, but some hypervisors block the extra MAC address by
+default — see the troubleshooting note below.
+
+**1. Find your network details:**
+```bash
+ip route | grep default    # gives your interface name and gateway
+ip -4 addr show            # gives your own address + subnet (CIDR)
+```
+From the first command, `dev ens18` (or `eth0`, `enp3s0`, etc.) is your
+interface name and the `via` address is your gateway. From the second,
+find that same interface's `inet` line for your subnet, e.g.
+`192.168.68.210/24` means subnet `192.168.68.0/24`.
+
+**2. Pick a free IP** for the container, inside that subnet but outside
+your router's DHCP range if you know it. Confirm it's actually unused:
+```bash
+ping -c1 <candidate-ip>   # no reply = very likely free
+```
+
+**3. Add these four values to `.env`** (copy from `.env.example` if you
+don't have one yet):
+```bash
+LAN_SCAN_INTERFACE=ens18
+LAN_SCAN_SUBNET=192.168.68.0/24
+LAN_SCAN_GATEWAY=192.168.68.1
+LAN_SCAN_BACKEND_IP=192.168.68.250
+```
+
+**4. Bring the stack up with the override layered on:**
+```bash
+docker compose -f docker-compose.yml -f docker-compose.macvlan.yml up -d --build
+```
+(Use this two-file form for every future `up`/`down` while you want this
+feature — the plain `docker compose up -d` from §4 skips the override.)
+
+**5. Verify the interface exists:**
+```bash
+docker compose exec backend ip addr show
+```
+You should see a second interface carrying your `LAN_SCAN_BACKEND_IP`. No
+application changes are needed beyond this — the ONVIF discovery library
+polls for local network addresses every few seconds and automatically
+starts sending multicast probes out any new interface it finds, including
+this one.
+
+**If Scan still finds nothing after this:** on a VM, check whether the
+hypervisor is silently dropping the extra MAC address. Proxmox: Datacenter
+or VM → **Firewall** tab — either disable it for this VM's network device
+or add a rule allowing it. VMware: the port group's **Security** policy —
+set "Promiscuous Mode" and "Forged Transmits" to Accept.
 
 ## 6. Storage on a real disk
 
@@ -333,9 +397,11 @@ Leave the port field blank — the backend probes the common ONVIF ports
 to know which one your camera uses.
 
 **Network scan finds nothing.** Expected on Docker's default bridge network
-(multicast doesn't cross it) — use "connect directly by IP" with the
-camera's address instead of debugging the scan (see §5 for why host
-networking isn't the recommended fix).
+(multicast doesn't cross it). Easiest fix: use "connect directly by IP"
+with the camera's address instead of debugging the scan. If you specifically
+want the scan itself to work, see §5's `docker-compose.macvlan.yml`
+walkthrough (do **not** use `network_mode: host` — see §5 for why that
+breaks the whole app, not just discovery).
 
 **Browser still shows the old UI after an upgrade.** The frontend is a PWA
 with a service worker cache. Hard-refresh (Ctrl+Shift+R / Cmd+Shift+R) once
