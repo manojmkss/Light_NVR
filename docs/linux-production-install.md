@@ -59,23 +59,65 @@ an LXC container or VM, not on the Proxmox host itself.
 
 ## 3. Get the code onto the box
 
-**With git:**
+Everything in this section runs **on the Linux box** — either sitting at it,
+or over SSH from another machine on your network:
+
+```bash
+ssh youruser@192.168.68.xx   # the box's LAN IP + your Linux username
+```
+
+**Step 1 — make sure git is installed** (the recommended route; jump to
+"Without git" below if you'd rather not install it):
+
+```bash
+git --version
+# "command not found"? On Debian / Ubuntu / Raspberry Pi OS:
+sudo apt update && sudo apt install -y git
+```
+
+**Step 2 — pick where the code will live.** Your home directory keeps it
+owned by you, with no `sudo` needed to work inside it:
+
+```bash
+cd ~
+```
+
+**Step 3 — clone the repository:**
 
 ```bash
 git clone https://github.com/manojmkss/Light_NVR.git
-cd Light_NVR
 ```
 
-**Without git** (skip installing it) — pull a tarball straight from GitHub:
+This downloads the whole project *and* its git history into a new
+`Light_NVR/` folder. It's quick — just code, no recordings or Docker images
+(those get built/created on first boot). The repo is public, so no login,
+token, or SSH key is needed.
+
+**Step 4 — go into the folder and confirm it landed:**
 
 ```bash
+cd Light_NVR
+ls                    # docker-compose.yml, backend/, frontend/, scripts/, ...
+git log --oneline -1  # shows the latest commit
+```
+
+That's it — the code is on the box. Continue to §4, or just run
+`sudo ./scripts/install-linux.sh`, which does §4 and §5 for you.
+
+**Without git** — pull a tarball straight from GitHub instead:
+
+```bash
+cd ~
 curl -fsSL https://github.com/manojmkss/Light_NVR/archive/refs/heads/main.tar.gz | tar xz
 cd Light_NVR-main
 ```
 
-With git you can update later with `git pull`; with the tarball, re-download
-it and extract over the top. If the repo is private, the git route
-(`gh auth login` or an SSH deploy key) is easier than a tokenized tarball URL.
+Same files, minus the history. The tradeoff is updates: with `git clone` you
+update later with a single `git pull`; with the tarball you re-download and
+extract over the top each time. For a long-lived server the git route is worth
+the one-time `apt install git`. (If the repo is ever made private, the git
+route via `gh auth login` or an SSH deploy key is easier than a tokenized
+tarball URL.)
 
 ## 4. First boot
 
