@@ -308,6 +308,17 @@ tile shows video and the status badge goes green (online).
 
 ## 12. Troubleshooting
 
+**`permission denied while trying to connect to the docker API at
+unix:///var/run/docker.sock`.** Your Linux user isn't in the `docker` group
+yet, or was just added but this shell session hasn't picked it up. Fastest
+unblock: `sudo docker compose up -d --build`. Durable fix so you don't need
+`sudo` every time: `sudo usermod -aG docker $USER`, then either `newgrp docker`
+(current shell only) or log out and back in — group membership never applies
+retroactively to an already-open session. Verify with `groups` afterward;
+`docker` should be in the list. `scripts/install-linux.sh` already handles
+this for its own run (it installs as root throughout), so this mainly comes
+up on a later manual `docker compose` command, e.g. the upgrade steps in §10.
+
 **Camera shows offline in the app but works fine when you open its stream
 directly.** Usually a scheme or credential mismatch the auto-detection
 missed. Go to Cameras, click **Re-detect** on that camera — it re-runs the
