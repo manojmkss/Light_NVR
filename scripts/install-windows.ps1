@@ -32,7 +32,8 @@
 param(
     [switch]$Yes,
     [switch]$SkipFirewall,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$StoragePath = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +41,25 @@ $ErrorActionPreference = 'Stop'
 function Write-Step  { param([string]$Msg) Write-Host "==> $Msg" -ForegroundColor Cyan }
 function Write-Warn2 { param([string]$Msg) Write-Host "!!  $Msg" -ForegroundColor Yellow }
 function Write-Die   { param([string]$Msg) Write-Host "ERROR: $Msg" -ForegroundColor Red; exit 1 }
+
+# Idempotent .env upsert - mirrors env_set in scripts/lib-env.sh so a Windows
+# install writes the same machine-specific config into .env (gitignored) that
+# the Linux flow does, keeping docker-compose.yml pristine and `git pull` clean.
+function Set-EnvVar {
+    param([string]$Key, [string]$Value)
+    if ($DryRun) { Write-Host "[DRY RUN] set $Key=$Value in .env" -ForegroundColor DarkGray; return }
+    $envFile = Join-Path $RepoRoot ".env"
+    if (-not (Test-Path $envFile)) { New-Item -ItemType File -Path $envFile | Out-Null }
+    $lines = @(Get-Content $envFile -ErrorAction SilentlyContinue)
+    $out = New-Object System.Collections.Generic.List[string]
+    $found = $false
+    foreach ($line in $lines) {
+        if ($line -match "^$([regex]::Escape($Key))=") { $out.Add("$Key=$Value"); $found = $true }
+        else { $out.Add($line) }
+    }
+    if (-not $found) { $out.Add("$Key=$Value") }
+    Set-Content -Path $envFile -Value $out -Encoding utf8
+}
 
 function Confirm-Step {
     param([string]$Prompt)
@@ -143,6 +163,28 @@ foreach ($dir in @("storage", "primary-storage", "backup-storage", "certs")) {
 }
 
 # ---------------------------------------------------------------------------
+# 2b. Storage location
+# ---------------------------------------------------------------------------
+# Recordings go to PRIMARY_STORAGE_PATH (default: the in-repo folder). Point
+# it at another drive by setting that one .env value - no compose edit. On
+# Windows a Docker Desktop bind source is a host path like D:\NVR (or /d/NVR
+# in the daemon's view); pass it with -StoragePath, or leave default.
+
+if (-not $StoragePath -and -not $Yes) {
+    Write-Step "Storage: where should recordings be written?"
+    Write-Host "  Enter a host path on a dedicated drive (e.g. D:\NVR_Storage),"
+    Write-Host "  or leave blank to keep recordings in the default in-repo folder."
+    $StoragePath = Read-Host "  Storage path"
+}
+if ($StoragePath) {
+    Invoke-MaybeDry "Create $StoragePath" { New-Item -ItemType Directory -Force -Path $StoragePath | Out-Null }
+    Set-EnvVar "PRIMARY_STORAGE_PATH" $StoragePath
+    Write-Step "Recordings will be stored at: $StoragePath"
+} else {
+    Write-Step "Storage: using the default in-repo folder (.\primary-storage)."
+}
+
+# ---------------------------------------------------------------------------
 # 3. Migrate an old bind-mounted .\data into the named volume, if present
 # ---------------------------------------------------------------------------
 # Handles upgrading an existing install that predates the named-volume
@@ -242,6 +284,13 @@ Write-Host "  The setup wizard creates your first admin account and walks throug
 Write-Host ""
 Write-Host "  The database lives in the '$VolumeName' Docker volume, not a plain folder - use the"
 Write-Host "  in-app Backup feature (Settings -> Backup) to back it up, not a direct file copy."
+Write-Host ""
+Write-Host "  Machine-specific config is in .env (gitignored); docker-compose.yml is untouched,"
+Write-Host "  so updates stay clean:  .\scripts\update-windows.ps1"
+Write-Host ""
+Write-Host "  Camera 'Scan network' (auto-discovery) isn't available on Windows/Docker Desktop -"
+Write-Host "  its network layer can't put the container on your LAN. Add cameras by IP instead"
+Write-Host "  (fully auto-detected). Automatic scanning works on a Linux host (see docs)."
 Write-Host ""
 Write-Host "  For remote access away from home (no port-forwarding needed), see"
 Write-Host "  Settings -> Remote Access in the app once you're logged in (Tailscale or Cloudflare Tunnel)."

@@ -33,14 +33,18 @@ services:
       # feature (Settings -> Backup) rather than reaching for the file directly.
       - lightnvr-data:/data
       - ./storage:/storage
-      # /mnt/primary and /mnt/backup are where the backend mounts your NAS
-      # share (SMB/NFS) at runtime, configured from Settings -> Storage.
-      # For a "local" type instead of a network share, point the host side
-      # of these at your dedicated drive (e.g. "D:/NVR_Primary:/mnt/primary")
-      # and restart - Docker can't attach a new host path to a running
-      # container, so that one edit + restart is unavoidable for local disks.
-      - ./primary-storage:/mnt/primary
-      - ./backup-storage:/mnt/backup
+      # /mnt/primary and /mnt/backup are where recordings are written (primary)
+      # and, optionally, failed over to (backup). The HOST side of each is an
+      # env var with a sensible default, so pointing recordings at a dedicated
+      # disk is a one-line change in .env (PRIMARY_STORAGE_PATH=/mnt/nvr-storage)
+      # rather than an edit to this tracked file - which keeps `git pull` clean
+      # on upgrades and lets scripts/install-linux.sh set it for you. Unset =
+      # the in-repo default folder, i.e. exactly the previous behaviour.
+      # (For an SMB/NFS network share instead of a local disk, leave these at
+      # the default and configure it in Settings -> Storage; the backend mounts
+      # the share itself at runtime.)
+      - ${PRIMARY_STORAGE_PATH:-./primary-storage}:/mnt/primary
+      - ${BACKUP_STORAGE_PATH:-./backup-storage}:/mnt/backup
       - ./certs:/certs
     # SYS_ADMIN: lets the backend mount SMB/NFS shares itself (the `mount`
     # syscall needs it) - if you'd rather avoid it, mount the share on the

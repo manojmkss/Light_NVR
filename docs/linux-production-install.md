@@ -202,6 +202,17 @@ virtual NIC behaves like normal Ethernet regardless of what the physical
 host underneath uses, but some hypervisors block the extra MAC address by
 default — see the troubleshooting note below.
 
+**The easy way — let the installer do it:**
+```bash
+sudo ./scripts/install-linux.sh --enable-scan
+```
+It auto-detects your interface, subnet, and gateway, finds and ping-verifies
+a free IP, writes all of it (plus `COMPOSE_FILE`, so plain `docker compose
+up` transparently loads the macvlan override from then on) to `.env`, and
+brings the stack up. Skip to the verification step below. The rest of this
+section is what it does under the hood, for doing it by hand or understanding
+the pieces.
+
 **1. Find your network details:**
 ```bash
 ip route | grep default    # gives your interface name and gateway
@@ -218,21 +229,21 @@ your router's DHCP range if you know it. Confirm it's actually unused:
 ping -c1 <candidate-ip>   # no reply = very likely free
 ```
 
-**3. Add these four values to `.env`** (copy from `.env.example` if you
-don't have one yet):
+**3. Add these five values to `.env`** (copy from `.env.example` if you
+don't have one yet). `COMPOSE_FILE` is what makes plain `docker compose up`
+load the override automatically, so you never need a two-file command:
 ```bash
 LAN_SCAN_INTERFACE=ens18
 LAN_SCAN_SUBNET=192.168.68.0/24
 LAN_SCAN_GATEWAY=192.168.68.1
 LAN_SCAN_BACKEND_IP=192.168.68.250
+COMPOSE_FILE=docker-compose.yml:docker-compose.macvlan.yml
 ```
 
-**4. Bring the stack up with the override layered on:**
+**4. Bring the stack up:**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.macvlan.yml up -d --build
+docker compose up -d --build
 ```
-(Use this two-file form for every future `up`/`down` while you want this
-feature — the plain `docker compose up -d` from §4 skips the override.)
 
 **5. Verify the interface exists:**
 ```bash
@@ -257,17 +268,22 @@ dedicated drive rather than the same disk as the OS.
 
 **Option A — a second local disk on this box:**
 1. Mount it at, say, `/mnt/nvr-storage` on the host (fstab entry, or
-   whatever your distro's disk manager gives you).
-2. Edit `docker-compose.yml`, change the `primary-storage` bind mount:
-   ```yaml
-   volumes:
-     - /mnt/nvr-storage:/mnt/primary
+   whatever your distro's disk manager gives you). Make sure it's actually
+   mounted (`df -h /mnt/nvr-storage` should show the disk, not your root
+   filesystem) — pointing storage at a path where the disk *isn't* mounted
+   silently fills your OS disk instead.
+2. Tell the installer to use it — no file editing:
+   ```bash
+   sudo ./scripts/install-linux.sh --storage-path=/mnt/nvr-storage
    ```
-3. `docker compose up -d` to recreate the backend container with the new
-   mount (Docker can't attach a new host path to a running container, so
-   this one edit + restart is unavoidable — it's not a limitation specific
-   to this app).
-4. In Settings → Storage, set Primary type to **local**.
+   That writes `PRIMARY_STORAGE_PATH=/mnt/nvr-storage` to `.env` (gitignored)
+   and recreates the backend against the new disk. The tracked
+   `docker-compose.yml` is left untouched, so upgrades stay clean, and the
+   script warns you if the path isn't a real mount. (To do it by hand
+   instead: put that one line in `.env` and run `docker compose up -d`.
+   Docker can't attach a new host path to a running container, so the
+   recreate is unavoidable either way.)
+3. In Settings → Storage, set Primary type to **local**.
 
 **Option B — a NAS (SMB or NFS share):** leave the docker-compose volumes
 alone. In Settings → Storage, set Primary type to **SMB** or **NFS** and
@@ -345,16 +361,28 @@ config backup.
 ## 10. Upgrading later
 
 ```bash
-cd lightnvr
-git pull
-docker compose up -d --build
+cd Light_NVR
+./scripts/update-linux.sh
 ```
+
+That pulls the latest code and rebuilds in one step. It works cleanly
+because all your machine-specific config lives in the gitignored `.env`
+(storage path, camera-scan settings), never in the tracked
+`docker-compose.yml` — so the pull is always a plain fast-forward with
+nothing to merge, and your `.env` (and its `COMPOSE_FILE`, if you enabled
+scanning) is picked up automatically. If a new version ever needs a new
+`.env` value, the script tells you which one rather than failing cryptically.
+
+(Upgrading a box set up the old way, with a hand-edited `docker-compose.yml`?
+The script detects that on first run, moves your storage path into `.env`,
+and restores the tracked file — a one-time migration, after which updates are
+clean. The equivalent by hand is `git pull && docker compose up -d --build`.)
 
 Any new database columns are added automatically on startup (SQLite schema
 sync runs as part of app startup) — there's no separate manual migration
 step for normal schema changes. Camera configs, recordings, and accounts
-all carry forward untouched since they live in the bind-mounted `data/` and
-storage directories, not inside the container image.
+all carry forward untouched since they live in the `lightnvr-data` volume and
+the storage directories, not inside the container image.
 
 Check `docker compose logs backend` after an upgrade to confirm a clean
 startup (`Application startup complete`) before considering it done.

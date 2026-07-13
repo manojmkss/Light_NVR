@@ -23,8 +23,10 @@ need it. Download the code as a ZIP straight from GitHub:
 4. Open a terminal **inside** that folder. On Windows: hold **Shift**,
    right-click the folder → *Open in Terminal* (or *Open PowerShell window here*).
 
-To update later: with git, `git pull`; without git, download a fresh ZIP and
-extract it over the old folder.
+To update later: with git, run `./scripts/update-linux.sh` (or
+`.\scripts\update-windows.ps1`) — it pulls the latest code and rebuilds in
+one step, keeping your configuration. Without git, download a fresh ZIP and
+extract it over the old folder, then re-run the install script.
 
 ### 2. Install it
 
@@ -42,6 +44,13 @@ sudo ./scripts/install-linux.sh
 # Windows blocks scripts that came from a downloaded file by default.
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
+
+The install script also handles the machine-specific things that otherwise
+mean editing files by hand: pointing recordings at a dedicated disk, and (on
+Linux) auto-detecting your network to enable ONVIF camera scanning. It writes
+all of that to a gitignored `.env`, so the tracked `docker-compose.yml` never
+changes and updates stay a clean fast-forward. It's re-runnable any time to
+reconfigure.
 
 Both prompt before any system-level change (installing Docker, touching the
 firewall) — pass `-y`/`-Yes` to skip prompts, or `--dry-run`/`-DryRun` to
