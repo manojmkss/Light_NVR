@@ -33,7 +33,3 @@ frontend/tsconfig.tsbuildinfo
 .claude/
 .DS_Store
 Thumbs.db
-
-# Generated clean export for uploading to GitHub (see scripts/make-github-upload.sh) -
-# a copy of tracked content, not itself a source of truth.
-/github-upload/
