@@ -5,12 +5,14 @@ from app.core.deps import get_current_user, get_current_user_flexible
 from app.db.session import get_db
 from app.models.camera import Camera
 from app.models.user import User
+from app.schemas.camera import MotionStatusOut
 from app.services.live_media import (
     live_segment_info,
     live_segment_video_response,
     mjpeg_stream_response,
     snapshot_response,
 )
+from app.services.motion_state import motion_state_registry
 from app.services.stream_stats import stream_stats
 
 router = APIRouter(prefix="/api/cameras", tags=["live"])
@@ -30,6 +32,18 @@ async def get_stream_stats(_: User = Depends(get_current_user)):
     the bitrate readout in each live tile's overlay.
     """
     return {"stats": stream_stats.snapshot()}
+
+
+@router.get("/motion-status", response_model=dict[int, MotionStatusOut])
+async def get_motion_status(_: User = Depends(get_current_user)):
+    """Live "is motion active right now" state for every camera with motion
+    detection enabled, keyed by camera_id. The event log only records a
+    one-shot "motion started" row (no "stopped" counterpart), so this is the
+    only place that current on/off state - and the timestamp of the last
+    transition either way - can be read from; API consumers (e.g. a Home
+    Assistant motion sensor) poll this instead of the event log.
+    """
+    return motion_state_registry.snapshot()
 
 
 @router.get("/{camera_id}/live-segment")

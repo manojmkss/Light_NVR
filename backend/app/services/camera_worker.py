@@ -4,6 +4,7 @@ import logging
 from app.models.camera import Camera
 from app.services.events import emit_event
 from app.services.ffmpeg_recorder import ContinuousRecorder, MotionRecorder
+from app.services.motion_state import motion_state_registry
 from app.services.status_tracker import mark_offline
 from app.services.stream_viewer import StreamViewer
 
@@ -96,10 +97,12 @@ class CameraWorker:
                 await asyncio.sleep(5)
 
     async def _handle_motion_start(self) -> None:
+        motion_state_registry.set_motion(self.camera_id, True)
         await emit_event(self.camera_id, "motion", f"Motion detected on '{self.name}'")
         if self._motion_recorder:
             await self._motion_recorder.on_motion_start()
 
     async def _handle_motion_stop(self) -> None:
+        motion_state_registry.set_motion(self.camera_id, False)
         if self._motion_recorder:
             await self._motion_recorder.on_motion_stop()

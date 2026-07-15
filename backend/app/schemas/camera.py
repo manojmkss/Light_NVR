@@ -142,3 +142,11 @@ class TestConnectionResponse(BaseModel):
     height: int | None = None
     fps: float | None = None
     error: str | None = None
+
+
+class MotionStatusOut(BaseModel):
+    is_active: bool
+    last_updated: UtcDatetime
+
+    class Config:
+        from_attributes = True

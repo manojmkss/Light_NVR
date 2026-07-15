@@ -1,0 +1,72 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to LightNVR",
+        "description": "Enter your LightNVR server's address and login. A **viewer** account is recommended - this integration only ever reads data, it never changes camera settings.",
+        "data": {
+          "host": "Host or IP address",
+          "port": "Port (HTTPS, default 8443)",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "verify_ssl": "Leave off if you're using LightNVR's default self-signed certificate. Turn on only if you've installed a real certificate (Settings → Security in the app)."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect to LightNVR",
+        "description": "The saved password for {host} no longer works. Enter the current password to reconnect.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the server. Check the host and port.",
+      "invalid_auth": "Invalid username or password.",
+      "ssl_error": "The server's certificate isn't trusted. If this is LightNVR's default self-signed certificate, turn off \"Verify SSL certificate\".",
+      "unknown": "Unexpected error - see the Home Assistant log for details."
+    },
+    "abort": {
+      "already_configured": "This LightNVR server is already configured.",
+      "reauth_successful": "Reconnected successfully."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "LightNVR options",
+        "data": {
+          "fast_poll_interval": "Camera/motion poll interval (seconds)",
+          "slow_poll_interval": "System stats poll interval (seconds)",
+          "verify_ssl": "Verify SSL certificate"
+        }
+      }
+    }
+  },
+  "entity": {
+    "camera": {
+      "camera": { "name": "Camera" },
+      "camera_hd": { "name": "HD" }
+    },
+    "binary_sensor": {
+      "motion": { "name": "Motion" },
+      "connectivity": { "name": "Connectivity" }
+    },
+    "sensor": {
+      "last_motion": { "name": "Last motion" },
+      "cpu": { "name": "CPU" },
+      "memory": { "name": "Memory" },
+      "storage_used": { "name": "Storage used" },
+      "storage_free": { "name": "Storage free" },
+      "uptime": { "name": "Uptime" },
+      "cameras_offline": { "name": "Cameras offline" },
+      "motion_events_today": { "name": "Motion events today" },
+      "recordings_today": { "name": "Recordings today" },
+      "recording_failures_today": { "name": "Recording failures today" },
+      "storage_days_to_full": { "name": "Storage days to full" }
+    }
+  }
+}
