@@ -12,9 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-from app.api.routes import auth, backup, cameras, kiosk, live, push, recordings, remote_access, storage, system, tls
+from app.api.routes import ai, auth, backup, cameras, kiosk, live, push, recordings, remote_access, storage, system, tls
 from app.core.bootstrap import (
     create_default_admin,
+    create_default_ai_settings,
     create_default_alert_settings,
     create_default_backup_settings,
     create_default_discovery_settings,
@@ -56,6 +57,7 @@ async def lifespan(app: FastAPI):
     await create_default_remote_access_settings()
     await create_default_discovery_settings()
     await create_default_system_settings()
+    await create_default_ai_settings()
 
     from app.services import cloudflare_manager, tailscale_manager
     from app.services.camera_supervisor import supervisor
@@ -121,6 +123,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(ai.router)
 app.include_router(auth.router)
 app.include_router(backup.router)
 app.include_router(cameras.router)

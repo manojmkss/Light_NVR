@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from app.models.camera import Camera
+from app.services.ai.pipeline import ai_pipeline
 from app.services.events import emit_event
 from app.services.ffmpeg_recorder import ContinuousRecorder, MotionRecorder
 from app.services.motion_state import motion_state_registry
@@ -34,6 +35,10 @@ class CameraWorker:
         self.motion_sensitivity = camera.motion_sensitivity
 
         self._tasks: list[asyncio.Task] = []
+        # Held only so the loop keeps a strong reference to in-flight AI
+        # analyses (asyncio only weakly references tasks); entries remove
+        # themselves on completion.
+        self._announce_tasks: set[asyncio.Task] = set()
         self._continuous_recorder: ContinuousRecorder | None = None
         self._motion_recorder: MotionRecorder | None = None
         self._stream_viewer: StreamViewer | None = None
@@ -98,9 +103,37 @@ class CameraWorker:
 
     async def _handle_motion_start(self) -> None:
         motion_state_registry.set_motion(self.camera_id, True)
-        await emit_event(self.camera_id, "motion", f"Motion detected on '{self.name}'")
+        # Recording starts first and never waits on AI: inference takes tens to
+        # hundreds of milliseconds, and that is footage you would lose off the
+        # front of the clip. The event/alert is what AI gets to filter, below.
         if self._motion_recorder:
             await self._motion_recorder.on_motion_start()
+
+        # Fire-and-forget so a slow/hung inference can't stall the decode
+        # thread's callback and back the motion pipeline up behind it.
+        task = asyncio.create_task(self._announce_motion())
+        self._announce_tasks.add(task)
+        task.add_done_callback(self._announce_tasks.discard)
+
+    async def _announce_motion(self) -> None:
+        """Emit the motion event, optionally filtered/enriched by the AI layer.
+
+        When AI is off, unconfigured, or failing, `analyze_motion` returns None
+        and this is byte-for-byte the old behaviour - that fallback is the
+        whole safety story for making AI optional.
+        """
+        try:
+            result = await ai_pipeline.analyze_motion(self.camera_id, self.name)
+        except Exception:
+            logger.exception("AI analysis crashed for camera %s - emitting plain motion event", self.camera_id)
+            result = None
+
+        if result is None:
+            await emit_event(self.camera_id, "motion", f"Motion detected on '{self.name}'")
+            return
+        if result.suppressed:
+            return  # objects-only mode: nothing of interest was in frame
+        await emit_event(self.camera_id, "motion", result.message or f"Motion detected on '{self.name}'")
 
     async def _handle_motion_stop(self) -> None:
         motion_state_registry.set_motion(self.camera_id, False)

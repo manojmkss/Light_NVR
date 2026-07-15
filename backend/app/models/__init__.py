@@ -12,6 +12,8 @@ from app.models.push_subscription import PushSubscription
 from app.models.remote_access_settings import RemoteAccessSettings
 from app.models.kiosk_view import KioskView, KioskViewCamera
 from app.models.discovery_settings import DiscoverySettings
+from app.models.ai_settings import AISettings
+from app.models.detection import Detection
 
 __all__ = [
     "User",
@@ -29,4 +31,6 @@ __all__ = [
     "KioskView",
     "KioskViewCamera",
     "DiscoverySettings",
+    "AISettings",
+    "Detection",
 ]

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.security import hash_password
 from app.db.session import AsyncSessionLocal
+from app.models.ai_settings import AISettings
 from app.models.alert_settings import AlertSettings
 from app.models.backup_settings import BackupSettings
 from app.models.discovery_settings import DiscoverySettings
@@ -114,6 +115,15 @@ async def create_default_discovery_settings() -> None:
         if existing is not None:
             return
         db.add(DiscoverySettings(id=1))
+        await db.commit()
+
+
+async def create_default_ai_settings() -> None:
+    async with AsyncSessionLocal() as db:
+        existing = await db.get(AISettings, 1)
+        if existing is not None:
+            return
+        db.add(AISettings(id=1))
         await db.commit()
 
 

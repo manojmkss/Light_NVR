@@ -48,11 +48,22 @@ import type {
   TlsSettings,
   User,
 } from "../api/types";
+import { AISettingsTab } from "../components/AISettingsTab";
 import { StorageHealthCards } from "../components/StorageHealthCards";
 import { useAuth } from "../context/AuthContext";
 import { useSettings } from "../context/SettingsContext";
 
-type Tab = "account" | "users" | "alerts" | "storage" | "backup" | "security" | "remote-access" | "kiosk" | "system";
+type Tab =
+  | "account"
+  | "users"
+  | "alerts"
+  | "storage"
+  | "backup"
+  | "security"
+  | "remote-access"
+  | "kiosk"
+  | "ai"
+  | "system";
 
 function UsersTab({ currentUser }: { currentUser: User | null }) {
   const [users, setUsers] = useState<User[]>([]);
@@ -1903,6 +1914,9 @@ export function SettingsPage() {
             <div className={`tab ${tab === "kiosk" ? "active" : ""}`} onClick={() => setTab("kiosk")}>
               Kiosk Displays
             </div>
+            <div className={`tab ${tab === "ai" ? "active" : ""}`} onClick={() => setTab("ai")}>
+              AI
+            </div>
             <div className={`tab ${tab === "system" ? "active" : ""}`} onClick={() => setTab("system")}>
               System
             </div>
@@ -1934,6 +1948,7 @@ export function SettingsPage() {
       {tab === "security" && isAdmin && <TlsTab />}
       {tab === "remote-access" && isAdmin && <RemoteAccessTab />}
       {tab === "kiosk" && isAdmin && <KioskTab />}
+      {tab === "ai" && isAdmin && <AISettingsTab />}
       {tab === "system" && isAdmin && <SystemTab />}
     </div>
   );

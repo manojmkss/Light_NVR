@@ -333,6 +333,70 @@ export interface RemoteAccessSettings {
   has_cloudflare_token: boolean;
 }
 
+export type AIBackend = "local" | "remote";
+export type VlmProvider = "openai_compatible" | "anthropic";
+
+export interface AISettings {
+  enabled: boolean;
+  backend: AIBackend;
+  remote_url: string;
+  has_remote_api_key: boolean;
+
+  detection_enabled: boolean;
+  detection_model: string;
+  detection_confidence: number;
+  detection_classes: string[];
+  alert_on_objects_only: boolean;
+
+  search_enabled: boolean;
+  embedding_model: string;
+
+  vlm_enabled: boolean;
+  vlm_provider: VlmProvider;
+  vlm_url: string;
+  vlm_model: string;
+  has_vlm_api_key: boolean;
+  vlm_daily_digest: boolean;
+
+  privacy_ack: boolean;
+  face_enabled: boolean;
+  face_threshold: number;
+  alpr_enabled: boolean;
+
+  detection_retention_days: number;
+}
+
+/** Omitted fields are left unchanged server-side. Secrets additionally treat
+ *  `undefined` as "keep the stored one" and `""` as "clear it". */
+export interface AISettingsUpdate
+  extends Partial<Omit<AISettings, "has_remote_api_key" | "has_vlm_api_key">> {
+  remote_api_key?: string;
+  vlm_api_key?: string;
+}
+
+export interface AITestResult {
+  success: boolean;
+  message: string;
+  backend?: string | null;
+  latency_ms?: number | null;
+}
+
+export interface Detection {
+  id: number;
+  camera_id: number;
+  recording_id: number | null;
+  label: string;
+  confidence: number;
+  bbox_x: number;
+  bbox_y: number;
+  bbox_w: number;
+  bbox_h: number;
+  text: string | null;
+  description: string | null;
+  snapshot_path: string | null;
+  created_at: string;
+}
+
 export type TailscaleState = "stopped" | "starting" | "needs_login" | "connected";
 export type CloudflareState = "stopped" | "starting" | "connected";
 
