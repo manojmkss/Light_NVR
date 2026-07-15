@@ -665,8 +665,12 @@ export function StorageTab() {
         </div>
         {config.primary_type === "local" ? (
           <p style={{ color: "var(--text-dim)", fontSize: 13 }}>
-            Maps to <code>/mnt/primary</code> in the container. Point that at your dedicated drive by editing the
-            volume in docker-compose.yml, then restart - Docker can't attach a new host path without it.
+            Maps to <code>/mnt/primary</code> in the container - which host drive that actually is isn't something
+            this page can set (a container can't browse the host's disks), so it's chosen outside the app instead.
+            On Linux: <code>sudo ./scripts/install-linux.sh --storage-path=/path/to/drive</code>. On Windows:{" "}
+            <code>.\scripts\install-windows.ps1 -StoragePath &lt;path&gt;</code>. Either updates the config and
+            restarts the container for you - no file editing needed. Leave it unset to keep using the default
+            in-repo folder.
           </p>
         ) : (
           <>
@@ -734,7 +738,9 @@ export function StorageTab() {
             </div>
             {config.backup_type === "local" ? (
               <p style={{ color: "var(--text-dim)", fontSize: 13 }}>
-                Maps to <code>/mnt/backup</code> in the container - point that at a drive in docker-compose.yml.
+                Maps to <code>/mnt/backup</code> in the container - like Primary, the host drive is chosen outside
+                the app. Add <code>BACKUP_STORAGE_PATH=/path/to/drive</code> to <code>.env</code>, then{" "}
+                <code>docker compose up -d</code> to apply it.
               </p>
             ) : (
               <>
