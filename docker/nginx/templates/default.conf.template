@@ -48,7 +48,16 @@ server {
         # the resolver in nginx.conf on each cache expiry instead of caching
         # backend's IP forever - see the comment there for why that matters.
         set $backend_upstream backend:8000;
-        proxy_pass http://$backend_upstream/api/;
+        # NOTE: no URI part after the variable, and that is load-bearing.
+        # nginx only substitutes the matched location prefix with a proxy_pass
+        # URI when the target is a literal. With a variable it CANNOT work the
+        # substitution out at config time, so `.../api/` would be sent verbatim
+        # as the upstream path for every request - i.e. /api/health and
+        # /api/auth/login both arrive at the backend as "/api/", which 404s the
+        # entire API while nginx logs look perfectly healthy. Omitting the URI
+        # passes the original request path through unchanged, which is exactly
+        # what we want since the backend already serves everything under /api/.
+        proxy_pass http://$backend_upstream;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -65,7 +74,11 @@ server {
 
     location / {
         set $frontend_upstream frontend:80;
-        proxy_pass http://$frontend_upstream/;
+        # Same trap as the /api/ block above: with a variable, a trailing "/"
+        # here sends "/" upstream for every request, so index.html gets served
+        # in place of every JS/CSS asset (HTTP 200, Content-Type: text/html)
+        # and the SPA fails to boot with a blank page.
+        proxy_pass http://$frontend_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
     }
