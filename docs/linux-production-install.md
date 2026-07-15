@@ -298,7 +298,11 @@ waiting on a dead network mount.
 Consider also enabling the optional **Backup** tier (Settings → Storage) —
 a second location (another local path, or a different NAS share) that only
 receives new recordings when Primary is unreachable, so an extended
-NAS/network outage doesn't mean lost footage during that window.
+NAS/network outage doesn't mean lost footage during that window. For a local
+backup drive, the installer doesn't have a `--backup-storage-path` flag yet
+— set it directly: add `BACKUP_STORAGE_PATH=/mnt/nvr-backup` to `.env`, then
+`docker compose up -d` to apply it. Same mount-point caution as Primary
+applies: confirm `df -h` shows the actual disk before relying on it.
 
 Retention: set a global default under Settings → Storage, override per
 camera under Cameras → Edit if some cameras need to be kept longer/shorter,
