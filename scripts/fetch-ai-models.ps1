@@ -107,13 +107,21 @@ Write-Host "    This can take several minutes. " -ForegroundColor DarkGray
 # Python source, not PowerShell. The closing '@ must be at column 0.
 $runner = @'
 set -e
+echo "Installing build dependencies (a few minutes on first run)..."
 # ultralytics hard-depends on opencv-python (the GUI build), which needs X11
 # libs this slim image lacks - without these the import dies with
 # "libxcb.so.1: cannot open shared object file". Same two packages the backend
 # image installs for exactly this reason.
+#
+# DEBIAN_FRONTEND (set on the container) stops debconf trying to open an
+# interactive dialog it can never have in a non-TTY container and then dumping
+# a wall of "unable to initialize frontend" fallback chatter to stderr. It
+# always recovered on its own, but it reads like a crash.
 apt-get update -qq >/dev/null 2>&1
 apt-get install -y -qq --no-install-recommends libgl1 libglib2.0-0 >/dev/null 2>&1
+echo "Installing ultralytics (this is the slow part)..."
 pip install --no-cache-dir --quiet ultralytics onnx onnxruntime
+echo "Exporting to ONNX..."
 python /work/export.py "$1"
 '@
 
@@ -146,6 +154,7 @@ try {
     docker run --rm `
         -v "${Volume}:/data" `
         -v "${tmp}:/work" `
+        -e DEBIAN_FRONTEND=noninteractive `
         -w /tmp `
         python:3.11-slim bash /work/run.sh $Model
     if ($LASTEXITCODE -ne 0) {
