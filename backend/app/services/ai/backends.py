@@ -137,8 +137,9 @@ class LocalOnnxBackend(InferenceBackend):
     """ONNX Runtime in this process, on the NVR's own CPU.
 
     Only ever called on a motion-triggered frame, never per-frame - that gate
-    is what makes YOLO viable on a mini-PC or Pi at all (see
-    docs/ai-integration.md for measured numbers).
+    is what makes YOLO viable on a mini-PC or Pi at all. Rough per-frame cost
+    for yolov8n at 640x640: ~80-150ms on a 4-core x86 mini-PC, ~0.4-1s on a
+    Pi 4/5. If that's too slow, the remote backend moves the work to a GPU box.
     """
 
     def __init__(self, model: str) -> None:
@@ -214,25 +215,35 @@ class RemoteHttpBackend(InferenceBackend):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self._client: "httpx.AsyncClient | None" = None
+        self._client_lock = asyncio.Lock()
 
     def _headers(self) -> dict[str, str]:
         return {"X-API-Key": self.api_key} if self.api_key else {}
 
-    async def detect(self, jpeg: bytes, min_confidence: float) -> list[DetectedObject]:
+    async def _get_client(self):
+        """One reused client, not one per detection. Motion events arrive in
+        bursts, and a fresh TCP+TLS handshake per frame is pure latency on the
+        path between seeing motion and alerting on it."""
         import httpx
 
-        # Short timeout on purpose: this fires on a motion event, and a slow or
-        # half-dead worker must degrade to "no detections" rather than back up
-        # the motion pipeline behind it.
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{self.base_url}/detect",
-                headers=self._headers(),
-                files={"image": ("frame.jpg", jpeg, "image/jpeg")},
-                data={"min_confidence": str(min_confidence), "model": self.model},
-            )
-            resp.raise_for_status()
-            payload = resp.json()
+        async with self._client_lock:
+            if self._client is None or self._client.is_closed:
+                # Short timeout on purpose: a slow or half-dead worker must
+                # degrade to "no detections" rather than back the motion
+                # pipeline up behind it.
+                self._client = httpx.AsyncClient(timeout=15.0, headers=self._headers())
+            return self._client
+
+    async def detect(self, jpeg: bytes, min_confidence: float) -> list[DetectedObject]:
+        client = await self._get_client()
+        resp = await client.post(
+            f"{self.base_url}/detect",
+            files={"image": ("frame.jpg", jpeg, "image/jpeg")},
+            data={"min_confidence": str(min_confidence), "model": self.model},
+        )
+        resp.raise_for_status()
+        payload = resp.json()
 
         return [
             DetectedObject(
@@ -247,21 +258,24 @@ class RemoteHttpBackend(InferenceBackend):
         ]
 
     async def health(self) -> tuple[bool, str]:
-        import httpx
-
         if not self.base_url:
             return False, "No remote AI worker URL configured"
         try:
             started = time.monotonic()
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(f"{self.base_url}/health", headers=self._headers())
-                resp.raise_for_status()
-                info = resp.json()
+            client = await self._get_client()
+            resp = await client.get(f"{self.base_url}/health")
+            resp.raise_for_status()
+            info = resp.json()
             took = int((time.monotonic() - started) * 1000)
             device = info.get("device", "unknown")
             return True, f"Remote worker reachable in {took}ms (device: {device})"
         except Exception as exc:
             return False, f"Could not reach remote AI worker at {self.base_url}: {exc}"
+
+    async def close(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
 
 def build_backend(settings) -> InferenceBackend:

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_user, require_admin
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.camera import Camera
+from app.models.detection import Detection
 from app.models.discovery_settings import DiscoverySettings
 from app.models.kiosk_view import KioskViewCamera
 from app.models.user import User
@@ -353,5 +354,10 @@ async def delete_camera(camera_id: int, db: AsyncSession = Depends(get_db), _: U
     # explicitly rather than relying on it - otherwise a deleted camera
     # leaves a dangling reference in any kiosk view that included it.
     await db.execute(KioskViewCamera.__table__.delete().where(KioskViewCamera.camera_id == camera_id))
+    # Same story for AI detections. Their snapshot JPEGs are deliberately left
+    # to the retention sweep rather than unlinked here: deleting a camera
+    # should be instant, and one with months of history would otherwise block
+    # the request on thousands of file deletes.
+    await db.execute(Detection.__table__.delete().where(Detection.camera_id == camera_id))
     await db.delete(camera)
     await db.commit()

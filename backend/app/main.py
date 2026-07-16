@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
     await create_default_ai_settings()
 
     from app.services import cloudflare_manager, tailscale_manager
+    from app.services.ai.digest import daily_digest_loop
     from app.services.camera_supervisor import supervisor
     from app.services.config_backup import backup_loop
     from app.services.db_maintenance import db_maintenance_loop
@@ -82,6 +83,8 @@ async def lifespan(app: FastAPI):
     optimize_task = asyncio.create_task(db_maintenance_loop())
     renewal_task = asyncio.create_task(letsencrypt_renewal_loop())
     cert_expiry_task = asyncio.create_task(cert_expiry_check_loop())
+    # Cheap when AI/digest is off: it just re-reads a settings row every 10min.
+    digest_task = asyncio.create_task(daily_digest_loop())
 
     from app.db.session import AsyncSessionLocal
     from app.models.remote_access_settings import RemoteAccessSettings
@@ -95,7 +98,15 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    background_tasks = [retention_task, mover_task, backup_task, optimize_task, renewal_task, cert_expiry_task]
+    background_tasks = [
+        retention_task,
+        mover_task,
+        backup_task,
+        optimize_task,
+        renewal_task,
+        cert_expiry_task,
+        digest_task,
+    ]
     for task in background_tasks:
         task.cancel()
     await asyncio.gather(*background_tasks, return_exceptions=True)

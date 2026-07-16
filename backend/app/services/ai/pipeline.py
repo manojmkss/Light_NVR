@@ -21,6 +21,8 @@ class AnalysisResult:
     # the caller should stay silent instead of alerting.
     suppressed: bool = False
     message: str = ""
+    description: str = ""  # Tier 3 sentence, when a VLM is configured
+    detection_ids: list[int] = field(default_factory=list)
 
 
 def _summarise(objects: list[DetectedObject], camera_name: str) -> str:
@@ -101,38 +103,64 @@ class AIPipeline:
         if wanted:
             objects = [o for o in objects if o.label.lower() in wanted]
 
-        if objects:
-            await self._store(camera_id, objects, jpeg)
-
         if not objects and settings.alert_on_objects_only:
             # The whole point of Tier 1: motion with no object of interest is
             # a tree/shadow/rain/insect, so say nothing.
             return AnalysisResult(objects=[], suppressed=True)
+        if not objects:
+            return AnalysisResult(objects=[], message="")
 
-        return AnalysisResult(objects=objects, message=_summarise(objects, camera_name) if objects else "")
+        # Tier 3: one sentence describing the scene. Only reached for frames
+        # that already passed the object filter, which is what keeps this
+        # affordable - a handful of calls a day instead of one per twitch of a
+        # tree. Never fatal: a description is a nice-to-have on top of a
+        # detection that already stands on its own.
+        description = ""
+        if settings.vlm_enabled:
+            try:
+                from app.services.ai.vlm import describe_frame
 
-    async def _store(self, camera_id: int, objects: list[DetectedObject], jpeg: bytes) -> None:
+                description = await describe_frame(
+                    settings, jpeg, [o.label for o in objects], camera_name
+                )
+            except Exception as exc:
+                logger.warning("AI: VLM description failed for camera %s (%s)", camera_id, exc)
+
+        detection_ids = await self._store(camera_id, objects, jpeg, description)
+
+        message = description or _summarise(objects, camera_name)
+        return AnalysisResult(objects=objects, message=message, description=description, detection_ids=detection_ids)
+
+    async def _store(
+        self, camera_id: int, objects: list[DetectedObject], jpeg: bytes, description: str = ""
+    ) -> list[int]:
         snapshot_path = await asyncio.to_thread(self._write_snapshot, camera_id, jpeg)
         now = datetime.now(timezone.utc)
         try:
             async with AsyncSessionLocal() as db:
-                for obj in objects:
-                    db.add(
-                        Detection(
-                            camera_id=camera_id,
-                            label=obj.label,
-                            confidence=int(round(obj.confidence * 100)),
-                            bbox_x=obj.x,
-                            bbox_y=obj.y,
-                            bbox_w=obj.w,
-                            bbox_h=obj.h,
-                            snapshot_path=snapshot_path,
-                            created_at=now,
-                        )
+                rows = [
+                    Detection(
+                        camera_id=camera_id,
+                        label=obj.label,
+                        confidence=int(round(obj.confidence * 100)),
+                        bbox_x=obj.x,
+                        bbox_y=obj.y,
+                        bbox_w=obj.w,
+                        bbox_h=obj.h,
+                        # The sentence describes the frame, so every object in
+                        # it shares the same one.
+                        description=description or None,
+                        snapshot_path=snapshot_path,
+                        created_at=now,
                     )
+                    for obj in objects
+                ]
+                db.add_all(rows)
                 await db.commit()
+                return [r.id for r in rows]
         except Exception:
             logger.exception("AI: could not store detections for camera %s", camera_id)
+            return []
 
     @staticmethod
     def _write_snapshot(camera_id: int, jpeg: bytes) -> str | None:

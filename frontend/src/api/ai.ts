@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { apiFetch, buildMediaUrl } from "./client";
 import type { AISettings, AISettingsUpdate, AITestResult, Detection } from "./types";
 
 export function getAISettings(): Promise<AISettings> {
@@ -20,6 +20,24 @@ export function testAIBackend(): Promise<AITestResult> {
 
 export function getAIClasses(): Promise<{ all: string[]; suggested: string[] }> {
   return apiFetch<{ all: string[]; suggested: string[] }>("/ai/classes");
+}
+
+/** Round-trips a real image through the configured VLM — proves the model
+ *  exists and accepts images, which merely reaching the host does not. */
+export function testVlm(): Promise<AITestResult> {
+  return apiFetch<AITestResult>("/ai/test-vlm", { method: "POST" });
+}
+
+/** Models actually installed on an Ollama host, so the UI can offer a dropdown
+ *  instead of asking the user to type a name from memory. */
+export function listOllamaModels(url: string): Promise<{ models: string[]; vision_models: string[] }> {
+  return apiFetch<{ models: string[]; vision_models: string[] }>(
+    `/ai/ollama/models?url=${encodeURIComponent(url)}`,
+  );
+}
+
+export function detectionSnapshotUrl(detectionId: number): string {
+  return buildMediaUrl(`/ai/detections/${detectionId}/snapshot.jpg`);
 }
 
 export function listDetections(params: {

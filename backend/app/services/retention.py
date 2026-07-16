@@ -8,8 +8,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
+from app.models.ai_settings import AISettings
 from app.models.alert_settings import AlertSettings
 from app.models.camera import Camera
+from app.models.detection import Detection
 from app.models.event import Event
 from app.models.recording import Recording
 from app.models.storage_config import StorageConfig
@@ -112,7 +114,92 @@ async def enforce_retention() -> None:
         await _enforce_storage_cap(storage_config.max_storage_gb)
 
     await _prune_old_events()
+    await _prune_old_detections()
+    await _sweep_orphaned_detection_snapshots()
     await _check_low_storage()
+
+
+async def _prune_old_detections() -> None:
+    """AI detections are metadata *about* footage and would otherwise outlive
+    the clips they describe, forever, along with a snapshot JPEG each. Age is
+    driven by the user's own detection_retention_days.
+
+    Snapshot files are removed before their rows: if the process dies between
+    the two, the leftover is an orphaned file (harmless, and re-swept on the
+    next pass because the row is still there) rather than an orphaned row
+    pointing at a file that no longer exists (which the UI would render as a
+    broken image forever).
+    """
+    async with AsyncSessionLocal() as db:
+        ai_settings = await db.get(AISettings, 1)
+    if ai_settings is None:
+        return
+
+    # Naive UTC, matching how SQLite actually stores these (same convention as
+    # kiosk.py / the recordings export route). It matters more here than
+    # elsewhere: because the rows are loaded first, SQLAlchemy re-evaluates the
+    # criteria in *Python* to synchronize the session, and an aware cutoff vs a
+    # naive column raises TypeError - which would kill the whole retention loop
+    # every 30 minutes, not just this sweep.
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        days=ai_settings.detection_retention_days
+    )
+    async with AsyncSessionLocal() as db:
+        expired = (
+            (await db.execute(select(Detection).where(Detection.created_at < cutoff))).scalars().all()
+        )
+        if not expired:
+            return
+
+        # Several detections in one frame share one snapshot, so de-duplicate
+        # before unlinking or the 2nd..Nth delete is a guaranteed miss.
+        for path in {d.snapshot_path for d in expired if d.snapshot_path}:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    logger.warning("Retention: could not remove detection snapshot %s", path)
+
+        # synchronize_session=False: the rows are already loaded and about to be
+        # discarded with the session, so there's nothing worth syncing - and it
+        # skips the in-Python re-evaluation of the criteria entirely.
+        await db.execute(
+            delete(Detection).where(Detection.created_at < cutoff).execution_options(synchronize_session=False)
+        )
+        await db.commit()
+        logger.info(
+            "Retention: pruned %d detection(s) older than %d days",
+            len(expired),
+            ai_settings.detection_retention_days,
+        )
+
+
+async def _sweep_orphaned_detection_snapshots() -> None:
+    """Remove snapshot directories belonging to cameras that no longer exist.
+
+    Deleting a camera drops its detection rows immediately (so the request
+    stays fast) but leaves the JPEGs behind; without this they'd sit on the
+    cache disk forever, since the age-based prune above only ever looks at
+    rows that still exist.
+    """
+    root = os.path.join(storage_manager.cache_dir(), "detections")
+    if not os.path.isdir(root):
+        return
+
+    async with AsyncSessionLocal() as db:
+        live = {str(c) for c in (await db.execute(select(Camera.id))).scalars().all()}
+
+    for entry in os.listdir(root):
+        if entry in live:
+            continue
+        path = os.path.join(root, entry)
+        if not os.path.isdir(path):
+            continue
+        try:
+            await asyncio.to_thread(shutil.rmtree, path)
+            logger.info("Retention: removed detection snapshots for deleted camera %s", entry)
+        except OSError:
+            logger.warning("Retention: could not remove orphaned snapshot dir %s", path)
 
 
 async def _prune_old_events() -> None:

@@ -334,7 +334,7 @@ export interface RemoteAccessSettings {
 }
 
 export type AIBackend = "local" | "remote";
-export type VlmProvider = "openai_compatible" | "anthropic";
+export type VlmProvider = "ollama" | "openai_compatible" | "anthropic";
 
 export interface AISettings {
   enabled: boolean;

@@ -51,9 +51,13 @@ class AISettings(Base):
 
     # ── Tier 3: natural-language descriptions (VLM) ─────────────────────────
     vlm_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    # "openai_compatible" covers Ollama / LM Studio / vLLM / OpenAI itself -
-    # one client shape for both a local GPU box and a cloud provider.
-    vlm_provider: Mapped[str] = mapped_column(String(32), default="openai_compatible")
+    # "ollama" is the default and gets first-class treatment (native API, no
+    # key, model auto-discovery): an Ollama box on the same LAN gives you
+    # descriptions with no footage leaving the house and no per-call cost.
+    # "openai_compatible" covers LM Studio / vLLM / OpenAI; "anthropic" covers
+    # Claude directly, for people who want the best descriptions and accept
+    # sending snapshots to a third party.
+    vlm_provider: Mapped[str] = mapped_column(String(32), default="ollama")
     vlm_url: Mapped[str] = mapped_column(String(256), default="")
     vlm_model: Mapped[str] = mapped_column(String(64), default="")
     vlm_api_key: Mapped[str] = mapped_column(String(256), default="")

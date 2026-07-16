@@ -66,7 +66,7 @@ class AISettingsUpdate(BaseModel):
     embedding_model: str | None = None
 
     vlm_enabled: bool | None = None
-    vlm_provider: Literal["openai_compatible", "anthropic"] | None = None
+    vlm_provider: Literal["ollama", "openai_compatible", "anthropic"] | None = None
     vlm_url: OptionalHttpUrl = None
     vlm_model: str | None = None
     vlm_api_key: str | None = None

@@ -1,10 +1,12 @@
+import os
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, require_admin
+from app.core.deps import get_current_user, get_current_user_flexible, require_admin
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.ai_settings import AISettings
 from app.models.detection import Detection
@@ -126,6 +128,83 @@ async def test_ai_backend(_: User = Depends(require_admin)):
         backend=backend,
         latency_ms=int((time.monotonic() - started) * 1000),
     )
+
+
+@router.get("/ollama/models")
+async def list_ollama_models_route(
+    url: str = Query(..., description="Base URL of the Ollama host, e.g. http://192.168.1.20:11434"),
+    _: User = Depends(require_admin),
+):
+    """Lets the Settings UI show a dropdown of models actually installed on the
+    user's Ollama box, instead of making them type a name from memory and
+    discover the typo only when a description silently never arrives."""
+    from app.services.ai.vlm import list_ollama_models
+
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="URL must start with http:// or https://")
+    try:
+        models = await list_ollama_models(url)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not reach Ollama at {url}: {exc}"
+        ) from exc
+
+    # Vision-capable names, surfaced first. Ollama's /api/tags doesn't say
+    # which models take images, and picking a text-only model is the most
+    # likely way to misconfigure this - so hint rather than let it fail later.
+    vision_hint = ("vision", "llava", "minicpm-v", "moondream", "qwen2-vl", "qwen2.5vl", "gemma3", "llama3.2-vision")
+    vision = [m for m in models if any(h in m.lower() for h in vision_hint)]
+    return {"models": models, "vision_models": vision}
+
+
+@router.post("/test-vlm", response_model=AITestResult)
+async def test_vlm(_: User = Depends(require_admin)):
+    """Round-trips a real image through the configured VLM. A reachable host
+    isn't proof the model exists or accepts images, so this sends a genuine
+    (tiny) JPEG rather than just pinging."""
+    import cv2
+    import numpy as np
+
+    async with AsyncSessionLocal() as db:
+        settings = await db.get(AISettings, 1)
+        if settings is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI settings not initialised")
+        db.expunge(settings)
+
+    if not settings.vlm_enabled:
+        return AITestResult(success=False, message="Descriptions are turned off")
+
+    ok, jpeg = cv2.imencode(".jpg", np.full((64, 64, 3), 128, dtype=np.uint8))
+    started = time.monotonic()
+    try:
+        from app.services.ai.vlm import describe_frame
+
+        text = await describe_frame(settings, jpeg.tobytes(), ["person"], "Test Camera")
+    except Exception as exc:
+        return AITestResult(success=False, message=str(exc), backend=settings.vlm_provider)
+    return AITestResult(
+        success=True,
+        message=f'Model replied: "{text[:120]}"' if text else "Model replied, but with empty text",
+        backend=settings.vlm_provider,
+        latency_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+@router.get("/detections/{detection_id}/snapshot.jpg")
+async def get_detection_snapshot(
+    detection_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user_flexible),
+):
+    """The frame a detection was found in. Uses the flexible auth dependency so
+    an <img> tag can load it (image tags can't send an Authorization header)."""
+    detection = await db.get(Detection, detection_id)
+    if detection is None or not detection.snapshot_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found")
+    if not os.path.exists(detection.snapshot_path):
+        # Expected: retention removes the JPEG while the row may briefly remain.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot file no longer on disk")
+    return FileResponse(detection.snapshot_path, media_type="image/jpeg")
 
 
 @router.get("/detections", response_model=list[DetectionOut])
