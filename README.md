@@ -87,6 +87,7 @@ and why you'd want it. For a permanent home-server install, see
 | backend  | FastAPI app: auth, camera management, recording engine, motion detection, storage management, alerts |
 | frontend | React SPA, built and served as static files via nginx              |
 | nginx    | Reverse proxy: routes `/api` to backend, everything else to frontend |
+| ai-worker | *Optional, and runs on a different machine* — offloads object detection to a GPU box. See [ai-worker/](ai-worker/) |
 
 Data persists across restarts:
 - The SQLite database (accounts, cameras, settings, Tailscale state) lives in a named Docker volume (`lightnvr-data`), not a plain host folder — SQLite's WAL mode needs real POSIX locking, which is unreliable across Docker Desktop's Windows/Mac file-sharing layer on a bind mount. Back it up from **Settings → Backup** in the app, not by copying a file directly.
@@ -111,6 +112,42 @@ The "Scan network" button uses WS-Discovery, which relies on UDP multicast. Mult
 This doesn't block setup: the **"connect directly by IP"** field next to the scan button does a direct (unicast) ONVIF connection, which works fine over the default bridge network and still gives you automatic RTSP/profile configuration. Manual RTSP entry works unconditionally too.
 
 If you want the broadcast scan itself to work on Linux, use the optional `docker-compose.macvlan.yml` override instead of `network_mode: host` — host networking would sever nginx's connection to the backend (they talk to each other by Docker DNS name on the shared network, which host mode drops out of), taking down the whole app rather than just fixing discovery. The macvlan override gives the backend container a second, LAN-facing network interface without touching how nginx reaches it. See [docs/linux-production-install.md](docs/linux-production-install.md) for the full walkthrough (it needs a few values specific to your machine - network interface name, subnet, a free IP - so there's no one-line snippet that works for everyone).
+
+## AI (optional)
+
+Off by default. Motion detection alone can't tell a person from a swaying tree,
+a shadow, or rain — which is why motion-only alerts end up ignored. With AI on,
+each motion event is checked for real objects, so an alert means *something was
+actually there*. Configure it all under **Settings → AI**.
+
+Two independent pieces, doing different jobs:
+
+**Objects — "is there a person?"** Runs YOLO on every motion event (never on
+every frame, which is what keeps it cheap). Turn on *"Only alert me when one of
+these is seen"* and tree/shadow/rain alerts stop. Recording is never affected —
+it starts the instant motion is seen, so you never lose footage, and any AI
+failure falls back to plain motion behaviour.
+
+- **This machine (CPU)** — the default. One-time model download:
+  `./scripts/fetch-ai-models.sh yolov8n`
+- **Another PC with a GPU** — run [ai-worker/](ai-worker/) there and point the
+  NVR at it. Worth it for a Pi, many cameras, or a bigger model.
+
+**Descriptions — "what happened?"** Turns *"Motion on Front Door"* into *"A
+delivery person left a package at the front door"*, plus an optional daily
+summary. Uses a vision-language model, which can be:
+
+- **Ollama** on your own PC — free, no key, nothing leaves your network. The
+  GUI lists the models installed on it (`ollama pull llama3.2-vision`; start
+  Ollama with `OLLAMA_HOST=0.0.0.0` so the NVR can reach it).
+- **LM Studio / vLLM / OpenAI**, or **Claude** — cloud options send snapshots
+  to a third party. Only frames that already contain a detected object are ever
+  sent, never recordings — but if that's not acceptable, use Ollama.
+
+These aren't interchangeable: a vision-language model is far too slow and
+costly to ask about every motion event and won't give reliable boxes, while
+YOLO can't tell you *what happened*. Used together, detection filters the noise
+and descriptions explain the few events that survive.
 
 ## Recording modes
 

@@ -1,0 +1,8 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.12
+pillow==10.4.0
+# Pulls torch + torchvision. Large (~2GB with CUDA) - which is exactly why this
+# lives in its own service instead of the NVR image: a stock LightNVR install
+# should never carry a GPU stack it won't use.
+ultralytics==8.3.0

@@ -1,0 +1,46 @@
+# Runs on the GPU machine, NOT on the NVR box.
+#
+#   cd ai-worker
+#   cp .env.example .env      # set AI_WORKER_API_KEY
+#   docker compose up -d --build
+#
+# Then in LightNVR: Settings -> AI -> "Another PC with a GPU",
+# address http://<this-machine-ip>:8811, paste the same key, "Check it works".
+
+services:
+  ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # For NVIDIA, swap to a CUDA base and uncomment the GPU block below:
+        #   BASE_IMAGE: pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim}
+    container_name: lightnvr-ai-worker
+    restart: unless-stopped
+    environment:
+      # Blank = no auth. Fine on a trusted LAN; set it otherwise, since this
+      # endpoint decodes any image posted to it.
+      AI_WORKER_API_KEY: ${AI_WORKER_API_KEY:-}
+      AI_WORKER_MODEL: ${AI_WORKER_MODEL:-yolov8n}
+    ports:
+      # Bound to all interfaces on purpose - the whole point is that the NVR on
+      # another host can reach it. Keep it on a trusted network, or set a key.
+      - "${AI_WORKER_PORT:-8811}:8811"
+    volumes:
+      # Model weights cache. Without this, every restart re-downloads them.
+      - ai-worker-models:/models
+
+    # ── NVIDIA GPU: uncomment, and build with the CUDA BASE_IMAGE above ──
+    # Requires the NVIDIA Container Toolkit on the host.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  ai-worker-models:
+    name: lightnvr-ai-worker-models
