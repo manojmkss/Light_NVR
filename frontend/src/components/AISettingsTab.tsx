@@ -11,6 +11,22 @@ import type { AISettings, AITestResult } from "../api/types";
 
 const MODELS = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m"];
 
+/** The one-time model download command, for the OS the user is most likely on.
+ *
+ *  This is a guess from the *browser's* platform, not the server's - the NVR
+ *  itself always runs in a Linux container, so it can't tell us what the host
+ *  is. Someone administering a Linux NVR from a Windows laptop gets the wrong
+ *  one, which is why both are always shown rather than only the guess. */
+function modelCommand(model: string): { primary: string; other: string; otherLabel: string } {
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  const isWindows = /Windows/i.test(ua);
+  const ps = `.\\scripts\\fetch-ai-models.ps1 -Model ${model}`;
+  const sh = `./scripts/fetch-ai-models.sh ${model}`;
+  return isWindows
+    ? { primary: ps, other: sh, otherLabel: "On Linux / macOS instead" }
+    : { primary: sh, other: ps, otherLabel: "On Windows (PowerShell) instead" };
+}
+
 /** Small inline result line for the various Test buttons. */
 function TestLine({ result }: { result: AITestResult | null }) {
   if (!result) return null;
@@ -211,11 +227,22 @@ export function AISettingsTab() {
             </div>
 
             {s.backend === "local" ? (
-              <p style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 0 }}>
-                Runs here on the CPU, only when motion happens (never on every frame) — that's what keeps
-                it light. One-time setup: run <code>./scripts/fetch-ai-models.sh {s.detection_model}</code>{" "}
-                to download the model.
-              </p>
+              <div style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 0 }}>
+                <p style={{ marginTop: 0 }}>
+                  Runs here on the CPU, only when motion happens (never on every frame) — that's what
+                  keeps it light. One-time setup: run this <strong>on the machine hosting LightNVR</strong>{" "}
+                  to download the model, then press “Check it works”.
+                </p>
+                <code style={{ display: "block", padding: "6px 8px", background: "var(--bg-alt, #0d1117)", borderRadius: 4 }}>
+                  {modelCommand(s.detection_model).primary}
+                </code>
+                <details style={{ marginTop: 6 }}>
+                  <summary style={{ cursor: "pointer" }}>{modelCommand(s.detection_model).otherLabel}</summary>
+                  <code style={{ display: "block", padding: "6px 8px", marginTop: 4, background: "var(--bg-alt, #0d1117)", borderRadius: 4 }}>
+                    {modelCommand(s.detection_model).other}
+                  </code>
+                </details>
+              </div>
             ) : (
               <>
                 <div className="field">

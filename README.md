@@ -128,8 +128,16 @@ these is seen"* and tree/shadow/rain alerts stop. Recording is never affected �
 it starts the instant motion is seen, so you never lose footage, and any AI
 failure falls back to plain motion behaviour.
 
-- **This machine (CPU)** — the default. One-time model download:
-  `./scripts/fetch-ai-models.sh yolov8n`
+- **This machine (CPU)** — the default. One-time model download, run on the
+  machine hosting LightNVR:
+  ```bash
+  # Linux / macOS
+  ./scripts/fetch-ai-models.sh yolov8n
+  ```
+  ```powershell
+  # Windows
+  .\scripts\fetch-ai-models.ps1 -Model yolov8n
+  ```
 - **Another PC with a GPU** — run [ai-worker/](ai-worker/) there and point the
   NVR at it. Worth it for a Pi, many cameras, or a bigger model.
 
