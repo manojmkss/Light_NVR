@@ -60,11 +60,16 @@ blind — if Docker isn't already installed, the script starts the winget
 install and tells you to finish that setup once, then re-run it.
 
 **Manual** — works the same whether you used git or the ZIP; just needs
-Docker already installed and running:
+Docker already installed and running. Pull the prebuilt images (fast, no
+build):
 
 ```bash
-docker compose up -d --build
+docker compose pull && docker compose up -d
 ```
+
+Prefer to build from source instead (or no release published yet)? Use
+`docker compose up -d --build`. Pin a specific release rather than `:latest`
+by setting `LIGHTNVR_VERSION=v0.1.0` in `.env`.
 
 No `.env` file needed either way. Open `https://<host>:8443` (your browser will warn
 about the self-signed certificate on first visit — that's expected; accept

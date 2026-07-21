@@ -126,8 +126,18 @@ fi
 # 4. Rebuild + restart  (.env's COMPOSE_FILE, if set, layers in overrides)
 # ---------------------------------------------------------------------------
 
-log "Rebuilding and restarting..."
-run docker compose up -d --build
+# Pull the updated prebuilt images (matching the code just pulled); fall back
+# to building from source if they aren't available.
+log "Fetching updated images and restarting..."
+if $DRY_RUN; then
+  run docker compose pull
+  run docker compose up -d
+elif docker compose pull; then
+  docker compose up -d
+else
+  warn "Prebuilt images not available - building from source instead (slower)."
+  docker compose up -d --build
+fi
 
 if ! $DRY_RUN; then
   log "Waiting for the backend to become healthy..."

@@ -242,9 +242,19 @@ if ($SkipFirewall) {
 # 5. Bring the stack up
 # ---------------------------------------------------------------------------
 
-Write-Step "Building and starting LightNVR (this can take a few minutes on first run)."
-Invoke-MaybeDry "docker compose up -d --build" {
-    docker compose up -d --build
+# Prefer prebuilt images from GHCR (a ~1-minute pull, no build); fall back to
+# building from source if they can't be fetched.
+Write-Step "Fetching prebuilt images and starting LightNVR (first run can take a few minutes)."
+if ($DryRun) {
+    Write-Host "[DRY RUN] docker compose pull; docker compose up -d" -ForegroundColor DarkGray
+} else {
+    docker compose pull
+    if ($LASTEXITCODE -eq 0) {
+        docker compose up -d
+    } else {
+        Write-Warn2 "Prebuilt images not available - building from source instead (slower)."
+        docker compose up -d --build
+    }
     if ($LASTEXITCODE -ne 0) { Write-Die "docker compose up failed - see the output above." }
 }
 

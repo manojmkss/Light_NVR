@@ -261,8 +261,19 @@ fi
 #    pulls in the macvlan override automatically, so no -f juggling here)
 # ---------------------------------------------------------------------------
 
-log "Building and starting LightNVR (first run can take a few minutes)."
-run docker compose up -d --build
+# Prefer the prebuilt multi-arch images from GHCR (a ~1-minute pull, no build).
+# Fall back to building from source if they can't be fetched - e.g. no release
+# has been published yet, the packages are private, or the host is air-gapped.
+log "Fetching prebuilt images and starting LightNVR (first run can take a few minutes)."
+if $DRY_RUN; then
+  run docker compose pull
+  run docker compose up -d
+elif docker compose pull; then
+  docker compose up -d
+else
+  warn "Prebuilt images not available - building from source instead (slower)."
+  docker compose up -d --build
+fi
 
 # ---------------------------------------------------------------------------
 # 8. Wait for health

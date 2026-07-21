@@ -1,5 +1,12 @@
 services:
   backend:
+    # Prebuilt multi-arch image from GHCR (published by the release workflow).
+    # `docker compose pull` fetches it - a ~1-minute install with no build.
+    # `build:` is kept so `docker compose up -d --build` still builds from
+    # source (for development, or if a release hasn't been published yet).
+    # Pin a specific release with LIGHTNVR_VERSION=v0.1.0 in .env if you'd
+    # rather not track :latest.
+    image: ghcr.io/manojmkss/light_nvr-backend:${LIGHTNVR_VERSION:-latest}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -68,6 +75,7 @@ services:
       - lightnvr
 
   frontend:
+    image: ghcr.io/manojmkss/light_nvr-frontend:${LIGHTNVR_VERSION:-latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile

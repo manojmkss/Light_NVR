@@ -82,9 +82,15 @@ if ($behind -eq "0" -and -not $DryRun) {
 # 3. Rebuild + restart
 # ---------------------------------------------------------------------------
 
-Write-Step "Rebuilding and restarting..."
+Write-Step "Fetching updated images and restarting..."
 if (-not $DryRun) {
-    docker compose up -d --build
+    docker compose pull
+    if ($LASTEXITCODE -eq 0) {
+        docker compose up -d
+    } else {
+        Write-Warn2 "Prebuilt images not available - building from source instead (slower)."
+        docker compose up -d --build
+    }
     if ($LASTEXITCODE -ne 0) { Write-Die "docker compose up failed - see the output above." }
 
     Write-Step "Waiting for the backend to become healthy..."
