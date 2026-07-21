@@ -28,6 +28,7 @@ export interface Camera {
   enabled: boolean;
   status: CameraStatus;
   last_seen_at: string | null;
+  last_error: string | null; // why it's offline (credential-scrubbed server-side)
   created_at: string;
 }
 
@@ -67,6 +68,15 @@ export interface ProbeProfile {
   height: number | null;
 }
 
+export interface ProbeChannel {
+  source_token: string;
+  label: string;
+  main_url: string;
+  sub_url: string | null;
+  width: number | null;
+  height: number | null;
+}
+
 export interface ProbeResponse {
   manufacturer: string;
   model: string;
@@ -81,6 +91,8 @@ export interface ProbeResponse {
   resolved_username?: string | null;  // set when admin/root fallback was used
   codec?: string | null;
   has_audio?: boolean | null;
+  // Non-empty only for multi-channel devices (NVRs): one entry per channel
+  channels?: ProbeChannel[];
 }
 
 export interface TestConnectionResult {

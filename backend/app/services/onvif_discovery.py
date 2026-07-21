@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urlparse
 
@@ -43,6 +44,22 @@ class MediaProfile:
     stream_uri: str
     width: int | None = None
     height: int | None = None
+    # ONVIF VideoSource token: profiles sharing one belong to the same physical
+    # camera input. On a standalone camera every profile has the same token; an
+    # NVR exposes one per channel - this is what channel grouping keys on.
+    source_token: str | None = None
+
+
+@dataclass
+class ChannelInfo:
+    """One physical camera input on a multi-channel device (an NVR), with its
+    best main/sub stream picked the same way single cameras pick theirs."""
+    source_token: str
+    label: str
+    main_url: str
+    sub_url: str | None
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass
@@ -59,6 +76,9 @@ class CameraProfileInfo:
     resolved_username: str | None = None    # username that worked (None = same as input)
     codec: str | None = None               # h264 | h265 | unknown
     has_audio: bool = False
+    # Non-empty only when the device exposes 2+ video sources (it's an NVR):
+    # one entry per channel so the frontend can offer "import all channels".
+    channels: list[ChannelInfo] = field(default_factory=list)
 
 
 def _parse_scope_hint(scopes: list[str], category: str) -> str | None:
@@ -337,6 +357,61 @@ def _pick_main_and_sub(profiles: list[MediaProfile]) -> tuple[str | None, str | 
     return by_area[-1].token, by_area[0].token
 
 
+def _channel_number_from_uri(uri: str) -> int | None:
+    """Best-effort channel number from the vendor URL shapes seen in the wild:
+    Dahua/CP-Plus style `?channel=N`, Hikvision style `/Streaming/Channels/N01`.
+    Returns None when the URL doesn't say - the caller falls back to ordinals.
+    """
+    m = re.search(r"[?&]channel=(\d+)", uri)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"/Streaming/Channels/(\d+)\d{2}(?:\D|$)", uri)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _group_channels(profiles: list[MediaProfile]) -> list[ChannelInfo]:
+    """Group profiles by ONVIF video source. Two or more sources means the
+    device is an NVR/multi-channel unit; each group gets the same
+    highest-res-main / lowest-res-sub treatment a standalone camera gets.
+    Returns [] for single-source devices so the ordinary flow is untouched.
+    """
+    groups: dict[str, list[MediaProfile]] = {}
+    for p in profiles:
+        if p.source_token:
+            groups.setdefault(p.source_token, []).append(p)
+    if len(groups) < 2:
+        return []
+
+    entries = []
+    for token, members in groups.items():
+        main_token, sub_token = _pick_main_and_sub(members)
+        main_p = next((m for m in members if m.token == main_token), members[0])
+        sub_p = None
+        if sub_token and sub_token != main_p.token:
+            sub_p = next((m for m in members if m.token == sub_token), None)
+        entries.append((_channel_number_from_uri(main_p.stream_uri), token, main_p, sub_p))
+
+    # Order by the channel number the URL claims when present, else keep the
+    # device's own ordering; label with the same number so what the user sees
+    # matches the NVR's own UI.
+    entries.sort(key=lambda e: (e[0] is None, e[0] or 0))
+    channels: list[ChannelInfo] = []
+    for i, (num, token, main_p, sub_p) in enumerate(entries, start=1):
+        channels.append(
+            ChannelInfo(
+                source_token=token,
+                label=f"Channel {num if num is not None else i}",
+                main_url=main_p.stream_uri,
+                sub_url=sub_p.stream_uri if sub_p else None,
+                width=main_p.width,
+                height=main_p.height,
+            )
+        )
+    return channels
+
+
 # Outer budget for the whole probe: ONVIF handshake (~10s) + RTSP validation
 # (2 schemes x 2 usernames x ~10s worst case = 40s) + sub-stream detection
 # (max ~16s). Keep this above the sum of the per-attempt timeouts below or
@@ -391,10 +466,22 @@ async def _fetch_camera_profiles(host: str, port: int, username: str, password: 
                 stream_uri=strip_onvif_params(uri_response.Uri),
                 width=width,
                 height=height,
+                source_token=getattr(
+                    getattr(profile, "VideoSourceConfiguration", None), "SourceToken", None
+                ),
             )
         )
 
-    main_token, sub_token = _pick_main_and_sub(profiles)
+    # Multi-channel detection: 2+ distinct video sources = an NVR. Picking
+    # main/sub across ALL profiles would pair one channel's main stream with a
+    # DIFFERENT channel's sub stream, so recommend within the first source only.
+    source_tokens = [p.source_token for p in profiles if p.source_token]
+    is_multichannel = len(set(source_tokens)) >= 2
+    if is_multichannel:
+        first_source = source_tokens[0]
+        main_token, sub_token = _pick_main_and_sub([p for p in profiles if p.source_token == first_source])
+    else:
+        main_token, sub_token = _pick_main_and_sub(profiles)
 
     # ── RTSP validation: find scheme (rtsp/rtsps), working credentials, codec ──
     validated_main_url: str | None = None
@@ -453,6 +540,12 @@ async def _fetch_camera_profiles(host: str, port: int, username: str, password: 
         except ConnectionError as exc:
             logger.warning("RTSP validation failed for %s: %s", host, exc)
 
+    # Built AFTER validation on purpose: the fixup loop above rewrote every
+    # profile's stream_uri with the working scheme + credentials, so channel
+    # URLs inherit them. (When validation failed entirely, the probe route
+    # injects the caller's credentials as a fallback, same as for profiles.)
+    channels = _group_channels(profiles) if is_multichannel else []
+
     return CameraProfileInfo(
         manufacturer=getattr(info, "Manufacturer", "unknown"),
         model=getattr(info, "Model", "unknown"),
@@ -465,4 +558,5 @@ async def _fetch_camera_profiles(host: str, port: int, username: str, password: 
         resolved_username=resolved_username,
         codec=codec,
         has_audio=has_audio,
+        channels=channels,
     )

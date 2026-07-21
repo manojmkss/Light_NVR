@@ -74,3 +74,27 @@ export function updateSystemSettings(payload: {
     body: JSON.stringify(payload),
   });
 }
+
+export interface NtpPushResult {
+  camera_id: number;
+  name: string;
+  success: boolean;
+  detail: string;
+}
+
+/** Push the saved NTP server to every enabled ONVIF camera. Slow-ish: talks
+ *  to each camera in turn (up to ~15s per unreachable one). */
+export function pushNtpToCameras(): Promise<NtpPushResult[]> {
+  return apiFetch<NtpPushResult[]>("/system/push-ntp", { method: "POST" });
+}
+
+/** Recent backend log lines (credential-scrubbed) - the GUI's `docker logs`. */
+export function getSystemLogs(limit = 200): Promise<{ lines: string[] }> {
+  return apiFetch<{ lines: string[] }>(`/system/logs?limit=${limit}`);
+}
+
+/** Diagnostics bundle (versions, health, camera states, events, logs - no
+ *  secrets), for attaching to a bug report. */
+export function getDiagnostics(): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>("/system/diagnostics");
+}

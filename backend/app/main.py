@@ -12,6 +12,13 @@ from fastapi.middleware.cors import CORSMiddleware
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+# Keep the last ~500 log lines in memory for the Settings -> System log viewer
+# (GET /api/system/logs). This import-time call runs after uvicorn's own
+# logging config, so the handler isn't wiped by it.
+from app.core.log_buffer import install_log_buffer  # noqa: E402
+
+install_log_buffer()
+
 from app.api.routes import ai, auth, backup, cameras, kiosk, live, push, recordings, remote_access, storage, system, tls
 from app.core.bootstrap import (
     create_default_admin,

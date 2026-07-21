@@ -1,4 +1,5 @@
 import asyncio
+import platform
 import shutil
 import time
 from datetime import datetime as dt
@@ -7,11 +8,13 @@ from datetime import timezone as tz
 from zoneinfo import ZoneInfo
 
 import psutil
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, require_admin
+from app.core.log_buffer import get_recent_logs
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.alert_settings import AlertSettings
 from app.models.camera import Camera
@@ -24,6 +27,8 @@ from app.schemas.system import (
     AlertSettingsUpdate,
     DashboardOut,
     EventOut,
+    LogLinesOut,
+    NtpPushResultOut,
     SystemSettingsOut,
     SystemSettingsUpdate,
     SystemStatusOut,
@@ -231,3 +236,87 @@ async def update_system_settings(payload: SystemSettingsUpdate, _: User = Depend
         await db.commit()
         await db.refresh(record)
         return SystemSettingsOut.model_validate(record)
+
+
+@router.post("/push-ntp", response_model=list[NtpPushResultOut])
+async def push_ntp(_: User = Depends(require_admin)):
+    """Push the configured NTP server to every enabled ONVIF camera and switch
+    their clock source to NTP - keeps camera timestamps (and therefore the
+    playback timeline) aligned without touching each camera's own web UI.
+    """
+    from app.services.onvif_time import push_ntp_to_cameras
+
+    async with AsyncSessionLocal() as db:
+        record = await db.get(SystemSettings, 1)
+        ntp_server = (record.ntp_server or "").strip() if record else ""
+
+    if not ntp_server:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Set an NTP server above and save first")
+
+    results = await push_ntp_to_cameras(ntp_server)
+    return [NtpPushResultOut(camera_id=r.camera_id, name=r.name, success=r.success, detail=r.detail) for r in results]
+
+
+@router.get("/logs", response_model=LogLinesOut)
+async def get_logs(limit: int = Query(default=200, le=500), _: User = Depends(require_admin)):
+    """Recent backend log lines (credential-scrubbed, in-memory ring buffer) -
+    the GUI answer to `docker compose logs backend`.
+    """
+    return LogLinesOut(lines=get_recent_logs(limit))
+
+
+@router.get("/diagnostics")
+async def download_diagnostics(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """A single JSON support bundle: versions, health numbers, camera states
+    (no URLs or credentials), recent events, and recent logs. Meant to be
+    attached to a bug report without leaking anything sensitive.
+    """
+    memory = psutil.virtual_memory()
+    disk_path = storage_manager.primary_dir() if storage_manager.is_primary_available() else storage_manager.cache_dir()
+    disk = await asyncio.to_thread(shutil.disk_usage, disk_path)
+
+    cam_result = await db.execute(select(Camera))
+    cameras = [
+        {
+            "id": c.id,
+            "name": c.name,
+            "status": c.status,
+            "enabled": c.enabled,
+            "codec": c.codec,
+            "recording_mode": c.recording_mode,
+            "motion_enabled": c.motion_enabled,
+            "has_onvif": bool(c.onvif_address),
+            "last_error": c.last_error,
+            "last_seen_at": c.last_seen_at.isoformat() + "Z" if c.last_seen_at else None,
+        }
+        for c in cam_result.scalars().all()
+    ]
+
+    ev_result = await db.execute(select(Event).order_by(Event.created_at.desc()).limit(50))
+    events = [
+        {"type": e.type, "camera_id": e.camera_id, "message": e.message, "created_at": e.created_at.isoformat() + "Z"}
+        for e in ev_result.scalars().all()
+    ]
+
+    settings_row = await db.get(SystemSettings, 1)
+
+    bundle = {
+        "generated_at": dt.now(tz.utc).isoformat(),
+        "app_version": "0.1.0",
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "uptime_seconds": round(time.monotonic() - _start_time),
+        "memory_percent": memory.percent,
+        "disk": {"total": disk.total, "free": disk.free},
+        "settings": {
+            "timezone": settings_row.timezone if settings_row else "",
+            "ntp_server": settings_row.ntp_server if settings_row else "",
+        },
+        "active_workers": len(supervisor.get_active_camera_ids()),
+        "cameras": cameras,
+        "recent_events": events,
+        "recent_logs": get_recent_logs(300),
+    }
+
+    filename = f"lightnvr-diagnostics-{dt.now(tz.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    return JSONResponse(bundle, headers={"Content-Disposition": f'attachment; filename="{filename}"'})

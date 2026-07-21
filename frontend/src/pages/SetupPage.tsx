@@ -196,6 +196,20 @@ function DiscoveryStep() {
     }
   };
 
+  const handleCreateMany = async (payloads: CameraCreatePayload[]) => {
+    setSubmitting(true);
+    setServerError(null);
+    try {
+      for (const p of payloads) await createCamera(p);
+      setShowSetup(false);
+      refresh();
+    } catch (err) {
+      setServerError((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div>
       <p style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 0 }}>
@@ -211,7 +225,7 @@ function DiscoveryStep() {
         Discover cameras
       </button>
       {showSetup && (
-        <CameraSetupModal onCreate={handleCreate} onClose={() => setShowSetup(false)} submitting={submitting} serverError={serverError} />
+        <CameraSetupModal onCreate={handleCreate} onCreateMany={handleCreateMany} onClose={() => setShowSetup(false)} submitting={submitting} serverError={serverError} />
       )}
     </div>
   );

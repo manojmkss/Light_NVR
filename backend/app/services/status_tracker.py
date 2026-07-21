@@ -15,6 +15,7 @@ async def mark_online(camera_id: int) -> None:
         was_offline = camera.status != "online"
         camera.status = "online"
         camera.last_seen_at = datetime.now(timezone.utc)
+        camera.last_error = None  # stale failure reasons must not outlive the recovery
         name = camera.name
         await db.commit()
 
@@ -22,7 +23,14 @@ async def mark_online(camera_id: int) -> None:
         await emit_event(camera_id, "camera_online", f"Camera '{name}' is back online")
 
 
-async def mark_offline(camera_id: int) -> None:
+async def mark_offline(camera_id: int, error: str | None = None) -> None:
+    """Mark a camera offline, optionally recording *why* (shown on the Cameras
+    page). When `error` is None the existing last_error is left alone, so a
+    detailed reason from the recorder isn't overwritten by a later generic
+    failure from another component.
+    """
+    from app.core.log_buffer import scrub_credentials
+
     name = None
     was_online = False
     async with AsyncSessionLocal() as db:
@@ -31,6 +39,8 @@ async def mark_offline(camera_id: int) -> None:
             return
         was_online = camera.status != "offline"
         camera.status = "offline"
+        if error:
+            camera.last_error = scrub_credentials(error)[:500]
         name = camera.name
         await db.commit()
 

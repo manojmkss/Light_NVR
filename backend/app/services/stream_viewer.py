@@ -93,7 +93,13 @@ class StreamViewer:
                 if not cap.isOpened():
                     logger.warning("Could not open stream for camera %s", self.camera_id)
                     cap.release()
-                    self._schedule(mark_offline(self.camera_id))
+                    # OpenCV gives no reason for the failure; name the likely
+                    # causes so the Cameras page shows something actionable.
+                    self._schedule(mark_offline(
+                        self.camera_id,
+                        "Could not connect to the live stream - camera unreachable, or the "
+                        "stream URL/credentials are wrong (try Re-detect)",
+                    ))
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 60)
                     continue
@@ -109,7 +115,7 @@ class StreamViewer:
                 if motion_was_active and self.on_motion_stop:
                     self._schedule(self.on_motion_stop())
                 if not self._stop_event.is_set():
-                    self._schedule(mark_offline(self.camera_id))
+                    self._schedule(mark_offline(self.camera_id, "Live stream dropped - reconnecting"))
                     time.sleep(backoff)
             except Exception:
                 logger.exception("Unexpected error in stream viewer for camera %s", self.camera_id)

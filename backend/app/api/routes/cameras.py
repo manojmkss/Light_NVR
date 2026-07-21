@@ -170,6 +170,25 @@ async def probe_camera(payload: ProbeRequest, _: User = Depends(require_admin)):
             "height": p.height,
         })
 
+    # Channel URLs (multi-channel NVRs) follow the same credential rule as
+    # profiles above.
+    channels_out = []
+    for ch in info.channels:
+        main_url = ch.main_url if info.validated_main_url else inject_rtsp_credentials(
+            ch.main_url, effective_user, payload.password
+        )
+        sub_url = ch.sub_url
+        if sub_url and not info.validated_main_url:
+            sub_url = inject_rtsp_credentials(sub_url, effective_user, payload.password)
+        channels_out.append({
+            "source_token": ch.source_token,
+            "label": ch.label,
+            "main_url": main_url,
+            "sub_url": sub_url,
+            "width": ch.width,
+            "height": ch.height,
+        })
+
     return ProbeResponseOut(
         manufacturer=info.manufacturer,
         model=info.model,
@@ -183,6 +202,7 @@ async def probe_camera(payload: ProbeRequest, _: User = Depends(require_admin)):
         resolved_username=info.resolved_username,
         codec=info.codec,
         has_audio=info.has_audio,
+        channels=channels_out,
     )
 
 

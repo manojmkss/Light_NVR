@@ -125,6 +125,17 @@ class SystemSettingsUpdate(BaseModel):
     ntp_server: str | None = None
 
 
+class NtpPushResultOut(BaseModel):
+    camera_id: int
+    name: str
+    success: bool
+    detail: str
+
+
+class LogLinesOut(BaseModel):
+    lines: list[str]
+
+
 class DashboardOut(BaseModel):
     # Today's activity counts (bucketed in the configured display timezone)
     motion_events_today: int

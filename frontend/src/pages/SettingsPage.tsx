@@ -31,7 +31,7 @@ import {
 import { getCurrentSubscription, isPushSupported, isRunningAsInstalledApp, subscribeToPush, testPush, unsubscribeFromPush } from "../api/push";
 import { getRemoteAccessSettings, getRemoteAccessStatus, updateCloudflare, updateTailscale } from "../api/remoteAccess";
 import { getStorageConfig, getStorageHealth, testStorage, updateStorageConfig } from "../api/storage";
-import { getAlertSettings, getSystemSettings, getSystemTime, testEmail, testTelegram, testWhatsApp, updateAlertSettings, updateSystemSettings } from "../api/system";
+import { getAlertSettings, getDiagnostics, getSystemLogs, getSystemSettings, getSystemTime, pushNtpToCameras, testEmail, testTelegram, testWhatsApp, updateAlertSettings, updateSystemSettings, type NtpPushResult } from "../api/system";
 import { getTlsSettings, uploadCustomCert, useLetsEncrypt, useSelfSignedCert } from "../api/tls";
 import type {
   AlertSettings,
@@ -1793,6 +1793,13 @@ function SystemTab() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [pushingNtp, setPushingNtp] = useState(false);
+  const [ntpResults, setNtpResults] = useState<NtpPushResult[] | null>(null);
+  const [ntpError, setNtpError] = useState<string | null>(null);
+
+  const [logs, setLogs] = useState<string[] | null>(null);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+
   useEffect(() => {
     getSystemSettings().then((s) => {
       setTimezone(s.timezone);
@@ -1819,60 +1826,160 @@ function SystemTab() {
     }
   };
 
+  const handlePushNtp = async () => {
+    setPushingNtp(true);
+    setNtpError(null);
+    setNtpResults(null);
+    try {
+      // Save first so the button always pushes what's in the field, not a
+      // stale previously-saved value.
+      await updateSystemSettings({ timezone, ntp_server: ntpServer });
+      setNtpResults(await pushNtpToCameras());
+    } catch (e) {
+      setNtpError((e as Error).message);
+    } finally {
+      setPushingNtp(false);
+    }
+  };
+
+  const refreshLogs = async () => {
+    setLoadingLogs(true);
+    try {
+      const res = await getSystemLogs(200);
+      setLogs(res.lines);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  const handleDownloadDiagnostics = async () => {
+    const bundle = await getDiagnostics();
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `lightnvr-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const fmtTime = (iso: string | null) => (iso ? fmtDateTime(iso) : "—");
 
   return (
-    <div className="card" style={{ maxWidth: 520 }}>
-      <h2 style={{ marginTop: 0 }}>System</h2>
+    <div style={{ display: "grid", gap: 20, maxWidth: 640 }}>
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>System</h2>
 
-      {serverTime && (
-        <div style={{ marginBottom: 20, fontSize: 13, color: "var(--text-dim)" }}>
-          <div>Server time: <strong style={{ color: "var(--text)" }}>{fmtTime(serverTime)}</strong></div>
-          <div>Client time: <strong style={{ color: "var(--text)" }}>{fmtTime(new Date().toISOString())}</strong></div>
-          <div style={{ fontSize: 11, marginTop: 4 }}>
-            Offset: {Math.round((new Date().getTime() - new Date(serverTime).getTime()) / 1000)}s
+        {serverTime && (
+          <div style={{ marginBottom: 20, fontSize: 13, color: "var(--text-dim)" }}>
+            <div>Server time: <strong style={{ color: "var(--text)" }}>{fmtTime(serverTime)}</strong></div>
+            <div>Client time: <strong style={{ color: "var(--text)" }}>{fmtTime(new Date().toISOString())}</strong></div>
+            <div style={{ fontSize: 11, marginTop: 4 }}>
+              Offset: {Math.round((new Date().getTime() - new Date(serverTime).getTime()) / 1000)}s
+            </div>
           </div>
+        )}
+
+        <div className="field">
+          <label>Display timezone</label>
+          <input
+            type="text"
+            list="tz-list"
+            placeholder="Leave blank to use browser timezone"
+            value={timezone}
+            onChange={(e) => setTimezone(e.target.value)}
+          />
+          <datalist id="tz-list">
+            {SUGGESTED_TIMEZONES.map((tz) => (
+              <option key={tz} value={tz} />
+            ))}
+          </datalist>
+          <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+            IANA timezone (e.g. Asia/Kolkata, America/New_York). Blank = use browser timezone.
+            Timestamps throughout the app will display in this timezone.
+          </p>
         </div>
-      )}
 
-      <div className="field">
-        <label>Display timezone</label>
-        <input
-          type="text"
-          list="tz-list"
-          placeholder="Leave blank to use browser timezone"
-          value={timezone}
-          onChange={(e) => setTimezone(e.target.value)}
-        />
-        <datalist id="tz-list">
-          {SUGGESTED_TIMEZONES.map((tz) => (
-            <option key={tz} value={tz} />
-          ))}
-        </datalist>
-        <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-          IANA timezone (e.g. Asia/Kolkata, America/New_York). Blank = use browser timezone.
-          Timestamps throughout the app will display in this timezone.
-        </p>
+        <div className="field">
+          <label>NTP server</label>
+          <input
+            type="text"
+            value={ntpServer}
+            onChange={(e) => setNtpServer(e.target.value)}
+            placeholder="pool.ntp.org"
+          />
+          <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+            Reference server for time sync. The NVR host syncs via the OS; use the button
+            below to point every ONVIF camera's clock at this server too, so recording
+            timestamps stay aligned across cameras.
+          </p>
+        </div>
+
+        {error && <div className="error-text">{error}</div>}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn btn-primary" disabled={saving} onClick={save}>
+            {saving ? "Saving…" : saved ? "Saved" : "Save"}
+          </button>
+          <button
+            className="btn"
+            disabled={pushingNtp || !ntpServer.trim()}
+            title="Saves, then configures every enabled ONVIF camera to sync its clock from this NTP server"
+            onClick={handlePushNtp}
+          >
+            {pushingNtp ? "Pushing to cameras…" : "Push NTP to all cameras"}
+          </button>
+        </div>
+
+        {ntpError && <div className="error-text" style={{ marginTop: 8 }}>{ntpError}</div>}
+        {ntpResults && (
+          <div style={{ marginTop: 12, fontSize: 13 }}>
+            {ntpResults.length === 0 && <span style={{ color: "var(--text-dim)" }}>No enabled cameras to push to.</span>}
+            {ntpResults.map((r) => (
+              <div key={r.camera_id} style={{ display: "flex", gap: 8, alignItems: "baseline", marginBottom: 4 }}>
+                <span>{r.success ? "✅" : "⚠️"}</span>
+                <span style={{ fontWeight: 600 }}>{r.name}</span>
+                <span style={{ color: "var(--text-dim)" }}>{r.detail}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className="field">
-        <label>NTP server</label>
-        <input
-          type="text"
-          value={ntpServer}
-          onChange={(e) => setNtpServer(e.target.value)}
-          placeholder="pool.ntp.org"
-        />
-        <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-          Reference server for time sync. The NVR host syncs automatically via the OS;
-          this setting is used when pushing NTP configuration to cameras via ONVIF.
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Logs & diagnostics</h3>
+        <p style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 0 }}>
+          The backend's recent log lines (credentials scrubbed) - the same thing
+          <code style={{ margin: "0 4px" }}>docker compose logs backend</code> would show, without leaving the browser.
+          The diagnostics file bundles versions, health numbers, camera states, recent events, and these logs -
+          safe to attach to a bug report.
         </p>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <button className="btn btn-sm" disabled={loadingLogs} onClick={refreshLogs}>
+            {loadingLogs ? "Loading…" : logs ? "Refresh logs" : "Show logs"}
+          </button>
+          <button className="btn btn-sm" onClick={handleDownloadDiagnostics}>
+            Download diagnostics
+          </button>
+        </div>
+        {logs && (
+          <pre
+            style={{
+              maxHeight: 320,
+              overflow: "auto",
+              fontSize: 11,
+              lineHeight: 1.5,
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: 10,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {logs.length ? logs.join("\n") : "No log lines yet."}
+          </pre>
+        )}
       </div>
-
-      {error && <div className="error-text">{error}</div>}
-      <button className="btn btn-primary" disabled={saving} onClick={save}>
-        {saving ? "Saving…" : saved ? "Saved" : "Save"}
-      </button>
     </div>
   );
 }

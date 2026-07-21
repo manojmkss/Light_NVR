@@ -142,12 +142,12 @@ class ContinuousRecorder:
             await register_recording(self.camera_id, output_path, "continuous", started_at, ended_at)
             return 2
 
-        logger.warning(
-            "Continuous recording failed for camera %s: %s",
-            self.camera_id,
-            stderr.decode(errors="ignore")[-300:],
-        )
-        await mark_offline(self.camera_id)
+        stderr_tail = stderr.decode(errors="ignore")[-300:].strip()
+        logger.warning("Continuous recording failed for camera %s: %s", self.camera_id, stderr_tail)
+        # The ffmpeg error tail is the most specific "why" we ever get
+        # (401 Unauthorized, Connection refused, timeout...). mark_offline
+        # scrubs any embedded credentials before storing it.
+        await mark_offline(self.camera_id, f"Recording failed: {stderr_tail[-200:]}" if stderr_tail else None)
         await asyncio.sleep(backoff)
         return min(backoff * 2, 60)
 

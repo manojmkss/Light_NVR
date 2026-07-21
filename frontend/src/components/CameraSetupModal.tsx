@@ -7,7 +7,7 @@ import {
   probeCamera,
   updateDiscoverySettings,
 } from "../api/cameras";
-import type { CameraCreatePayload, DiscoveredDevice, ProbeProfile, ProbeResponse } from "../api/types";
+import type { CameraCreatePayload, DiscoveredDevice, ProbeChannel, ProbeProfile, ProbeResponse } from "../api/types";
 import { CameraDetailsForm } from "./CameraDetailsForm";
 
 type Tab = "discover" | "manual";
@@ -34,12 +34,27 @@ const CAMERA_ICON = (
 
 interface Props {
   onCreate: (payload: CameraCreatePayload) => Promise<void>;
+  // Bulk-add path for multi-channel NVRs. When omitted, channel import falls
+  // back to adding channels one at a time through onCreate.
+  onCreateMany?: (payloads: CameraCreatePayload[]) => Promise<void>;
   onClose: () => void;
   submitting: boolean;
   serverError: string | null;
 }
 
-export function CameraSetupModal({ onCreate, onClose, submitting, serverError }: Props) {
+// Everything needed to turn the picked channels into camera payloads, captured
+// at probe time so the picker doesn't depend on other transient state.
+interface ChannelPick {
+  channels: ProbeChannel[];
+  baseName: string;
+  onvifAddress: string | null;
+  username: string;
+  password: string;
+  codec: "h264" | "h265";
+  hasAudio: boolean;
+}
+
+export function CameraSetupModal({ onCreate, onCreateMany, onClose, submitting, serverError }: Props) {
   const [tab, setTab] = useState<Tab>("discover");
 
   const [scanning, setScanning] = useState(false);
@@ -94,6 +109,12 @@ export function CameraSetupModal({ onCreate, onClose, submitting, serverError }:
 
   const [detailsInitial, setDetailsInitial] = useState<CameraCreatePayload | null>(null);
   const [detectedSummary, setDetectedSummary] = useState<string | null>(null);
+
+  // Multi-channel (NVR) import state
+  const [channelPick, setChannelPick] = useState<ChannelPick | null>(null);
+  const [selectedChannels, setSelectedChannels] = useState<Set<string>>(new Set());
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
 
   const runScan = async () => {
     setScanning(true);
@@ -166,6 +187,27 @@ export function CameraSetupModal({ onCreate, onClose, submitting, serverError }:
   // dropdown step here - straight from credentials to the confirm screen.
   // If it picked wrong, the URL fields on that screen are editable directly.
   const proceedAutomatically = (probeResult: ProbeResponse) => {
+    const effectiveUserEarly = probeResult.resolved_username || onvifUser;
+
+    // Multi-channel device (an NVR): jump to the channel picker instead of the
+    // single-camera confirm screen. Each channel becomes its own camera.
+    if (probeResult.channels && probeResult.channels.length > 1) {
+      if (probeResult.resolved_username && probeResult.resolved_username !== onvifUser) {
+        setOnvifUser(probeResult.resolved_username);
+      }
+      setChannelPick({
+        channels: probeResult.channels,
+        baseName: probeResult.model !== "unknown" ? probeResult.model : selectedDevice?.host || "NVR",
+        onvifAddress: selectedDevice?.address || null,
+        username: effectiveUserEarly,
+        password: onvifPass,
+        codec: probeResult.codec === "h265" ? "h265" : "h264",
+        hasAudio: probeResult.has_audio ?? false,
+      });
+      setSelectedChannels(new Set(probeResult.channels.map((c) => c.source_token)));
+      return;
+    }
+
     const mainProfile = probeResult.profiles.find((p) => p.token === probeResult.recommended_main_token);
     const subProfile = probeResult.profiles.find((p) => p.token === probeResult.recommended_sub_token);
     if (!mainProfile) {
@@ -212,6 +254,128 @@ export function CameraSetupModal({ onCreate, onClose, submitting, serverError }:
     setDetectedSummary(null);
     setDetailsInitial({ ...BLANK_FORM });
   };
+
+  const buildChannelPayloads = (pick: ChannelPick): CameraCreatePayload[] =>
+    pick.channels
+      .filter((ch) => selectedChannels.has(ch.source_token))
+      .map((ch) => ({
+        ...BLANK_FORM,
+        name: `${pick.baseName} · ${ch.label}`,
+        rtsp_main_url: ch.main_url,
+        rtsp_sub_url: ch.sub_url || "",
+        onvif_address: pick.onvifAddress,
+        username: pick.username,
+        password: pick.password,
+        codec: pick.codec,
+        has_audio: pick.hasAudio,
+      }));
+
+  const handleImportChannels = async () => {
+    if (!channelPick) return;
+    const payloads = buildChannelPayloads(channelPick);
+    if (payloads.length === 0) return;
+    setImporting(true);
+    setImportError(null);
+    try {
+      if (onCreateMany) {
+        await onCreateMany(payloads);
+      } else {
+        // Fallback: no bulk handler wired - add them sequentially.
+        for (const p of payloads) await onCreate(p);
+      }
+    } catch (err) {
+      setImportError((err as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const toggleChannel = (token: string) => {
+    setSelectedChannels((prev) => {
+      const next = new Set(prev);
+      if (next.has(token)) next.delete(token);
+      else next.add(token);
+      return next;
+    });
+  };
+
+  if (channelPick) {
+    const total = channelPick.channels.length;
+    const selectedCount = channelPick.channels.filter((c) => selectedChannels.has(c.source_token)).length;
+    const allSelected = selectedCount === total;
+    return (
+      <div className="modal-backdrop" onClick={onClose}>
+        <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2>{channelPick.baseName} — {total} channels</h2>
+            <button className="close-btn" onClick={onClose}>×</button>
+          </div>
+          <p style={{ color: "var(--text-dim)", fontSize: 13, marginTop: -8 }}>
+            This is a multi-channel recorder. Pick the channels to add — each becomes its own camera with its
+            main and sub streams already detected.
+          </p>
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() =>
+                setSelectedChannels(
+                  allSelected ? new Set() : new Set(channelPick.channels.map((c) => c.source_token)),
+                )
+              }
+            >
+              {allSelected ? "Deselect all" : "Select all"}
+            </button>
+            <span style={{ fontSize: 13, color: "var(--text-dim)" }}>{selectedCount} of {total} selected</span>
+          </div>
+
+          <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+            {channelPick.channels.map((ch) => (
+              <label
+                key={ch.source_token}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "8px 12px",
+                  borderBottom: "1px solid var(--border)",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedChannels.has(ch.source_token)}
+                  onChange={() => toggleChannel(ch.source_token)}
+                />
+                <span style={{ fontWeight: 600, minWidth: 90 }}>{ch.label}</span>
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                  {ch.width && ch.height ? `${ch.width}×${ch.height}` : "resolution unknown"}
+                  {ch.sub_url ? " · sub-stream ✓" : " · no sub-stream"}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {importError && <div className="error-text" style={{ marginTop: 8 }}>{importError}</div>}
+          {serverError && <div className="error-text" style={{ marginTop: 8 }}>{serverError}</div>}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+            <button className="btn" onClick={() => setChannelPick(null)}>Back</button>
+            <button
+              className="btn btn-primary"
+              disabled={importing || submitting || selectedCount === 0}
+              onClick={handleImportChannels}
+            >
+              {importing || submitting
+                ? "Adding…"
+                : `Add ${selectedCount} camera${selectedCount === 1 ? "" : "s"}`}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (detailsInitial) {
     return (

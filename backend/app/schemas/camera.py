@@ -71,6 +71,7 @@ class CameraOut(BaseModel):
     enabled: bool
     status: str
     last_seen_at: UtcDatetime | None
+    last_error: str | None = None  # why it's offline (credential-scrubbed at write time)
     created_at: UtcDatetime
 
     class Config:
@@ -114,6 +115,15 @@ class ProbeProfileOut(BaseModel):
     height: int | None = None
 
 
+class ProbeChannelOut(BaseModel):
+    source_token: str
+    label: str
+    main_url: str
+    sub_url: str | None = None
+    width: int | None = None
+    height: int | None = None
+
+
 class ProbeResponseOut(BaseModel):
     manufacturer: str
     model: str
@@ -128,6 +138,9 @@ class ProbeResponseOut(BaseModel):
     resolved_username: str | None = None  # differs from input when admin fallback was used
     codec: str | None = None
     has_audio: bool | None = None
+    # Non-empty only for multi-channel devices (NVRs): one entry per channel,
+    # so the frontend can offer importing them all at once.
+    channels: list[ProbeChannelOut] = []
 
 
 class TestConnectionRequest(BaseModel):

@@ -42,6 +42,20 @@ export function CamerasPage() {
     }
   };
 
+  const handleCreateMany = async (payloads: CameraCreatePayload[]) => {
+    setSubmitting(true);
+    setServerError(null);
+    try {
+      for (const p of payloads) await createCamera(p);
+      setShowSetup(false);
+      refresh();
+    } catch (err) {
+      setServerError((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleUpdate = async (payload: CameraCreatePayload) => {
     if (!editingCamera) return;
     setSubmitting(true);
@@ -138,7 +152,17 @@ export function CamerasPage() {
                       {cam.is_favorite ? "★" : "☆"}
                     </button>
                   </td>
-                  <td>{cam.name}</td>
+                  <td>
+                    {cam.name}
+                    {cam.status === "offline" && cam.last_error && (
+                      <div
+                        style={{ fontSize: 11, color: "var(--danger, #d9534f)", marginTop: 2, maxWidth: 340 }}
+                        title={cam.last_error}
+                      >
+                        {cam.last_error}
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <StatusBadge status={cam.status} />
                   </td>
@@ -196,6 +220,7 @@ export function CamerasPage() {
       {showSetup && (
         <CameraSetupModal
           onCreate={handleCreate}
+          onCreateMany={handleCreateMany}
           onClose={() => {
             setShowSetup(false);
             setServerError(null);

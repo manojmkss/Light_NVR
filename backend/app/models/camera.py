@@ -28,5 +28,9 @@ class Camera(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(16), default="unknown")  # online | offline | unknown
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Why the camera is offline, shown on the Cameras page so the user can fix
+    # it without reading logs. Credential-scrubbed at write time; cleared on
+    # the next successful connect.
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
