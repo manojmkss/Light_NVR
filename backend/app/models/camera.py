@@ -32,5 +32,9 @@ class Camera(Base):
     # it without reading logs. Credential-scrubbed at write time; cleared on
     # the next successful connect.
     last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Stable per-device identity (ONVIF SerialNumber), captured at add/redetect
+    # time. Lets the self-healing relocator recognise this exact camera at a
+    # new IP after a DHCP change and update its address automatically.
+    hardware_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

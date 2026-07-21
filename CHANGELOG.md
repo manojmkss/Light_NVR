@@ -6,6 +6,14 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Self-healing for camera IP changes.** When an ONVIF camera goes unreachable
+  (typically a DHCP lease change after a router reboot), a background task finds
+  it again at its new address by matching the device's ONVIF serial number,
+  updates the stored URLs automatically, and reconnects - no manual re-add. A
+  **Locate** button on offline cameras triggers the same search on demand. Docs
+  now also recommend DHCP reservations as the belt-and-braces fix.
+
 ## [0.1.0] - 2026-07-08
 
 First tagged release, with prebuilt multi-arch (amd64 + arm64) images published

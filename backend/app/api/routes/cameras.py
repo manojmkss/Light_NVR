@@ -202,6 +202,7 @@ async def probe_camera(payload: ProbeRequest, _: User = Depends(require_admin)):
         resolved_username=info.resolved_username,
         codec=info.codec,
         has_audio=info.has_audio,
+        hardware_id=info.serial_number,
         channels=channels_out,
     )
 
@@ -341,22 +342,38 @@ async def redetect_camera_streams(
             detail="ONVIF responded but no RTSP stream could be validated - camera left unchanged",
         )
 
-    camera.rtsp_main_url = info.validated_main_url
-    if info.validated_sub_url:
-        camera.rtsp_sub_url = info.validated_sub_url
-    if info.resolved_username:
-        camera.username = info.resolved_username
-    if info.codec in ("h264", "h265"):
-        camera.codec = info.codec
-    camera.has_audio = info.has_audio
-    camera.onvif_address = f"{host}:{port}"
+    from app.services.camera_relocator import apply_profile_info
 
+    apply_profile_info(camera, info, host, port)
     await db.commit()
     await db.refresh(camera)
 
     from app.services.camera_supervisor import supervisor
 
     await supervisor.sync_camera(camera)
+    return camera
+
+
+@router.post("/{camera_id}/locate", response_model=CameraOut)
+async def locate_camera_on_network(
+    camera_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Find a camera that's gone offline at a new IP (e.g. after a DHCP lease
+    change) and update its address automatically - the on-demand version of the
+    background self-healing. Matches the device by its stored ONVIF serial, so
+    it can't accidentally re-point the camera at a different device.
+    """
+    from app.services.camera_relocator import relocate_camera
+
+    relocated, message = await relocate_camera(camera_id, force=True)
+    if not relocated:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+    camera = await db.get(Camera, camera_id)
+    if camera is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
     return camera
 
 

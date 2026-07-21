@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createCamera, deleteCamera, listCameras, redetectCamera, updateCamera } from "../api/cameras";
+import { createCamera, deleteCamera, listCameras, locateCamera, redetectCamera, updateCamera } from "../api/cameras";
 import type { Camera, CameraCreatePayload } from "../api/types";
 import { CameraDetailsForm } from "../components/CameraDetailsForm";
 import { CameraSetupModal } from "../components/CameraSetupModal";
@@ -17,6 +17,7 @@ export function CamerasPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [redetectingId, setRedetectingId] = useState<number | null>(null);
   const [redetectNotice, setRedetectNotice] = useState<string | null>(null);
+  const [locatingId, setLocatingId] = useState<number | null>(null);
 
   const refresh = () => {
     listCameras()
@@ -105,6 +106,21 @@ export function CamerasPage() {
     }
   };
 
+  const handleLocate = async (camera: Camera) => {
+    setLocatingId(camera.id);
+    setRedetectNotice(null);
+    try {
+      const updated = await locateCamera(camera.id);
+      const newHost = updated.onvif_address?.split(":")[0] ?? "a new address";
+      setRedetectNotice(`${updated.name}: found at ${newHost} and reconnecting.`);
+      refresh();
+    } catch (err) {
+      setRedetectNotice(`${camera.name}: ${(err as Error).message}`);
+    } finally {
+      setLocatingId(null);
+    }
+  };
+
   return (
     <div className="page">
       <div className="page-header">
@@ -180,10 +196,20 @@ export function CamerasPage() {
                   {isAdmin && (
                     <td>
                       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        {cam.status === "offline" && cam.onvif_address && (
+                          <button
+                            className="btn btn-sm"
+                            disabled={locatingId !== null || redetectingId !== null}
+                            title="Find this camera at its new IP (e.g. after a DHCP change) by its device serial and update the address"
+                            onClick={() => handleLocate(cam)}
+                          >
+                            {locatingId === cam.id ? "Locating..." : "Locate"}
+                          </button>
+                        )}
                         {cam.onvif_address && (
                           <button
                             className="btn btn-sm"
-                            disabled={redetectingId !== null}
+                            disabled={redetectingId !== null || locatingId !== null}
                             title="Re-run stream auto-detection (URLs, sub-stream, codec) using the camera's saved credentials"
                             onClick={() => handleRedetect(cam)}
                           >

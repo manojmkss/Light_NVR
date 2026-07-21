@@ -68,6 +68,7 @@ async def lifespan(app: FastAPI):
 
     from app.services import cloudflare_manager, tailscale_manager
     from app.services.ai.digest import daily_digest_loop
+    from app.services.camera_relocator import camera_relocator_loop
     from app.services.camera_supervisor import supervisor
     from app.services.config_backup import backup_loop
     from app.services.db_maintenance import db_maintenance_loop
@@ -92,6 +93,9 @@ async def lifespan(app: FastAPI):
     cert_expiry_task = asyncio.create_task(cert_expiry_check_loop())
     # Cheap when AI/digest is off: it just re-reads a settings row every 10min.
     digest_task = asyncio.create_task(daily_digest_loop())
+    # Self-healing for DHCP IP changes: only scans the network when a camera has
+    # actually been unreachable for a while, so it's idle in the normal case.
+    relocator_task = asyncio.create_task(camera_relocator_loop())
 
     from app.db.session import AsyncSessionLocal
     from app.models.remote_access_settings import RemoteAccessSettings
@@ -113,6 +117,7 @@ async def lifespan(app: FastAPI):
         renewal_task,
         cert_expiry_task,
         digest_task,
+        relocator_task,
     ]
     for task in background_tasks:
         task.cancel()

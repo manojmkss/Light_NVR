@@ -76,6 +76,8 @@ class CameraProfileInfo:
     resolved_username: str | None = None    # username that worked (None = same as input)
     codec: str | None = None               # h264 | h265 | unknown
     has_audio: bool = False
+    # Stable device identity (ONVIF SerialNumber) for self-healing relocation.
+    serial_number: str | None = None
     # Non-empty only when the device exposes 2+ video sources (it's an NVR):
     # one entry per channel so the frontend can offer "import all channels".
     channels: list[ChannelInfo] = field(default_factory=list)
@@ -428,6 +430,25 @@ async def fetch_camera_profiles(host: str, port: int, username: str, password: s
         raise ConnectionError(f"Timed out after {PROBE_TIMEOUT_SECONDS}s connecting to {host}:{port}") from exc
 
 
+async def get_device_serial(host: str, port: int, username: str, password: str, timeout: float = 8.0) -> str | None:
+    """Just the ONVIF SerialNumber - one authenticated SOAP call, no RTSP
+    validation. Used by the self-healing relocator to cheaply identify which
+    discovered device is a given camera before running the full probe on it.
+    Returns None on any failure (unreachable, wrong creds, no serial reported).
+    """
+    async def _inner() -> str | None:
+        camera = ONVIFCamera(host, port, username, password, wsdl_dir=_WSDL_DIR)
+        await camera.update_xaddrs()
+        device = await camera.create_devicemgmt_service()
+        info = await device.GetDeviceInformation()
+        return (getattr(info, "SerialNumber", None) or None)
+
+    try:
+        return await asyncio.wait_for(_inner(), timeout=timeout)
+    except Exception:
+        return None
+
+
 async def _fetch_camera_profiles(host: str, port: int, username: str, password: str) -> CameraProfileInfo:
     from app.services.stream_probe import (
         candidate_sub_urls,
@@ -558,5 +579,6 @@ async def _fetch_camera_profiles(host: str, port: int, username: str, password: 
         resolved_username=resolved_username,
         codec=codec,
         has_audio=has_audio,
+        serial_number=(getattr(info, "SerialNumber", None) or None),
         channels=channels,
     )

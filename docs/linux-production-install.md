@@ -423,6 +423,21 @@ account on a 401, re-checks the sub-stream and codec) using the
 credentials already saved, and updates the camera in place. No need to
 delete and re-add it.
 
+**A camera went offline after a router reboot / power cut.** Its DHCP lease
+probably changed and it came back on a different IP. LightNVR heals this
+itself: a background task notices the camera has been unreachable, scans your
+network, matches the device by its ONVIF serial number, and updates the
+stored address automatically — you'll see a "moved from … to …" note in the
+events. To trigger it immediately instead of waiting, click **Locate** on the
+offline camera's row. (This only works for cameras added via ONVIF, since it
+needs the device serial to identify them.)
+
+**Best fix of all: reserve DHCP addresses for your cameras.** In your router's
+DHCP settings, bind each camera's MAC address to a fixed IP (a "DHCP
+reservation" / "static lease"). Then cameras keep the same address across
+reboots, and this whole class of problem never happens. The self-healing above
+is the safety net for when you haven't.
+
 **"Could not connect to ONVIF device" when adding a camera manually.**
 Leave the port field blank — the backend probes the common ONVIF ports
 (80, 8080, 8000, 2020, 8899, 8081) automatically rather than requiring you

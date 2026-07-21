@@ -36,6 +36,7 @@ class CameraCreate(BaseModel):
     motion_sensitivity: int = 50
     retention_days: int | None = None  # overrides the global retention setting when set
     is_favorite: bool = False
+    hardware_id: str | None = None  # ONVIF serial, for self-healing relocation
 
 
 class CameraUpdate(BaseModel):
@@ -72,6 +73,7 @@ class CameraOut(BaseModel):
     status: str
     last_seen_at: UtcDatetime | None
     last_error: str | None = None  # why it's offline (credential-scrubbed at write time)
+    hardware_id: str | None = None
     created_at: UtcDatetime
 
     class Config:
@@ -138,6 +140,7 @@ class ProbeResponseOut(BaseModel):
     resolved_username: str | None = None  # differs from input when admin fallback was used
     codec: str | None = None
     has_audio: bool | None = None
+    hardware_id: str | None = None  # ONVIF serial; stored on the camera for relocation
     # Non-empty only for multi-channel devices (NVRs): one entry per channel,
     # so the frontend can offer importing them all at once.
     channels: list[ProbeChannelOut] = []

@@ -52,6 +52,7 @@ interface ChannelPick {
   password: string;
   codec: "h264" | "h265";
   hasAudio: boolean;
+  hardwareId: string | null;
 }
 
 export function CameraSetupModal({ onCreate, onCreateMany, onClose, submitting, serverError }: Props) {
@@ -203,6 +204,7 @@ export function CameraSetupModal({ onCreate, onCreateMany, onClose, submitting, 
         password: onvifPass,
         codec: probeResult.codec === "h265" ? "h265" : "h264",
         hasAudio: probeResult.has_audio ?? false,
+        hardwareId: probeResult.hardware_id ?? null,
       });
       setSelectedChannels(new Set(probeResult.channels.map((c) => c.source_token)));
       return;
@@ -247,6 +249,7 @@ export function CameraSetupModal({ onCreate, onCreateMany, onClose, submitting, 
       password: onvifPass,
       codec: (probeResult.codec === "h265" ? "h265" : "h264") as "h264" | "h265",
       has_audio: probeResult.has_audio ?? false,
+      hardware_id: probeResult.hardware_id ?? null,
     });
   };
 
@@ -268,6 +271,7 @@ export function CameraSetupModal({ onCreate, onCreateMany, onClose, submitting, 
         password: pick.password,
         codec: pick.codec,
         has_audio: pick.hasAudio,
+        hardware_id: pick.hardwareId,
       }));
 
   const handleImportChannels = async () => {

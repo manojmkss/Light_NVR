@@ -43,6 +43,12 @@ export function redetectCamera(id: number): Promise<Camera> {
   return apiFetch<Camera>(`/cameras/${id}/redetect`, { method: "POST" });
 }
 
+/** Find an offline camera at its new IP (e.g. after a DHCP change) by ONVIF
+ *  serial and update its address in place. Slow: scans the network. */
+export function locateCamera(id: number): Promise<Camera> {
+  return apiFetch<Camera>(`/cameras/${id}/locate`, { method: "POST" });
+}
+
 export function discoverCameras(): Promise<DiscoveredDevice[]> {
   return apiFetch<DiscoveredDevice[]>("/cameras/discover");
 }

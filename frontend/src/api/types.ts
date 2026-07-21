@@ -29,6 +29,7 @@ export interface Camera {
   status: CameraStatus;
   last_seen_at: string | null;
   last_error: string | null; // why it's offline (credential-scrubbed server-side)
+  hardware_id: string | null; // ONVIF serial; enables self-healing relocation
   created_at: string;
 }
 
@@ -46,6 +47,7 @@ export interface CameraCreatePayload {
   motion_sensitivity?: number;
   retention_days?: number | null;
   is_favorite?: boolean;
+  hardware_id?: string | null;
 }
 
 export type CameraUpdatePayload = Partial<CameraCreatePayload> & { enabled?: boolean };
@@ -91,6 +93,7 @@ export interface ProbeResponse {
   resolved_username?: string | null;  // set when admin/root fallback was used
   codec?: string | null;
   has_audio?: boolean | null;
+  hardware_id?: string | null;  // ONVIF serial, stored for self-healing relocation
   // Non-empty only for multi-channel devices (NVRs): one entry per channel
   channels?: ProbeChannel[];
 }
