@@ -107,6 +107,9 @@ async def get_or_transcode_h264(recording_id: int, src_path: str) -> str:
             "-pix_fmt", "yuv420p",           # max compatibility (some HEVC is 10-bit)
             "-c:a", "aac",
             "-movflags", "+faststart",       # playable/seekable as a normal MP4
+            # The temp path ends in .tmp, so ffmpeg can't infer the container
+            # from the extension - name the muxer explicitly.
+            "-f", "mp4",
             tmp,
         ]
         proc = await asyncio.create_subprocess_exec(
