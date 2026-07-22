@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { buildMediaUrl } from "../api/client";
 import { listCameras, snapshotUrl, updateCamera } from "../api/cameras";
 import { getStorageConfig, getStorageHealth } from "../api/storage";
 import { getDashboard, getSystemStatus, listEvents } from "../api/system";
@@ -413,7 +414,18 @@ export function DashboardPage() {
               const meta = EVENT_META[ev.type] ?? EVENT_META.system;
               return (
                 <li key={ev.id}>
-                  <span className={`ev-icon ${meta.cls}`}>{meta.icon}</span>
+                  {ev.snapshot_path ? (
+                    <img
+                      className="ev-thumb"
+                      src={buildMediaUrl(`/system/events/${ev.id}/snapshot.jpg`)}
+                      alt=""
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <span className={`ev-icon ${meta.cls}`}>{meta.icon}</span>
+                  )}
                   <div className="ev-body">
                     <div className="ev-msg">{ev.message}</div>
                     <div className="ev-loc">{camName(ev.camera_id)}</div>

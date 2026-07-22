@@ -24,6 +24,7 @@ class EventOut(BaseModel):
     type: str
     message: str
     created_at: UtcDatetime
+    snapshot_path: str | None = None
 
     class Config:
         from_attributes = True

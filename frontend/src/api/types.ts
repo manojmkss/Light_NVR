@@ -138,6 +138,7 @@ export interface NvrEvent {
   type: EventType;
   message: string;
   created_at: string;
+  snapshot_path: string | null; // presence only; the image loads from the event's own id
 }
 
 export interface LiveSegmentInfo {

@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timezone
 from email.message import EmailMessage
 
@@ -7,8 +8,8 @@ import aiosmtplib
 from app.db.session import AsyncSessionLocal
 from app.models.alert_settings import AlertSettings
 from app.models.event import Event
-from app.services.telegram import send_telegram_message
-from app.services.whatsapp import send_whatsapp_message
+from app.services.telegram import send_telegram_message, send_telegram_photo
+from app.services.whatsapp import send_whatsapp_image, send_whatsapp_message
 
 logger = logging.getLogger(__name__)
 
@@ -49,28 +50,45 @@ async def maybe_send_alert(event: Event) -> None:
     _last_alert_at[key] = now
 
     subject = f"LightNVR alert: {event.type.replace('_', ' ')}"
+    # None once the file's confirmed missing, so every channel below skips
+    # straight to its text-only path instead of each re-checking the disk.
+    snapshot = event.snapshot_path if event.snapshot_path and os.path.exists(event.snapshot_path) else None
 
     # Each channel is independent - one being misconfigured or down never
     # blocks the others from delivering.
     if alert_settings.smtp_host and alert_settings.alert_email_to:
-        success, detail = await send_email(alert_settings, subject, event.message)
+        success, detail = await send_email(alert_settings, subject, event.message, image_path=snapshot)
         if not success:
             logger.warning("Failed to send alert email: %s", detail)
 
     if alert_settings.telegram_enabled:
-        success, detail = await send_telegram_message(
-            alert_settings.telegram_bot_token, alert_settings.telegram_chat_id, f"{subject}\n{event.message}"
-        )
+        if snapshot:
+            success, detail = await send_telegram_photo(
+                alert_settings.telegram_bot_token, alert_settings.telegram_chat_id, snapshot, f"{subject}\n{event.message}"
+            )
+        else:
+            success, detail = await send_telegram_message(
+                alert_settings.telegram_bot_token, alert_settings.telegram_chat_id, f"{subject}\n{event.message}"
+            )
         if not success:
             logger.warning("Failed to send Telegram alert: %s", detail)
 
     if alert_settings.whatsapp_enabled:
-        success, detail = await send_whatsapp_message(
-            alert_settings.whatsapp_phone_number_id,
-            alert_settings.whatsapp_access_token,
-            alert_settings.whatsapp_recipient_number,
-            f"{subject}\n{event.message}",
-        )
+        if snapshot:
+            success, detail = await send_whatsapp_image(
+                alert_settings.whatsapp_phone_number_id,
+                alert_settings.whatsapp_access_token,
+                alert_settings.whatsapp_recipient_number,
+                snapshot,
+                f"{subject}\n{event.message}",
+            )
+        else:
+            success, detail = await send_whatsapp_message(
+                alert_settings.whatsapp_phone_number_id,
+                alert_settings.whatsapp_access_token,
+                alert_settings.whatsapp_recipient_number,
+                f"{subject}\n{event.message}",
+            )
         if not success:
             logger.warning("Failed to send WhatsApp alert: %s", detail)
 
@@ -86,7 +104,9 @@ async def _maybe_send_push(event: Event, subject: str) -> None:
         logger.exception("Failed to dispatch push notifications")
 
 
-async def send_email(smtp: AlertSettings, subject: str, body: str, to_override: str | None = None) -> tuple[bool, str]:
+async def send_email(
+    smtp: AlertSettings, subject: str, body: str, to_override: str | None = None, image_path: str | None = None
+) -> tuple[bool, str]:
     """Takes an AlertSettings-shaped object rather than reading global config
     so the Settings -> Alerts "send test email" button can verify unsaved
     form values before the user commits to them.
@@ -100,6 +120,12 @@ async def send_email(smtp: AlertSettings, subject: str, body: str, to_override: 
     message["To"] = to_address
     message["Subject"] = subject
     message.set_content(body)
+    if image_path:
+        try:
+            with open(image_path, "rb") as f:
+                message.add_attachment(f.read(), maintype="image", subtype="jpeg", filename="snapshot.jpg")
+        except OSError:
+            logger.warning("Could not attach snapshot %s to alert email", image_path)
 
     try:
         await aiosmtplib.send(

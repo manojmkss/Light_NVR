@@ -206,6 +206,20 @@ async def _prune_old_events() -> None:
     # Same tz-aware cutoff pattern used for recordings above.
     cutoff = datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
     async with AsyncSessionLocal() as db:
+        # Snapshots removed before the (bulk, row-less) delete below - same
+        # orphan-file-over-orphan-row tradeoff as _prune_old_detections.
+        paths = (
+            await db.execute(
+                select(Event.snapshot_path).where(Event.created_at < cutoff, Event.snapshot_path.is_not(None))
+            )
+        ).scalars().all()
+        for path in set(paths):
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    logger.warning("Retention: could not remove event snapshot %s", path)
+
         result = await db.execute(delete(Event).where(Event.created_at < cutoff))
         removed = result.rowcount or 0
         if removed:

@@ -7,6 +7,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Motion alert screenshots.** Every motion alert now carries the frame it
+  fired on: attached to the alert email, sent as a photo on Telegram, sent as
+  an image message on WhatsApp, and shown as a thumbnail on the dashboard's
+  Recent Events feed. Web push notifications stay text-only, since showing an
+  image there would need an unauthenticated image URL, which isn't a tradeoff
+  worth making for a notification-bubble thumbnail. Screenshots are pruned
+  along with their event after the existing 90-day event retention window.
 - **Motion zones.** Draw regions on a camera's snapshot to *ignore* (a waving
   tree, a busy road) or *watch only* (just the driveway). Motion detection masks
   the ignored areas before counting motion, which also means the AI layer and

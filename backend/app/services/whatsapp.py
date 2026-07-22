@@ -32,3 +32,48 @@ async def send_whatsapp_message(phone_number_id: str, access_token: str, recipie
         return False, error
     except httpx.HTTPError as exc:
         return False, str(exc)
+
+
+async def send_whatsapp_image(
+    phone_number_id: str, access_token: str, recipient: str, image_path: str, caption: str
+) -> tuple[bool, str]:
+    """Uploads the JPEG to Meta first and sends it by media ID rather than a
+    `link` field, since a `link` requires the NVR to be reachable over the
+    public internet - not something a self-hosted, often LAN-only or
+    self-signed-TLS install can assume."""
+    if not phone_number_id or not access_token or not recipient:
+        return False, "Phone number ID, access token, and recipient number are required"
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            with open(image_path, "rb") as f:
+                upload = await client.post(
+                    f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_number_id}/media",
+                    headers=headers,
+                    data={"messaging_product": "whatsapp", "type": "image/jpeg"},
+                    files={"file": ("snapshot.jpg", f, "image/jpeg")},
+                )
+            upload_data = upload.json()
+            media_id = upload_data.get("id")
+            if not media_id:
+                return False, upload_data.get("error", {}).get("message", "Media upload failed")
+
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": recipient,
+                "type": "image",
+                "image": {"id": media_id, "caption": caption[:1024]},
+            }
+            response = await client.post(
+                f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_number_id}/messages",
+                json=payload,
+                headers=headers,
+            )
+        data = response.json()
+        if response.status_code == 200:
+            return True, "Sent"
+        error = data.get("error", {}).get("message", f"HTTP {response.status_code}")
+        return False, error
+    except (httpx.HTTPError, OSError) as exc:
+        return False, str(exc)

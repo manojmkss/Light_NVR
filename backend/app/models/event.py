@@ -15,3 +15,4 @@ class Event(Base):
     message: Mapped[str] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     notified: Mapped[bool] = mapped_column(default=False)
+    snapshot_path: Mapped[str | None] = mapped_column(String(512), nullable=True)

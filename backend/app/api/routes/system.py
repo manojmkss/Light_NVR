@@ -1,4 +1,5 @@
 import asyncio
+import os
 import platform
 import shutil
 import time
@@ -9,11 +10,11 @@ from zoneinfo import ZoneInfo
 
 import psutil
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, require_admin
+from app.core.deps import get_current_user, get_current_user_flexible, require_admin
 from app.core.log_buffer import get_recent_logs
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.alert_settings import AlertSettings
@@ -93,6 +94,23 @@ async def list_events(
     stmt = stmt.offset(offset).limit(min(limit, 200))
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+@router.get("/events/{event_id}/snapshot.jpg")
+async def get_event_snapshot(
+    event_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user_flexible),
+):
+    """The frame captured when the event fired. Uses the flexible auth
+    dependency so an <img> tag can load it (image tags can't set an
+    Authorization header)."""
+    event = await db.get(Event, event_id)
+    if event is None or not event.snapshot_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found")
+    if not os.path.exists(event.snapshot_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot file no longer on disk")
+    return FileResponse(event.snapshot_path, media_type="image/jpeg")
 
 
 def _resolve_tz(name: str):

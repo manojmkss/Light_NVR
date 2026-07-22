@@ -1,15 +1,36 @@
 import asyncio
 import logging
+import os
+from datetime import datetime, timezone
 
 from app.models.camera import Camera
 from app.services.ai.pipeline import ai_pipeline
 from app.services.events import emit_event
 from app.services.ffmpeg_recorder import ContinuousRecorder, MotionRecorder
+from app.services.frame_bus import frame_bus
 from app.services.motion_state import motion_state_registry
 from app.services.status_tracker import mark_offline
 from app.services.stream_viewer import StreamViewer
 
 logger = logging.getLogger(__name__)
+
+
+def _write_event_snapshot(camera_id: int, jpeg: bytes) -> str | None:
+    """The frame at the moment motion started, for alert channels and the
+    dashboard to show a picture instead of just text. Best-effort: a failed
+    write just means the alert goes out without one, not a failed event."""
+    try:
+        from app.services.storage_manager import storage_manager
+
+        directory = os.path.join(storage_manager.cache_dir(), "events", str(camera_id))
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}.jpg")
+        with open(path, "wb") as f:
+            f.write(jpeg)
+        return path
+    except Exception:
+        logger.exception("Could not write motion snapshot for camera %s", camera_id)
+        return None
 
 
 class CameraWorker:
@@ -124,6 +145,9 @@ class CameraWorker:
         and this is byte-for-byte the old behaviour - that fallback is the
         whole safety story for making AI optional.
         """
+        jpeg = frame_bus.get_latest(self.camera_id)
+        snapshot_path = await asyncio.to_thread(_write_event_snapshot, self.camera_id, jpeg) if jpeg else None
+
         try:
             result = await ai_pipeline.analyze_motion(self.camera_id, self.name)
         except Exception:
@@ -131,11 +155,16 @@ class CameraWorker:
             result = None
 
         if result is None:
-            await emit_event(self.camera_id, "motion", f"Motion detected on '{self.name}'")
+            await emit_event(self.camera_id, "motion", f"Motion detected on '{self.name}'", snapshot_path=snapshot_path)
             return
         if result.suppressed:
             return  # objects-only mode: nothing of interest was in frame
-        await emit_event(self.camera_id, "motion", result.message or f"Motion detected on '{self.name}'")
+        await emit_event(
+            self.camera_id,
+            "motion",
+            result.message or f"Motion detected on '{self.name}'",
+            snapshot_path=snapshot_path,
+        )
 
     async def _handle_motion_stop(self) -> None:
         motion_state_registry.set_motion(self.camera_id, False)
