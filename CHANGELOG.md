@@ -6,6 +6,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-22
+
 ### Added
 - **Motion alert screenshots.** Every motion alert now carries the frame it
   fired on: attached to the alert email, sent as a photo on Telegram, sent as
@@ -74,5 +76,6 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/manojmkss/Light_NVR/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/manojmkss/Light_NVR/releases/tag/v0.1.0
