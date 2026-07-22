@@ -1,13 +1,20 @@
 name: Release
 
-# Cuts a release when a version tag is pushed: builds multi-arch (amd64 +
-# arm64) backend and frontend images, pushes them to GHCR, and creates a
-# GitHub Release. Publishing the code stays on the `main` branch's own CI
-# (docker-build.yml); this workflow is only about shipping tagged artifacts.
+# Cuts a release when a version tag is pushed: builds backend and frontend
+# images for amd64 and arm64, pushes them to GHCR as multi-arch manifests, and
+# creates a GitHub Release. Publishing the code stays on the `main` branch's
+# own CI (docker-build.yml); this workflow is only about shipping tagged
+# artifacts.
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v0.2.0 && git push origin v0.2.0
 #
-# One-time after the first run: make the two new packages public under
+# Each architecture is built on its OWN native runner (amd64 on ubuntu-latest,
+# arm64 on ubuntu-24.04-arm) rather than cross-building arm64 under QEMU
+# emulation. Emulated arm64 Node/Vite builds (rollup/esbuild) can hang for
+# hours; native runners finish in minutes. The two per-arch images are pushed
+# by digest and then stitched into one multi-arch tag by the merge job.
+#
+# One-time after the first run: make the two packages public under
 # https://github.com/users/manojmkss/packages so `docker compose pull` works
 # without authentication (Package settings -> Change visibility -> Public).
 
@@ -26,23 +33,74 @@ env:
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/light_nvr
 
 jobs:
-  images:
-    runs-on: ubuntu-latest
+  build:
+    # One leg per (image, architecture), each on a runner whose CPU natively
+    # matches the target - no emulation anywhere.
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: backend
-            context: ./backend
-          - name: frontend
-            context: ./frontend
+          - { name: backend,  context: ./backend,  platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { name: backend,  context: ./backend,  platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { name: frontend, context: ./frontend, platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { name: frontend, context: ./frontend, platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
 
-      # arm64 is built under emulation on the x86 runner - slower than native
-      # but keeps the whole build in one free job. Most deps install from
-      # prebuilt arm64 wheels/apt packages, so there's no heavy compilation.
-      - uses: docker/setup-qemu-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # push-by-digest publishes the image blob without a tag; the merge job
+      # below assembles the tags. name-canonical keeps the pushed reference
+      # under the final repo name so imagetools can find it by digest.
+      - name: Build and push ${{ matrix.name }} (${{ matrix.arch }}) by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}-${{ matrix.name }},push-by-digest=true,name-canonical=true,push=true
+          # Cache is per image AND per arch so the two legs don't clobber each
+          # other's layers.
+          cache-from: type=gha,scope=${{ matrix.name }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}-${{ matrix.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.name }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    # One manifest per image, stitching that image's per-arch digests into a
+    # single multi-arch tag (:<version> and :latest).
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        name: [backend, frontend]
+    steps:
+      - name: Download this image's digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.name }}-*
+          merge-multiple: true
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -56,21 +114,19 @@ jobs:
         id: ver
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push ${{ matrix.name }}
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}-${{ matrix.name }}:${{ steps.ver.outputs.version }}
-            ${{ env.IMAGE_PREFIX }}-${{ matrix.name }}:latest
-          # Reuse layers between releases to keep repeat builds fast.
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Create and push the multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE_PREFIX}-${{ matrix.name }}:${{ steps.ver.outputs.version }}" \
+            -t "${IMAGE_PREFIX}-${{ matrix.name }}:latest" \
+            $(printf "${IMAGE_PREFIX}-${{ matrix.name }}@sha256:%s " *)
+
+      - name: Inspect the pushed manifest
+        run: docker buildx imagetools inspect "${IMAGE_PREFIX}-${{ matrix.name }}:${{ steps.ver.outputs.version }}"
 
   release:
-    needs: images
+    needs: merge
     runs-on: ubuntu-latest
     permissions:
       contents: write
