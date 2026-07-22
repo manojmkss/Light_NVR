@@ -10,7 +10,7 @@ import type { CameraStatus, LiveSegmentInfo, RecordingMode } from "./types";
 export interface CameraTileEndpoints {
   streamUrl(cameraId: number, quality: "sub" | "main", cacheBust: number): string;
   snapshotUrl(cameraId: number, cacheBust: number): string;
-  recordingVideoUrl(recordingId: number): string;
+  recordingVideoUrl(recordingId: number, transcode?: boolean): string;
   listRecordings(cameraId: number, limit: number): Promise<TileRecording[]>;
   getLiveSegment(cameraId: number): Promise<LiveSegmentInfo>;
   liveSegmentVideoUrl(cameraId: number): string;
@@ -30,6 +30,7 @@ export interface TileRecording {
   id: number;
   camera_id: number;
   trigger: string;
+  codec?: string | null;
   started_at: string;
   ended_at: string | null;
   duration_seconds: number | null;
@@ -39,7 +40,8 @@ export const authenticatedEndpoints: CameraTileEndpoints = {
   streamUrl: (cameraId, quality, cacheBust) =>
     buildMediaUrl(`/cameras/${cameraId}/stream.mjpeg?quality=${quality}&k=${cacheBust}`),
   snapshotUrl: (cameraId, cacheBust) => buildMediaUrl(`/cameras/${cameraId}/snapshot.jpg?k=${cacheBust}`),
-  recordingVideoUrl: (recordingId) => buildMediaUrl(`/recordings/${recordingId}/video`),
+  recordingVideoUrl: (recordingId, transcode) =>
+    buildMediaUrl(`/recordings/${recordingId}/video${transcode ? "?transcode=h264" : ""}`),
   listRecordings: (cameraId, limit) => listRecordings({ camera_id: cameraId, limit }),
   getLiveSegment: (cameraId) => getLiveSegment(cameraId),
   liveSegmentVideoUrl: (cameraId) => liveSegmentVideoUrl(cameraId),

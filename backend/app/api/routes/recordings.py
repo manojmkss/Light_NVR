@@ -265,6 +265,7 @@ async def get_recording(recording_id: int, db: AsyncSession = Depends(get_db), _
 async def get_recording_video(
     recording_id: int,
     download: bool = False,  # when true, force a Save-As download with a friendly name
+    transcode: str | None = None,  # "h264" -> convert HEVC for browsers that can't play it
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user_flexible),
 ):
@@ -273,6 +274,27 @@ async def get_recording_video(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
     if not os.path.exists(recording.file_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording file missing")
+
+    # On-demand H.265 -> H.264 for browsers (Firefox, many Chrome) that can't
+    # play HEVC. Transcoded once, cached, and served with Range support so it
+    # stays seekable. Only requested by the frontend when actually needed.
+    if transcode == "h264":
+        from app.services.transcode_cache import get_or_transcode_h264
+
+        try:
+            out_path = await get_or_transcode_h264(recording_id, recording.file_path)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not transcode for playback: {exc}"
+            ) from exc
+        if download:
+            camera = await db.get(Camera, recording.camera_id)
+            ts = recording.started_at.strftime("%Y%m%d_%H%M%S") if recording.started_at else str(recording.id)
+            return FileResponse(
+                out_path, media_type="video/mp4", filename=_safe_filename(None, f"{camera.name if camera else 'camera'}_{ts}_h264")
+            )
+        return FileResponse(out_path, media_type="video/mp4")
+
     if download:
         camera = await db.get(Camera, recording.camera_id)
         ts = recording.started_at.strftime("%Y%m%d_%H%M%S") if recording.started_at else str(recording.id)

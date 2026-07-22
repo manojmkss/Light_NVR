@@ -15,6 +15,9 @@ class Recording(Base):
     thumbnail_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     storage_tier: Mapped[str] = mapped_column(String(16), default="cache")  # cache | primary | backup
     trigger: Mapped[str] = mapped_column(String(16), default="continuous")  # continuous | motion
+    # Video codec of the file (copied from the camera at record time). Drives
+    # the "this browser can't play H.265, transcode it" playback decision.
+    codec: Mapped[str | None] = mapped_column(String(16), nullable=True)  # h264 | h265
     started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)

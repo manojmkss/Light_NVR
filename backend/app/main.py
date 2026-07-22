@@ -84,6 +84,8 @@ async def lifespan(app: FastAPI):
 
     await storage_manager.start()
     await cleanup_orphaned_files(storage_manager.cache_dir())
+    from app.services.transcode_cache import cleanup_on_startup as cleanup_transcode_cache
+    cleanup_transcode_cache()  # regenerable browser-playback transcodes; clear stale ones
     await supervisor.start_all()
     retention_task = asyncio.create_task(retention_loop())
     mover_task = asyncio.create_task(storage_mover_loop())

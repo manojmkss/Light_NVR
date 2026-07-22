@@ -243,7 +243,9 @@ async def list_public_recordings(
 
 
 @public_router.get("/{token}/recordings/{recording_id}/video")
-async def get_public_recording_video(token: str, recording_id: int, db: AsyncSession = Depends(get_db)):
+async def get_public_recording_video(
+    token: str, recording_id: int, transcode: str | None = None, db: AsyncSession = Depends(get_db)
+):
     view = await _get_view_by_token(token, db)
     allowed = {c.camera_id for c in view.cameras}
     recording = await db.get(Recording, recording_id)
@@ -252,4 +254,18 @@ async def get_public_recording_video(token: str, recording_id: int, db: AsyncSes
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=KIOSK_REWIND_MINUTES)
     if recording.ended_at is None or recording.ended_at < cutoff:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+
+    # Same on-demand H.265 -> H.264 transcode as the authenticated path, so kiosk
+    # viewers on Firefox/Chrome can play HEVC recordings too.
+    if transcode == "h264":
+        from app.services.transcode_cache import get_or_transcode_h264
+
+        try:
+            out_path = await get_or_transcode_h264(recording_id, recording.file_path)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not transcode for playback: {exc}"
+            ) from exc
+        return FileResponse(out_path, media_type="video/mp4")
+
     return FileResponse(recording.file_path, media_type="video/mp4")

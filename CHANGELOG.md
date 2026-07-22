@@ -7,6 +7,12 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **H.265 recordings now play in every browser.** HEVC won't decode in Firefox
+  and many Chrome installs. When you open an H.265 clip in a browser that can't
+  play it, LightNVR transcodes that clip to H.264 on demand and plays it
+  (cached, so re-watching is instant) - recordings stay stored as efficient
+  H.265, and the transcode only runs when actually needed. Recordings also show
+  a codec badge. Works on the authenticated playback pages and kiosk views.
 - **Self-healing for camera IP changes.** When an ONVIF camera goes unreachable
   (typically a DHCP lease change after a router reboot), a background task finds
   it again at its new address by matching the device's ONVIF serial number,

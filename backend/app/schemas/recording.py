@@ -9,6 +9,7 @@ class RecordingOut(BaseModel):
     file_path: str
     thumbnail_path: str | None
     trigger: str
+    codec: str | None = None
     started_at: UtcDatetime
     ended_at: UtcDatetime | None
     duration_seconds: float | None

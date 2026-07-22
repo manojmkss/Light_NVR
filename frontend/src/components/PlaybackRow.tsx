@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildMediaUrl } from "../api/client";
-import { clipExportUrl } from "../api/recordings";
+import { clipExportUrl, recordingPlaybackUrl } from "../api/recordings";
 import type { Camera, NvrEvent, Recording } from "../api/types";
 import { useSettings } from "../context/SettingsContext";
 import { partsInTz } from "../utils/datetime";
@@ -231,7 +230,7 @@ export function PlaybackRow(props: PlaybackRowProps) {
           muted
           playsInline
           className="tile-video"
-          src={activeRec ? buildMediaUrl(`/recordings/${activeRec.id}/video`) : undefined}
+          src={activeRec ? recordingPlaybackUrl(activeRec) : undefined}
           onLoadedMetadata={() => {
             const v = videoRef.current;
             if (v) {

@@ -63,7 +63,8 @@ export function createKioskEndpoints(token: string): CameraTileEndpoints {
     streamUrl: (cameraId, quality, cacheBust) =>
       `${base}/cameras/${cameraId}/stream.mjpeg?quality=${quality}&k=${cacheBust}`,
     snapshotUrl: (cameraId, cacheBust) => `${base}/cameras/${cameraId}/snapshot.jpg?k=${cacheBust}`,
-    recordingVideoUrl: (recordingId) => `${base}/recordings/${recordingId}/video`,
+    recordingVideoUrl: (recordingId, transcode) =>
+      `${base}/recordings/${recordingId}/video${transcode ? "?transcode=h264" : ""}`,
     listRecordings: (cameraId, limit) =>
       publicJson<TileRecording[]>(`${base}/cameras/${cameraId}/recordings?limit=${limit}`),
     getLiveSegment: (cameraId) => publicJson<LiveSegmentInfo>(`${base}/cameras/${cameraId}/live-segment`),

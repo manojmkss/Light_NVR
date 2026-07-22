@@ -116,6 +116,7 @@ export interface Recording {
   file_path: string;
   thumbnail_path: string | null;
   trigger: RecordingTrigger;
+  codec: string | null; // "h264" | "h265"; drives browser-playback transcode
   started_at: string;
   ended_at: string | null;
   duration_seconds: number | null;

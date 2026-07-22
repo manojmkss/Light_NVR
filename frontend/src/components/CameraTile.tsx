@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authenticatedEndpoints, type CameraTileEndpoints, type TileCamera, type TileRecording } from "../api/liveEndpoints";
+import { recordingNeedsTranscode } from "../api/recordings";
 import type { StreamStat } from "../api/types";
 import { useSettings } from "../context/SettingsContext";
 import { StatusBadge } from "./StatusBadge";
@@ -230,7 +231,14 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   // what lets the last few minutes - before that segment closes and becomes a
   // real Recording row - still play instead of reading as "no recording".
   const playSource = playbackRec
-    ? { originMs: recStartMs(playbackRec), url: endpoints.recordingVideoUrl(playbackRec.id), key: `rec-${playbackRec.id}` }
+    ? {
+        originMs: recStartMs(playbackRec),
+        // H.265 recordings need the on-demand H.264 transcode on browsers that
+        // can't play HEVC (Firefox, many Chrome). Live segments are always H.264
+        // via the live path, so only finalized recordings are checked here.
+        url: endpoints.recordingVideoUrl(playbackRec.id, recordingNeedsTranscode(playbackRec)),
+        key: `rec-${playbackRec.id}`,
+      }
     : activeSeg && playbackTs != null && playbackTs >= activeSeg.startedAt
       ? { originMs: activeSeg.startedAt, url: endpoints.liveSegmentVideoUrl(camera.id), key: `seg-${activeSeg.startedAt}` }
       : null;

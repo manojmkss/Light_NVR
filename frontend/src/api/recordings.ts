@@ -34,6 +34,34 @@ export function bulkDeleteRecordings(
   });
 }
 
+/** Whether this browser can play H.265/HEVC in a <video> element. Safari can;
+ *  Firefox can't; Chrome only with OS/hardware support. Computed once. */
+export const browserPlaysHevc: boolean = (() => {
+  try {
+    const v = document.createElement("video");
+    return (
+      v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') !== "" ||
+      v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') !== ""
+    );
+  } catch {
+    return false;
+  }
+})();
+
+/** True when this recording won't play natively here and needs server-side
+ *  transcoding (it's H.265 and the browser can't do HEVC). Accepts any object
+ *  carrying a codec (full Recording or the narrower TileRecording). */
+export function recordingNeedsTranscode(rec: { codec?: string | null }): boolean {
+  return rec.codec === "h265" && !browserPlaysHevc;
+}
+
+/** Playback URL for a recording: the raw file when the browser can play it, or
+ *  the on-demand H.264 transcode when it can't (H.265 on Firefox/Chrome). */
+export function recordingPlaybackUrl(rec: { id: number; codec?: string | null }): string {
+  const suffix = recordingNeedsTranscode(rec) ? "?transcode=h264" : "";
+  return buildMediaUrl(`/recordings/${rec.id}/video${suffix}`);
+}
+
 /** Force-download URL for a single recording (Save-As with a friendly filename). */
 export function recordingDownloadUrl(id: number): string {
   return buildMediaUrl(`/recordings/${id}/video?download=1`);
