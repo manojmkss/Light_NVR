@@ -7,6 +7,11 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Motion zones.** Draw regions on a camera's snapshot to *ignore* (a waving
+  tree, a busy road) or *watch only* (just the driveway). Motion detection masks
+  the ignored areas before counting motion, which also means the AI layer and
+  alerts stop firing on them - the biggest cut to false alerts. Edit them from
+  Cameras → Zones; stored per camera, empty = the whole frame as before.
 - **H.265 recordings now play in every browser.** HEVC won't decode in Firefox
   and many Chrome installs. When you open an H.265 clip in a browser that can't
   play it, LightNVR transcodes that clip to H.264 on demand and plays it

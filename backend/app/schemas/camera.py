@@ -1,8 +1,13 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel
 
 from app.schemas.common import UtcDatetime
+
+
+class MotionZone(BaseModel):
+    kind: Literal["include", "exclude"] = "exclude"
+    points: list[list[float]]  # [[x, y], ...] with x/y normalized to 0-1
 
 
 def _check_rtsp_scheme(v: str | None) -> str | None:
@@ -37,6 +42,7 @@ class CameraCreate(BaseModel):
     retention_days: int | None = None  # overrides the global retention setting when set
     is_favorite: bool = False
     hardware_id: str | None = None  # ONVIF serial, for self-healing relocation
+    motion_zones: list[MotionZone] | None = None
 
 
 class CameraUpdate(BaseModel):
@@ -50,6 +56,7 @@ class CameraUpdate(BaseModel):
     recording_mode: str | None = None
     motion_enabled: bool | None = None
     motion_sensitivity: int | None = None
+    motion_zones: list[MotionZone] | None = None
     retention_days: int | None = None
     enabled: bool | None = None
     is_favorite: bool | None = None
@@ -67,6 +74,7 @@ class CameraOut(BaseModel):
     recording_mode: str
     motion_enabled: bool
     motion_sensitivity: int
+    motion_zones: list[MotionZone] | None = None
     retention_days: int | None
     is_favorite: bool
     enabled: bool

@@ -6,6 +6,7 @@ import time
 from typing import Awaitable, Callable
 
 import cv2
+import numpy as np
 
 from app.services.frame_bus import frame_bus
 from app.services.status_tracker import mark_offline, mark_online
@@ -38,12 +39,18 @@ class StreamViewer:
     # it so the CPU freed up can go to publishing a smoother live view.
     MOTION_FRAME_SKIP = 3
 
+    # Motion detection runs on frames resized to this fixed size, so zone
+    # polygons (stored normalized 0-1) are scaled to it to build the mask.
+    _DETECT_W = 640
+    _DETECT_H = 360
+
     def __init__(
         self,
         camera_id: int,
         stream_url: str,
         motion_enabled: bool = False,
         sensitivity: int = 50,
+        motion_zones: list | None = None,
         on_motion_start: Callable[[], Awaitable[None]] | None = None,
         on_motion_stop: Callable[[], Awaitable[None]] | None = None,
     ):
@@ -53,6 +60,9 @@ class StreamViewer:
         self.min_area = self._sensitivity_to_area(sensitivity)
         self.on_motion_start = on_motion_start
         self.on_motion_stop = on_motion_stop
+        # Built once: a 640x360 0/255 mask, or None when no zones are configured
+        # (the common case, which then skips masking entirely).
+        self._zone_mask = self._build_zone_mask(motion_zones)
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -62,6 +72,42 @@ class StreamViewer:
     def _sensitivity_to_area(sensitivity: int) -> int:
         sensitivity = max(1, min(100, sensitivity))
         return int(5000 - (sensitivity / 100) * 4800)
+
+    @classmethod
+    def _build_zone_mask(cls, zones: list | None) -> "np.ndarray | None":
+        """Turn motion zones into a 640x360 uint8 mask (255=watch, 0=ignore).
+        With include zones, only those are watched; otherwise the whole frame
+        is, minus any exclude zones. Returns None (no masking) when there are no
+        usable zones. Malformed data degrades to None rather than crashing the
+        detection thread."""
+        if not zones:
+            return None
+        try:
+            w, h = cls._DETECT_W, cls._DETECT_H
+
+            def to_pts(points: list) -> "np.ndarray":
+                return np.array(
+                    [[int(round(float(x) * w)), int(round(float(y) * h))] for x, y in points],
+                    dtype=np.int32,
+                )
+
+            includes = [z for z in zones if z.get("kind") == "include" and len(z.get("points", [])) >= 3]
+            excludes = [z for z in zones if z.get("kind") == "exclude" and len(z.get("points", [])) >= 3]
+            if not includes and not excludes:
+                return None
+
+            if includes:
+                mask = np.zeros((h, w), dtype=np.uint8)
+                for z in includes:
+                    cv2.fillPoly(mask, [to_pts(z["points"])], 255)
+            else:
+                mask = np.full((h, w), 255, dtype=np.uint8)
+            for z in excludes:
+                cv2.fillPoly(mask, [to_pts(z["points"])], 0)
+            return mask
+        except Exception:
+            logger.warning("Ignoring malformed motion zones (bad data)")
+            return None
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -154,6 +200,10 @@ class StreamViewer:
                 fg_mask = bg_subtractor.apply(small)
                 _, thresh = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
                 thresh = cv2.dilate(thresh, None, iterations=2)
+                # Zero out ignored regions (after dilation, so a nearby excluded
+                # blob can't bleed back in) before counting contours.
+                if self._zone_mask is not None:
+                    thresh = cv2.bitwise_and(thresh, self._zone_mask)
                 contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 detected = any(cv2.contourArea(c) > self.min_area for c in contours)
 

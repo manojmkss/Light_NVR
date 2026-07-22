@@ -33,6 +33,7 @@ class CameraWorker:
         self.recording_mode = camera.recording_mode
         self.motion_enabled = camera.motion_enabled or camera.recording_mode == "motion"
         self.motion_sensitivity = camera.motion_sensitivity
+        self.motion_zones = camera.motion_zones
 
         self._tasks: list[asyncio.Task] = []
         # Held only so the loop keeps a strong reference to in-flight AI
@@ -56,6 +57,7 @@ class CameraWorker:
             self.rtsp_sub_url,
             motion_enabled=self.motion_enabled,
             sensitivity=self.motion_sensitivity,
+            motion_zones=self.motion_zones,
             on_motion_start=self._handle_motion_start,
             on_motion_stop=self._handle_motion_stop,
         )

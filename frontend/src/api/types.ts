@@ -11,6 +11,11 @@ export type RecordingMode = "continuous" | "motion" | "off";
 export type CameraStatus = "online" | "offline" | "unknown";
 export type Codec = "h264" | "h265";
 
+export interface MotionZone {
+  kind: "include" | "exclude";
+  points: number[][]; // [[x, y], ...] normalized to 0-1
+}
+
 export interface Camera {
   id: number;
   name: string;
@@ -23,6 +28,7 @@ export interface Camera {
   recording_mode: RecordingMode;
   motion_enabled: boolean;
   motion_sensitivity: number;
+  motion_zones: MotionZone[] | null;
   retention_days: number | null;
   is_favorite: boolean;
   enabled: boolean;
@@ -45,6 +51,7 @@ export interface CameraCreatePayload {
   recording_mode?: RecordingMode;
   motion_enabled?: boolean;
   motion_sensitivity?: number;
+  motion_zones?: MotionZone[] | null;
   retention_days?: number | null;
   is_favorite?: boolean;
   hardware_id?: string | null;

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Integer, Boolean, DateTime
+from sqlalchemy import JSON, String, Integer, Boolean, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -22,6 +22,11 @@ class Camera(Base):
     recording_mode: Mapped[str] = mapped_column(String(16), default="continuous")  # continuous | motion | off
     motion_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     motion_sensitivity: Mapped[int] = mapped_column(Integer, default=50)  # 0-100
+    # Optional motion regions, as [{"kind": "include"|"exclude", "points":
+    # [[x,y]...]}] with x/y normalized 0-1. exclude = ignore motion there
+    # (a waving tree, a busy road); include = watch only there. None/empty =
+    # the whole frame is watched, i.e. the previous behaviour.
+    motion_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)  # overrides global retention when set
 
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)  # pinned to the dashboard strip

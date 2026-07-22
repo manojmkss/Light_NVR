@@ -3,6 +3,7 @@ import { createCamera, deleteCamera, listCameras, locateCamera, redetectCamera, 
 import type { Camera, CameraCreatePayload } from "../api/types";
 import { CameraDetailsForm } from "../components/CameraDetailsForm";
 import { CameraSetupModal } from "../components/CameraSetupModal";
+import { MotionZoneEditor } from "../components/MotionZoneEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { useAuth } from "../context/AuthContext";
 
@@ -18,6 +19,7 @@ export function CamerasPage() {
   const [redetectingId, setRedetectingId] = useState<number | null>(null);
   const [redetectNotice, setRedetectNotice] = useState<string | null>(null);
   const [locatingId, setLocatingId] = useState<number | null>(null);
+  const [zonesCamera, setZonesCamera] = useState<Camera | null>(null);
 
   const refresh = () => {
     listCameras()
@@ -219,6 +221,13 @@ export function CamerasPage() {
                         <button className="btn btn-sm" onClick={() => setEditingCamera(cam)}>
                           Edit
                         </button>
+                        <button
+                          className="btn btn-sm"
+                          title="Set motion zones — regions to ignore (trees, roads) or watch only"
+                          onClick={() => setZonesCamera(cam)}
+                        >
+                          Zones
+                        </button>
                         {confirmDeleteId === cam.id ? (
                           <>
                             <button className="btn btn-sm btn-danger" onClick={() => handleDelete(cam.id)}>
@@ -241,6 +250,17 @@ export function CamerasPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {zonesCamera && (
+        <MotionZoneEditor
+          camera={zonesCamera}
+          onClose={() => setZonesCamera(null)}
+          onSaved={() => {
+            setZonesCamera(null);
+            refresh();
+          }}
+        />
       )}
 
       {showSetup && (
