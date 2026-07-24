@@ -17,6 +17,28 @@ const MODELS = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m"
  *  itself always runs in a Linux container, so it can't tell us what the host
  *  is. Someone administering a Linux NVR from a Windows laptop gets the wrong
  *  one, which is why both are always shown rather than only the guess. */
+/** Best-effort "is this a private/LAN address" check, so the privacy warning
+ *  only fires for genuinely off-network (cloud) endpoints. A LAN LM Studio /
+ *  vLLM keeps everything at home, and telling someone their local server
+ *  "sends snapshots to an outside company" is both wrong and alarming. */
+function isLocalUrl(url: string): boolean {
+  if (!url) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host.endsWith(".local") ||
+    host.startsWith("10.") ||
+    host.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  );
+}
+
 function modelCommand(model: string): { primary: string; other: string; otherLabel: string } {
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
   const isWindows = /Windows/i.test(ua);
@@ -219,10 +241,15 @@ export function AISettingsTab() {
           {/* ── Where it runs ────────────────────────────────────────── */}
           <div className="card">
             <strong>Where it runs</strong>
+            <div style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 4, marginBottom: 8 }}>
+              This finds <em>objects</em> (“is there a person?”). It is not the same as the vision model
+              that writes descriptions — LM Studio, Ollama, OpenAI and Claude go under{" "}
+              <strong>“Describe what's happening”</strong> lower down, not here.
+            </div>
             <div className="field" style={{ marginTop: 10 }}>
               <select value={s.backend} onChange={(e) => up("backend", e.target.value as AISettings["backend"])}>
                 <option value="local">This machine (CPU) — simplest</option>
-                <option value="remote">Another PC with a GPU — faster</option>
+                <option value="remote">Another PC running the LightNVR ai-worker</option>
               </select>
             </div>
 
@@ -269,7 +296,10 @@ export function AISettingsTab() {
                   />
                 </div>
                 <p style={{ color: "var(--text-dim)", fontSize: 12 }}>
-                  Video frames go to that PC on your own network — nothing leaves your home.
+                  This must be the LightNVR <code>ai-worker</code> running on that PC (see the{" "}
+                  <code>ai-worker/</code> folder in the project) — <strong>not</strong> LM Studio or
+                  Ollama, which speak a different API and are for descriptions, not detection. Video
+                  frames go to that PC on your own network; nothing leaves your home.
                 </p>
               </>
             )}
@@ -280,6 +310,10 @@ export function AISettingsTab() {
               </button>
               <TestLine result={testResult} />
             </div>
+            <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6, marginBottom: 0 }}>
+              Press <strong>Save</strong> before checking — this tests the saved settings, not what's
+              on screen.
+            </p>
           </div>
 
           {/* ── Tier 1: what to look for ─────────────────────────────── */}
@@ -449,12 +483,21 @@ export function AISettingsTab() {
                     value={s.vlm_url}
                     onChange={(e) => up("vlm_url", e.target.value)}
                   />
+                  {s.vlm_provider === "openai_compatible" && (
+                    <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                      For <strong>LM Studio</strong>: the address of the PC running it, ending in{" "}
+                      <code>/v1</code> (e.g. <code>http://192.168.68.101:1234/v1</code>). In LM Studio, start
+                      the <em>Local Server</em>, enable <em>“Serve on Local Network”</em>, and load a{" "}
+                      <strong>vision</strong> model (one that accepts images, e.g. a Qwen2-VL or LLaVA build) —
+                      a text-only model will connect but can't see the snapshot.
+                    </p>
+                  )}
                 </div>
                 <div className="field">
                   <label>Model</label>
                   <input
                     type="text"
-                    placeholder={s.vlm_provider === "anthropic" ? "claude-haiku-4-5-20251001" : "model name"}
+                    placeholder={s.vlm_provider === "anthropic" ? "claude-haiku-4-5-20251001" : "the model id shown in LM Studio"}
                     value={s.vlm_model}
                     onChange={(e) => up("vlm_model", e.target.value)}
                   />
@@ -462,20 +505,28 @@ export function AISettingsTab() {
                 <div className="field">
                   <label>
                     API key{" "}
-                    {s.has_vlm_api_key && <span style={{ color: "var(--text-dim)" }}>(saved — leave blank to keep)</span>}
+                    <span style={{ color: "var(--text-dim)" }}>
+                      {s.has_vlm_api_key ? "(saved — leave blank to keep)" : "(LM Studio needs none)"}
+                    </span>
                   </label>
                   <input
                     type="password"
-                    placeholder={s.has_vlm_api_key ? "••••••••" : ""}
+                    placeholder={s.has_vlm_api_key ? "••••••••" : "leave blank for LM Studio / vLLM"}
                     value={vlmKey}
                     onChange={(e) => setVlmKey(e.target.value)}
                   />
                 </div>
-                <p style={{ fontSize: 12, color: "var(--danger, #f85149)" }}>
-                  Heads up: this sends camera snapshots to an outside company. Only snapshots that already
-                  contain a detected object are sent — never your recordings — but if that's not OK, use
-                  Ollama instead and nothing leaves your home.
-                </p>
+                {isLocalUrl(s.vlm_url) ? (
+                  <p style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                    That's a local address, so snapshots stay on your own network — nothing leaves your home.
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 12, color: "var(--danger, #f85149)" }}>
+                    Heads up: this looks like a cloud endpoint, so camera snapshots leave your network. Only
+                    snapshots that already contain a detected object are sent — never your recordings — but if
+                    that's not OK, use LM Studio or Ollama on your own PC and nothing leaves your home.
+                  </p>
+                )}
               </>
             )}
 
