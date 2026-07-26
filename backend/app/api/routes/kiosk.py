@@ -1,12 +1,12 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import require_admin
+from app.core.http_range import range_file_response
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.camera import Camera
 from app.models.kiosk_view import KioskView, KioskViewCamera
@@ -244,7 +244,7 @@ async def list_public_recordings(
 
 @public_router.get("/{token}/recordings/{recording_id}/video")
 async def get_public_recording_video(
-    token: str, recording_id: int, transcode: str | None = None, db: AsyncSession = Depends(get_db)
+    request: Request, token: str, recording_id: int, transcode: str | None = None, db: AsyncSession = Depends(get_db)
 ):
     view = await _get_view_by_token(token, db)
     allowed = {c.camera_id for c in view.cameras}
@@ -266,6 +266,7 @@ async def get_public_recording_video(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not transcode for playback: {exc}"
             ) from exc
-        return FileResponse(out_path, media_type="video/mp4")
+        return range_file_response(request, out_path)
 
-    return FileResponse(recording.file_path, media_type="video/mp4")
+    # Range-aware so kiosk viewers can scrub/seek recorded footage too.
+    return range_file_response(request, recording.file_path)

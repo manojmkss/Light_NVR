@@ -4,13 +4,14 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
 from app.core.deps import get_current_user, get_current_user_flexible, require_admin
+from app.core.http_range import range_file_response
 from app.db.session import get_db
 from app.models.camera import Camera
 from app.models.recording import Recording
@@ -263,6 +264,7 @@ async def get_recording(recording_id: int, db: AsyncSession = Depends(get_db), _
 
 @router.get("/{recording_id}/video")
 async def get_recording_video(
+    request: Request,
     recording_id: int,
     download: bool = False,  # when true, force a Save-As download with a friendly name
     transcode: str | None = None,  # "h264" -> convert HEVC for browsers that can't play it
@@ -293,7 +295,7 @@ async def get_recording_video(
             return FileResponse(
                 out_path, media_type="video/mp4", filename=_safe_filename(None, f"{camera.name if camera else 'camera'}_{ts}_h264")
             )
-        return FileResponse(out_path, media_type="video/mp4")
+        return range_file_response(request, out_path)
 
     if download:
         camera = await db.get(Camera, recording.camera_id)
@@ -304,7 +306,8 @@ async def get_recording_video(
             media_type="video/mp4",
             filename=_safe_filename(None, fallback),
         )
-    return FileResponse(recording.file_path, media_type="video/mp4")
+    # Range-aware so the browser can scrub/seek within the clip.
+    return range_file_response(request, recording.file_path)
 
 
 @router.get("/{recording_id}/thumbnail.jpg")
