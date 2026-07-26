@@ -6,6 +6,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Seeking/scrubbing recorded footage in the live and kiosk tiles.** Two
+  causes: recordings were stored as fragmented MP4 (needed so the in-progress
+  segment plays live) which carries no seek index, and the file endpoint didn't
+  answer HTTP Range requests, so browsers disabled the scrubber entirely.
+  Finalized segments are now remuxed (stream copy, no re-encode) to a seekable
+  faststart MP4, and recording playback is served with Range support (206
+  Partial Content) on both the authenticated and kiosk video endpoints. Seeking
+  back to review footage now works.
+
 ## [0.2.1] - 2026-07-22
 
 ### Fixed
