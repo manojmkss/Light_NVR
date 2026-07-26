@@ -58,6 +58,69 @@ def _build_record_cmd(rtsp_url: str, output_path: str, has_audio: bool, duration
     return cmd
 
 
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+async def _remux_to_seekable(path: str) -> None:
+    """Rewrite a finished segment from fragmented MP4 to a plain faststart MP4.
+
+    The recorder writes fragmented MP4 (`+empty_moov`) so the segment being
+    written is playable *while* it's still being written. The cost is that that
+    layout carries no seek index - the moov has no sample tables and there's no
+    sidx - so a browser can play the file start-to-end but cannot seek within
+    it (scrubbing back in the live/kiosk tiles just failed or snapped to the
+    start). Once a segment is finalized it's no longer being appended to, so we
+    stream-copy it (no re-encode, ~a second or two) into a normal MP4 with a
+    single front-loaded moov + full sample tables, which every browser seeks.
+
+    Best-effort and in-place via an atomic replace: on any failure the original
+    fragmented file - still valid, just not seekable - is left untouched.
+    """
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return
+    tmp = f"{path}.seek.tmp"
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", path,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        tmp,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+        )
+    except Exception:
+        logger.warning("Could not launch remux for %s (kept fragmented)", path, exc_info=True)
+        return
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        _remove_quietly(tmp)
+        logger.warning("Remux to seekable MP4 timed out for %s (kept fragmented)", path)
+        return
+
+    if proc.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            _remove_quietly(tmp)
+            logger.warning("Could not replace %s with its seekable remux (kept fragmented)", path)
+    else:
+        _remove_quietly(tmp)
+        logger.warning(
+            "Remux to seekable MP4 failed for %s (kept fragmented): %s",
+            path, stderr.decode(errors="ignore")[-200:].strip(),
+        )
+
+
 class ContinuousRecorder:
     """Records fixed-length segments back-to-back. Stream-copies (no re-encode)
     straight from the RTSP main stream to keep CPU usage low. Each segment is a
@@ -72,6 +135,9 @@ class ContinuousRecorder:
         self._stop = asyncio.Event()
         self._proc: asyncio.subprocess.Process | None = None
         self._paused_for_space = False
+        # In-flight segment finalizations (remux-to-seekable + DB register),
+        # run in the background so the next segment starts with no gap.
+        self._finalize_tasks: set[asyncio.Task] = set()
 
     async def run(self) -> None:
         backoff = 2
@@ -139,7 +205,13 @@ class ContinuousRecorder:
 
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             await mark_online(self.camera_id)
-            await register_recording(self.camera_id, output_path, "continuous", started_at, ended_at)
+            # Remux-to-seekable + register runs in the background: a synchronous
+            # remux here would insert a multi-second gap into continuous
+            # coverage every segment. The fragmented file is already valid, so
+            # nothing is lost if the process dies before it finishes.
+            task = asyncio.create_task(self._finalize_segment(output_path, started_at, ended_at))
+            self._finalize_tasks.add(task)
+            task.add_done_callback(self._finalize_tasks.discard)
             return 2
 
         stderr_tail = stderr.decode(errors="ignore")[-300:].strip()
@@ -151,6 +223,15 @@ class ContinuousRecorder:
         await asyncio.sleep(backoff)
         return min(backoff * 2, 60)
 
+    async def _finalize_segment(self, path: str, started_at: datetime, ended_at: datetime) -> None:
+        """Make the just-closed segment seekable, then register it. Runs off the
+        recording loop so it never delays the next segment."""
+        try:
+            await _remux_to_seekable(path)
+            await register_recording(self.camera_id, path, "continuous", started_at, ended_at)
+        except Exception:
+            logger.exception("Failed to finalize/register segment %s for camera %s", path, self.camera_id)
+
     async def stop(self) -> None:
         self._stop.set()
         active_segment_registry.clear(self.camera_id)
@@ -160,6 +241,11 @@ class ContinuousRecorder:
                 await asyncio.wait_for(self._proc.wait(), timeout=5)
             except asyncio.TimeoutError:
                 self._proc.kill()
+        # Let any in-flight finalizations finish so a stop/restart doesn't drop
+        # the segment that was just recorded (its DB row would otherwise never
+        # be written).
+        if self._finalize_tasks:
+            await asyncio.gather(*self._finalize_tasks, return_exceptions=True)
 
 
 class MotionRecorder:
@@ -242,6 +328,10 @@ class MotionRecorder:
                 proc.kill()
 
         ended_at = datetime.now(timezone.utc)
+        # Same fragmented -> seekable remux as continuous segments, so a
+        # motion clip can be scrubbed in the browser too. Motion clips aren't
+        # recorded back-to-back, so doing it inline here adds no coverage gap.
+        await _remux_to_seekable(output_path)
         await register_recording(self.camera_id, output_path, "motion", started_at, ended_at)
 
     async def stop(self) -> None:
