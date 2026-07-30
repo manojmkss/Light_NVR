@@ -32,11 +32,11 @@ from app.services.stream_stats import stream_stats
 router = APIRouter(tags=["kiosk"])
 
 # Kiosk's recordings access is capped to the same window as the live-view
-# scrub bar's 30-minute rewind (see THIRTY_MIN_MS in CameraTile.tsx) rather
-# than the full recordings history a logged-in user gets - anyone holding a
-# kiosk link can rewind recent footage, but can't browse or fetch anything
-# further back, even by guessing a recording id directly.
-KIOSK_REWIND_MINUTES = 30
+# scrub bar's rewind (see SCRUB_WINDOW_MS in CameraTile.tsx) rather than the
+# full recordings history a logged-in user gets - anyone holding a kiosk link
+# can rewind recent footage, but can't browse or fetch anything further back,
+# even by guessing a recording id directly. Kept in sync with the tile window.
+KIOSK_REWIND_MINUTES = 60
 
 
 def _to_out(view: KioskView) -> KioskViewOut:

@@ -5,7 +5,10 @@ import type { StreamStat } from "../api/types";
 import { useSettings } from "../context/SettingsContext";
 import { StatusBadge } from "./StatusBadge";
 
-const THIRTY_MIN_MS = 30 * 60 * 1000;
+// How far back the live tile's scrub bar reaches. Not a retention/deletion
+// limit - older footage is still available via the "Browse older recordings"
+// picker and the Recordings page; this is just the quick-scrub window.
+const SCRUB_WINDOW_MS = 60 * 60 * 1000;
 const LIVE_EDGE_MS = 3000; // within 3s of "now" counts as live
 
 function fmtDuration(seconds: number | null): string {
@@ -118,7 +121,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
-  const windowStart = now - THIRTY_MIN_MS;
+  const windowStart = now - SCRUB_WINDOW_MS;
 
   // Live tiles use the substream; a maximised / fullscreen tile upgrades to the
   // main stream for full detail.
@@ -129,7 +132,9 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
     let cancelled = false;
     const load = () =>
       endpoints
-        .listRecordings(camera.id, 15)
+        // Enough to cover the full scrub window even with shorter/mixed clips
+        // (an hour of 5-min continuous segments is 12; this leaves headroom).
+        .listRecordings(camera.id, 24)
         .then((r) => {
           if (!cancelled) setRecentRecs(r);
         })
