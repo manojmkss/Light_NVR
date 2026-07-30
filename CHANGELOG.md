@@ -6,6 +6,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-30
+
 ### Added
 - **Instant H.265 recording playback via an H.264 sub-stream copy.** For cameras
   that record H.265 (which Firefox and most Chrome can't decode), LightNVR now
@@ -108,7 +110,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/manojmkss/Light_NVR/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/manojmkss/Light_NVR/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/manojmkss/Light_NVR/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/manojmkss/Light_NVR/compare/v0.1.0...v0.2.0
