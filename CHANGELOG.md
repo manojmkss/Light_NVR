@@ -6,6 +6,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-30
+
 ### Changed
 - **Scrub bar reaches back 1 hour** (was 30 minutes) on the live and kiosk
   tiles. Older footage remains available via Browse older recordings / the
@@ -120,7 +122,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/manojmkss/Light_NVR/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/manojmkss/Light_NVR/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/manojmkss/Light_NVR/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/manojmkss/Light_NVR/compare/v0.2.0...v0.2.1
