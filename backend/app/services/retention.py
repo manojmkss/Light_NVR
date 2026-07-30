@@ -30,6 +30,14 @@ CHECK_INTERVAL_SECONDS = 1800
 # any typical retention window, so recordings still on disk keep their markers.
 EVENT_RETENTION_DAYS = 90
 
+# The H.264 sub-stream playback copy exists only so recent footage plays
+# instantly in the browser. Its usefulness ends at the live/kiosk scrub window
+# (SCRUB_WINDOW_MS in CameraTile.tsx / KIOSK_REWIND_MINUTES = 60), past which
+# old-footage playback is rare and transcodes on demand. So the copy is deleted
+# once it ages past that window - reclaiming disk - while the full-quality H.265
+# main is kept for the entire retention period. Keep this >= the scrub window.
+PLAYBACK_COPY_KEEP_MINUTES = 60
+
 
 async def delete_recording_files(recording: Recording) -> None:
     for path in (recording.file_path, recording.thumbnail_path, recording.playback_path):
@@ -113,10 +121,46 @@ async def enforce_retention() -> None:
     if storage_config.max_storage_gb > 0:
         await _enforce_storage_cap(storage_config.max_storage_gb)
 
+    await _prune_stale_playback_copies()
     await _prune_old_events()
     await _prune_old_detections()
     await _sweep_orphaned_detection_snapshots()
     await _check_low_storage()
+
+
+async def _prune_stale_playback_copies() -> None:
+    """Delete H.264 playback copies once they age past the scrub window, keeping
+    the H.265 main and its DB row intact. Only playback_path is cleared and its
+    file removed, so playing older footage simply falls back to on-demand
+    transcoding - the copy was never meant to live for the whole retention.
+
+    Naive-UTC cutoff to match how ended_at is stored (same convention as the
+    kiosk rewind query); mismatching aware/naive here would silently never match.
+    """
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=PLAYBACK_COPY_KEEP_MINUTES)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Recording).where(
+                Recording.playback_path.is_not(None),
+                Recording.ended_at.is_not(None),
+                Recording.ended_at < cutoff,
+            )
+        )
+        stale = result.scalars().all()
+        if not stale:
+            return
+        for rec in stale:
+            path = rec.playback_path
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    logger.warning("Could not remove stale playback copy %s", path)
+            rec.playback_path = None
+        await db.commit()
+        logger.info(
+            "Retention: pruned %d H.264 playback copy(ies) older than %d min", len(stale), PLAYBACK_COPY_KEEP_MINUTES
+        )
 
 
 async def _prune_old_detections() -> None:

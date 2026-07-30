@@ -6,6 +6,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Scrub bar reaches back 1 hour** (was 30 minutes) on the live and kiosk
+  tiles. Older footage remains available via Browse older recordings / the
+  Recordings page; retention is unchanged.
+- **H.264 playback copies are now short-lived.** The sub-stream playback copy
+  (see 0.2.3) is deleted ~1 hour after a segment ends - once it's past the
+  scrub window - to reclaim disk, since scrubbing to older footage is rare and
+  transcodes on demand. The full-quality H.265 main is untouched and kept for
+  the entire retention period.
+
 ## [0.2.3] - 2026-07-30
 
 ### Added
