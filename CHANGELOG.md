@@ -6,6 +6,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Instant H.265 recording playback via an H.264 sub-stream copy.** For cameras
+  that record H.265 (which Firefox and most Chrome can't decode), LightNVR now
+  records the camera's H.264 sub-stream in parallel as a small, seekable
+  playback companion (a plain stream-copy - almost no extra CPU). Browsers play
+  that copy instantly with no on-demand transcode, and it also makes the last
+  few minutes - the segment still being written - watchable, where a raw H.265
+  live segment previously showed black. The H.265 main stays the full-quality
+  original for download/export. Falls back to on-demand transcoding when a
+  camera has no distinct H.264 sub-stream. Applies to new recordings.
+
 ## [0.2.2] - 2026-07-23
 
 ### Fixed

@@ -281,6 +281,12 @@ async def get_recording_video(
     # play HEVC. Transcoded once, cached, and served with Range support so it
     # stays seekable. Only requested by the frontend when actually needed.
     if transcode == "h264":
+        # If a pre-recorded H.264 sub-stream copy exists, serve it directly -
+        # instant and seekable, no transcode. Not for `download`, which should
+        # get full-quality H.264 from the main stream instead of the low-res sub.
+        if not download and recording.playback_path and os.path.exists(recording.playback_path):
+            return range_file_response(request, recording.playback_path)
+
         from app.services.transcode_cache import get_or_transcode_h264
 
         try:

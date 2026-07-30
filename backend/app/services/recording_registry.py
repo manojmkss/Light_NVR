@@ -13,6 +13,7 @@ async def register_recording(
     trigger: str,
     started_at: datetime,
     ended_at: datetime,
+    playback_path: str | None = None,
 ) -> Recording | None:
     if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
         return None
@@ -20,6 +21,9 @@ async def register_recording(
     thumbnail_path = await generate_thumbnail(file_path)
     size_bytes = os.path.getsize(file_path)
     duration = (ended_at - started_at).total_seconds()
+    # Only keep the playback copy if it actually made it to disk with content.
+    if playback_path and not (os.path.exists(playback_path) and os.path.getsize(playback_path) > 0):
+        playback_path = None
 
     async with AsyncSessionLocal() as db:
         # Recordings are a stream-copy of the camera's main stream, so the file's
@@ -32,6 +36,7 @@ async def register_recording(
             camera_id=camera_id,
             file_path=file_path,
             thumbnail_path=thumbnail_path,
+            playback_path=playback_path,
             trigger=trigger,
             started_at=started_at,
             ended_at=ended_at,

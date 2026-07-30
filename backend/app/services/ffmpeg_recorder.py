@@ -121,23 +121,101 @@ async def _remux_to_seekable(path: str) -> None:
         )
 
 
+def _sub_path_for(main_path: str) -> str:
+    """Sibling path for the H.264 playback copy: `{name}.sub.mp4`. Kept as a
+    sibling (same dir, derived name) so the storage mover and retention carry
+    it along with the main file without extra bookkeeping."""
+    root, ext = os.path.splitext(main_path)
+    return f"{root}.sub{ext}"
+
+
+async def _probe_video_codec(path: str) -> str | None:
+    """ffprobe the first video stream's codec name (e.g. 'h264', 'hevc'), or
+    None if it can't be determined."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", path,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except Exception:
+        return None
+    return out.decode(errors="ignore").strip() or None
+
+
+async def _finalize_playback_copy(sub_path: str | None) -> str | None:
+    """Finalize the parallel sub-stream recording into a browser-ready playback
+    copy. Kept only if it's genuinely H.264 - the whole point is giving HEVC-shy
+    browsers something to play without a transcode, so an H.265 sub buys nothing
+    over the main file. Made seekable like any finalized segment. Returns the
+    path to store as playback_path, or None to fall back to on-demand transcode.
+    """
+    if not sub_path or not os.path.exists(sub_path) or os.path.getsize(sub_path) == 0:
+        return None
+    if await _probe_video_codec(sub_path) != "h264":
+        _remove_quietly(sub_path)
+        return None
+    await _remux_to_seekable(sub_path)
+    return sub_path
+
+
 class ContinuousRecorder:
     """Records fixed-length segments back-to-back. Stream-copies (no re-encode)
     straight from the RTSP main stream to keep CPU usage low. Each segment is a
     separate ffmpeg invocation rather than ffmpeg's own segment muxer so we get
     a clean per-file completion point to register the Recording row from.
+
+    When the camera exposes a distinct H.264 sub-stream, a second stream-copy of
+    it is recorded in parallel as a small, instantly-browser-playable companion
+    (see _finalize_playback_copy) - so H.265 recordings play and scrub with no
+    on-demand transcode, while the H.265 main stays the full-quality original.
     """
 
-    def __init__(self, camera_id: int, rtsp_url: str, has_audio: bool):
+    def __init__(self, camera_id: int, rtsp_url: str, has_audio: bool, sub_url: str | None = None):
         self.camera_id = camera_id
         self.rtsp_url = rtsp_url
         self.has_audio = has_audio
+        # Only worth copying if it's a *different* stream from the main; equal
+        # (or absent) means there's no separate sub-stream to lean on.
+        self.sub_url = sub_url if sub_url and sub_url != rtsp_url else None
         self._stop = asyncio.Event()
         self._proc: asyncio.subprocess.Process | None = None
+        self._sub_proc: asyncio.subprocess.Process | None = None
         self._paused_for_space = False
         # In-flight segment finalizations (remux-to-seekable + DB register),
         # run in the background so the next segment starts with no gap.
         self._finalize_tasks: set[asyncio.Task] = set()
+
+    async def _start_sub(self, sub_path: str | None) -> asyncio.subprocess.Process | None:
+        """Launch the best-effort parallel sub-stream copy. A separate process
+        (not one ffmpeg with two outputs) so a sub-stream hiccup can never fail
+        or stall the main recording. Video-only: sub-streams often carry no
+        audio, and the full-quality main remains the download source."""
+        if not sub_path or not self.sub_url:
+            return None
+        try:
+            cmd = _build_record_cmd(self.sub_url, sub_path, False, SEGMENT_SECONDS)
+            return await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
+        except Exception:
+            logger.warning("Could not start sub-stream playback copy for camera %s", self.camera_id, exc_info=True)
+            return None
+
+    async def _reap_sub(self) -> None:
+        proc, self._sub_proc = self._sub_proc, None
+        if proc is None:
+            return
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
 
     async def run(self) -> None:
         backoff = 2
@@ -178,12 +256,16 @@ class ContinuousRecorder:
         started_at = datetime.now(timezone.utc)
         ts = started_at.strftime("%Y%m%d_%H%M%S")
         output_path = f"{_camera_dir(self.camera_id)}/{ts}_continuous.mp4"
+        sub_path = _sub_path_for(output_path) if self.sub_url else None
         cmd = _build_record_cmd(self.rtsp_url, output_path, self.has_audio, SEGMENT_SECONDS)
 
         # Published before ffmpeg even starts writing so the live-segment
         # endpoints have somewhere to point as soon as the file exists; the
         # next segment's call overwrites this a moment after this one closes.
-        active_segment_registry.set(self.camera_id, output_path, started_at)
+        active_segment_registry.set(self.camera_id, output_path, started_at, sub_path)
+
+        # Best-effort parallel H.264 sub-stream copy for browser playback.
+        self._sub_proc = await self._start_sub(sub_path)
 
         stderr = b""
         try:
@@ -197,6 +279,9 @@ class ContinuousRecorder:
                 await self._proc.wait()
             stderr = b"timed out waiting for ffmpeg"
 
+        # The sub copy has the same -t, so it's finishing around now; reap it.
+        await self._reap_sub()
+
         ended_at = datetime.now(timezone.utc)
 
         if self._stop.is_set():
@@ -209,7 +294,7 @@ class ContinuousRecorder:
             # remux here would insert a multi-second gap into continuous
             # coverage every segment. The fragmented file is already valid, so
             # nothing is lost if the process dies before it finishes.
-            task = asyncio.create_task(self._finalize_segment(output_path, started_at, ended_at))
+            task = asyncio.create_task(self._finalize_segment(output_path, sub_path, started_at, ended_at))
             self._finalize_tasks.add(task)
             task.add_done_callback(self._finalize_tasks.discard)
             return 2
@@ -223,24 +308,29 @@ class ContinuousRecorder:
         await asyncio.sleep(backoff)
         return min(backoff * 2, 60)
 
-    async def _finalize_segment(self, path: str, started_at: datetime, ended_at: datetime) -> None:
-        """Make the just-closed segment seekable, then register it. Runs off the
-        recording loop so it never delays the next segment."""
+    async def _finalize_segment(self, path: str, sub_path: str | None, started_at: datetime, ended_at: datetime) -> None:
+        """Make the just-closed segment seekable, finalize its H.264 playback
+        copy, then register it. Runs off the recording loop so it never delays
+        the next segment."""
         try:
             await _remux_to_seekable(path)
-            await register_recording(self.camera_id, path, "continuous", started_at, ended_at)
+            playback_path = await _finalize_playback_copy(sub_path)
+            await register_recording(
+                self.camera_id, path, "continuous", started_at, ended_at, playback_path=playback_path
+            )
         except Exception:
             logger.exception("Failed to finalize/register segment %s for camera %s", path, self.camera_id)
 
     async def stop(self) -> None:
         self._stop.set()
         active_segment_registry.clear(self.camera_id)
-        if self._proc and self._proc.returncode is None:
-            self._proc.terminate()
-            try:
-                await asyncio.wait_for(self._proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                self._proc.kill()
+        for proc in (self._proc, self._sub_proc):
+            if proc and proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
         # Let any in-flight finalizations finish so a stop/restart doesn't drop
         # the segment that was just recorded (its DB row would otherwise never
         # be written).
@@ -258,13 +348,16 @@ class MotionRecorder:
     POST_ROLL_SECONDS = 10
     MAX_CLIP_SECONDS = 600
 
-    def __init__(self, camera_id: int, rtsp_url: str, has_audio: bool):
+    def __init__(self, camera_id: int, rtsp_url: str, has_audio: bool, sub_url: str | None = None):
         self.camera_id = camera_id
         self.rtsp_url = rtsp_url
         self.has_audio = has_audio
+        self.sub_url = sub_url if sub_url and sub_url != rtsp_url else None
         self._proc: asyncio.subprocess.Process | None = None
+        self._sub_proc: asyncio.subprocess.Process | None = None
         self._started_at: datetime | None = None
         self._output_path: str | None = None
+        self._sub_path: str | None = None
         self._stop_timer: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
@@ -289,7 +382,19 @@ class MotionRecorder:
                 self._proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
                 )
-                active_segment_registry.set(self.camera_id, self._output_path, self._started_at)
+                # Best-effort parallel H.264 sub-stream copy for browser playback.
+                self._sub_path = _sub_path_for(self._output_path) if self.sub_url else None
+                self._sub_proc = None
+                if self._sub_path:
+                    try:
+                        sub_cmd = _build_record_cmd(self.sub_url, self._sub_path, False, self.MAX_CLIP_SECONDS)
+                        self._sub_proc = await asyncio.create_subprocess_exec(
+                            *sub_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                        )
+                    except Exception:
+                        self._sub_path = None
+                        self._sub_proc = None
+                active_segment_registry.set(self.camera_id, self._output_path, self._started_at, self._sub_path)
             except Exception:
                 # Called directly from a scheduled future (StreamViewer's
                 # motion callback) with nothing awaiting its result - an
@@ -299,6 +404,8 @@ class MotionRecorder:
                 logger.exception("Failed to start motion recording for camera %s", self.camera_id)
                 self._started_at = None
                 self._output_path = None
+                self._sub_path = None
+                self._sub_proc = None
 
     async def on_motion_stop(self) -> None:
         async with self._lock:
@@ -315,24 +422,31 @@ class MotionRecorder:
             if self._proc is None:
                 return
             proc, output_path, started_at = self._proc, self._output_path, self._started_at
+            sub_proc, sub_path = self._sub_proc, self._sub_path
             self._proc = None
             self._output_path = None
+            self._sub_proc = None
+            self._sub_path = None
             self._stop_timer = None
             active_segment_registry.clear(self.camera_id)
 
-        if proc.returncode is None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()
+        for p in (proc, sub_proc):
+            if p is not None and p.returncode is None:
+                p.terminate()
+                try:
+                    await asyncio.wait_for(p.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    p.kill()
 
         ended_at = datetime.now(timezone.utc)
         # Same fragmented -> seekable remux as continuous segments, so a
         # motion clip can be scrubbed in the browser too. Motion clips aren't
         # recorded back-to-back, so doing it inline here adds no coverage gap.
         await _remux_to_seekable(output_path)
-        await register_recording(self.camera_id, output_path, "motion", started_at, ended_at)
+        playback_path = await _finalize_playback_copy(sub_path)
+        await register_recording(
+            self.camera_id, output_path, "motion", started_at, ended_at, playback_path=playback_path
+        )
 
     async def stop(self) -> None:
         if self._stop_timer:

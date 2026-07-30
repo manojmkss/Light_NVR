@@ -47,6 +47,23 @@ async def _copy_pair(video_src: str, dest_dir: str) -> str | None:
     return dest_video
 
 
+async def _copy_single(src: str, dest_dir: str) -> str | None:
+    """Copy one extra sibling file (e.g. the H.264 playback copy) to dest_dir,
+    verifying size. Non-critical: a failure just means that convenience file
+    doesn't make the move, never the recording itself."""
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, os.path.basename(src))
+    try:
+        await asyncio.to_thread(shutil.copy2, src, dest)
+    except OSError:
+        _silent_remove(dest)
+        return None
+    if os.path.getsize(dest) != os.path.getsize(src):
+        _silent_remove(dest)
+        return None
+    return dest
+
+
 def _silent_remove(path: str) -> None:
     if os.path.exists(path):
         try:
@@ -63,6 +80,7 @@ async def _migrate_one(recording_id: int) -> None:
         camera_id = recording.camera_id
         video_src = recording.file_path
         thumb_src = recording.thumbnail_path
+        playback_src = recording.playback_path
 
     if not os.path.exists(video_src):
         # File's gone already (e.g. retention deleted it before migration
@@ -85,22 +103,33 @@ async def _migrate_one(recording_id: int) -> None:
     if not (thumb_src and os.path.exists(new_thumb_path)):
         new_thumb_path = None
 
+    # Best-effort move of the H.264 playback copy alongside its recording; if it
+    # doesn't make it, playback for this clip just falls back to transcoding.
+    new_playback_path = None
+    if playback_src and os.path.exists(playback_src):
+        new_playback_path = await _copy_single(playback_src, dest_dir)
+
     async with AsyncSessionLocal() as db:
         recording = await db.get(Recording, recording_id)
         if recording is None:
-            # Deleted while we were copying it - clean up the copy we just made.
+            # Deleted while we were copying it - clean up the copies we made.
             _silent_remove(new_video_path)
             if new_thumb_path:
                 _silent_remove(new_thumb_path)
+            if new_playback_path:
+                _silent_remove(new_playback_path)
             return
         recording.file_path = new_video_path
         recording.thumbnail_path = new_thumb_path
+        recording.playback_path = new_playback_path
         recording.storage_tier = target_tier
         await db.commit()
 
     _silent_remove(video_src)
     if thumb_src:
         _silent_remove(thumb_src)
+    if playback_src:
+        _silent_remove(playback_src)
 
     logger.info("Migrated recording %d to %s", recording_id, target_tier)
 

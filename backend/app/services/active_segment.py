@@ -7,6 +7,10 @@ from datetime import datetime
 class ActiveSegment:
     file_path: str
     started_at: datetime
+    # In-progress H.264 sub-stream copy, when the camera has a distinct sub
+    # stream. Browsers can play this raw (unlike an H.265 main), so the
+    # live-segment endpoint serves it to make the last few minutes watchable.
+    playback_path: str | None = None
 
 
 class ActiveSegmentRegistry:
@@ -25,9 +29,9 @@ class ActiveSegmentRegistry:
         self._lock = threading.Lock()
         self._segments: dict[int, ActiveSegment] = {}
 
-    def set(self, camera_id: int, file_path: str, started_at: datetime) -> None:
+    def set(self, camera_id: int, file_path: str, started_at: datetime, playback_path: str | None = None) -> None:
         with self._lock:
-            self._segments[camera_id] = ActiveSegment(file_path, started_at)
+            self._segments[camera_id] = ActiveSegment(file_path, started_at, playback_path)
 
     def clear(self, camera_id: int) -> None:
         with self._lock:

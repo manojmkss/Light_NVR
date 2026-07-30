@@ -32,7 +32,7 @@ EVENT_RETENTION_DAYS = 90
 
 
 async def delete_recording_files(recording: Recording) -> None:
-    for path in (recording.file_path, recording.thumbnail_path):
+    for path in (recording.file_path, recording.thumbnail_path, recording.playback_path):
         if path and os.path.exists(path):
             try:
                 os.remove(path)

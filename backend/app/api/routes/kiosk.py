@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -258,6 +259,11 @@ async def get_public_recording_video(
     # Same on-demand H.265 -> H.264 transcode as the authenticated path, so kiosk
     # viewers on Firefox/Chrome can play HEVC recordings too.
     if transcode == "h264":
+        # Prefer the pre-recorded H.264 sub-stream copy when present (instant,
+        # seekable, no transcode).
+        if recording.playback_path and os.path.exists(recording.playback_path):
+            return range_file_response(request, recording.playback_path)
+
         from app.services.transcode_cache import get_or_transcode_h264
 
         try:

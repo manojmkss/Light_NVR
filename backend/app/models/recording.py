@@ -13,6 +13,12 @@ class Recording(Base):
     camera_id: Mapped[int] = mapped_column(ForeignKey("cameras.id", ondelete="CASCADE"), index=True)
     file_path: Mapped[str] = mapped_column(String(512))
     thumbnail_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Optional H.264 sub-stream copy recorded alongside an H.265 main, purely so
+    # browsers that can't decode HEVC (Firefox, many Chrome) have something
+    # instantly playable + seekable without an on-demand transcode. None when
+    # the camera has no distinct H.264 sub-stream (then playback falls back to
+    # transcoding file_path). file_path always stays the full-quality original.
+    playback_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     storage_tier: Mapped[str] = mapped_column(String(16), default="cache")  # cache | primary | backup
     trigger: Mapped[str] = mapped_column(String(16), default="continuous")  # continuous | motion
     # Video codec of the file (copied from the camera at record time). Drives
