@@ -63,17 +63,26 @@ def _write_concat_file(segs: list[tuple[str, float, float, float]], list_path: s
         f.write("\n".join(lines) + "\n")
 
 
-async def export_clip(segs: list[tuple[str, float, float, float]], out_path: str) -> None:
-    """Concatenate + trim the selected segments into out_path with a stream
-    copy - no re-encode, so the export keeps the camera's original quality.
-    Raises RuntimeError on failure.
+async def export_clip(segs: list[tuple[str, float, float, float]], out_path: str, encode_h264: bool = False) -> None:
+    """Concatenate + trim the selected segments into out_path. By default a
+    stream copy - no re-encode, so the export keeps the camera's original
+    quality/codec (fast, but an H.265 export won't play in most browsers). With
+    encode_h264=True it re-encodes to H.264 so the downloaded clip plays
+    anywhere, at the cost of CPU + time. Raises RuntimeError on failure.
     """
     list_path = f"{out_path}.concat.txt"
     _write_concat_file(segs, list_path)
+    if encode_h264:
+        codec_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac"]
+        # Re-encoding is far slower than a copy, so give it a longer ceiling.
+        timeout = 1800
+    else:
+        codec_args = ["-c", "copy"]
+        timeout = EXPORT_TIMEOUT_SECONDS
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-f", "concat", "-safe", "0", "-i", list_path,
-        "-c", "copy",
+        *codec_args,
         "-movflags", "+faststart",
         # Segments are independent recordings, so their timestamps restart at
         # each join; normalise them so players see one continuous timeline.
@@ -84,7 +93,7 @@ async def export_clip(segs: list[tuple[str, float, float, float]], out_path: str
         *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
     )
     try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=EXPORT_TIMEOUT_SECONDS)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()

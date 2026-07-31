@@ -102,13 +102,14 @@ async def export_clip_download(
     start: float,  # unix seconds (inclusive)
     end: float,  # unix seconds (exclusive)
     name: str | None = None,  # optional client-suggested filename (already tz-formatted)
+    h264: bool = False,  # re-encode to H.264 so the download plays in any browser
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user_flexible),
 ):
     """Cut a single downloadable clip covering [start, end] for one camera. The
     NVR stitches and trims whatever 5-minute segments fall in that window into
-    one MP4 with a plain stream copy, so the download is the camera's original
-    full-quality footage - not a re-encode.
+    one MP4. By default it's a plain stream copy (original full-quality codec,
+    fast); with h264=1 it re-encodes to H.264 so the clip plays in any browser.
     """
     if end <= start:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="end must be after start")
@@ -141,7 +142,7 @@ async def export_clip_download(
     fd, out_path = tempfile.mkstemp(suffix=".mp4", prefix="clip_")
     os.close(fd)
     try:
-        await export_clip(segs, out_path)
+        await export_clip(segs, out_path, encode_h264=h264)
     except RuntimeError as exc:
         _remove_quietly(out_path)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Clip export failed: {exc}")

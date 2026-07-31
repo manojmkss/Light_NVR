@@ -72,14 +72,17 @@ export function bulkDownloadZipUrl(ids: number[]): string {
   return buildMediaUrl(`/recordings/download-zip?ids=${ids.join(",")}`);
 }
 
-/** Direct-download URL for a stitched, full-quality clip covering [startTs, endTs]
- *  (Unix seconds) for one camera. `name` is a client-suggested filename. */
-export function clipExportUrl(cameraId: number, startTs: number, endTs: number, name?: string): string {
+/** Direct-download URL for a stitched clip covering [startTs, endTs] (Unix
+ *  seconds) for one camera. `name` is a client-suggested filename. By default
+ *  the export is a full-quality stream copy (original codec); pass h264=true to
+ *  re-encode to H.264 so the downloaded file plays in any browser. */
+export function clipExportUrl(cameraId: number, startTs: number, endTs: number, name?: string, h264 = false): string {
   const params = new URLSearchParams({
     camera_id: String(cameraId),
     start: String(startTs),
     end: String(endTs),
   });
   if (name) params.set("name", name);
+  if (h264) params.set("h264", "1");
   return buildMediaUrl(`/recordings/export?${params.toString()}`);
 }

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listCameras } from "../api/cameras";
 import { listRecordings } from "../api/recordings";
 import { listEvents } from "../api/system";
 import type { Camera, NvrEvent, Recording } from "../api/types";
+import { PlaybackPlayer } from "../components/PlaybackPlayer";
 import { PlaybackRow } from "../components/PlaybackRow";
 import { useSettings } from "../context/SettingsContext";
 import { clock24, startOfDayInTz, todayInTz } from "../utils/datetime";
@@ -14,8 +15,8 @@ const FRAME_STEP_MS = 100;
 // keeping seek-scrub modes and per-camera re-renders cheap.
 const TICK_MS = 50;
 
-// Video column widths for the size control.
-const SIZE_PX: Record<string, number> = { S: 220, M: 320, L: 460, XL: 640 };
+// Player max-widths for the size control.
+const SIZE_PX: Record<string, number> = { S: 520, M: 760, L: 1040, XL: 1400 };
 const SIZES = ["S", "M", "L", "XL"] as const;
 type SizeKey = (typeof SIZES)[number];
 
@@ -119,7 +120,15 @@ export function PlaybackPage() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [direction, setDirection] = useState(1);
-  const [syncLocked, setSyncLocked] = useState(true);
+  // Single-player review: the focused camera plays in the one shared player;
+  // every timeline stays locked to its cursor. There's no independent-cursor
+  // mode when only one video is shown, so this is always on.
+  const syncLocked = true;
+  // Which camera is showing in the shared player.
+  const [focusedId, setFocusedId] = useState<number | null>(null);
+  // Clip export: original codec (fast stream-copy) vs re-encoded H.264 (plays
+  // in any browser).
+  const [exportH264, setExportH264] = useState(false);
 
   // Cursors: one master (locked mode) plus per-camera cursors (unlocked mode).
   const [masterCursor, setMasterCursor] = useState(dayStart);
@@ -177,6 +186,11 @@ export function PlaybackPage() {
       setSelectedIds(cams.filter((c) => c.enabled).map((c) => c.id).slice(0, 4));
     });
   }, []);
+
+  // Keep the focused (player) camera valid as the selection changes.
+  useEffect(() => {
+    setFocusedId((cur) => (cur != null && selectedIds.includes(cur) ? cur : selectedIds[0] ?? null));
+  }, [selectedIds]);
 
   // Reset the view window and clock whenever the day changes.
   useEffect(() => {
@@ -426,9 +440,9 @@ export function PlaybackPage() {
 
   const enabledCameras = cameras.filter((c) => c.enabled);
   const selectedCameras = cameras.filter((c) => selectedIds.includes(c.id));
-  const referenceCursor = syncLocked ? masterCursor : effCursor(selectedIds[0] ?? -1);
-  // In synced mode the first row's playing video is the shared timebase.
-  const clockId = syncLocked ? selectedCameras[0]?.id ?? -1 : -1;
+  const referenceCursor = masterCursor;
+  // The camera shown in the shared player (and the transport clock).
+  const focusedCam = selectedCameras.find((c) => c.id === focusedId) ?? selectedCameras[0] ?? null;
 
   return (
     <div className="page playback-page">
@@ -502,13 +516,6 @@ export function PlaybackPage() {
                 {clock24(referenceCursor, timezone)}
                 <span className="pb-unix">{Math.floor(referenceCursor / 1000)}</span>
               </span>
-              <button
-                className={`btn btn-sm ${syncLocked ? "btn-primary" : ""}`}
-                title="Lock all cameras to the same timestamp"
-                onClick={() => setSyncLocked((v) => !v)}
-              >
-                {syncLocked ? "🔒 Synced" : "🔓 Independent"}
-              </button>
             </div>
           </div>
 
@@ -541,6 +548,15 @@ export function PlaybackPage() {
                 Clear
               </button>
             )}
+            <span className="pb-clip-format" title="H.264 re-encodes so the download plays in any browser; original is a faster stream-copy in the camera's codec">
+              Format:
+              <button className={`btn btn-sm ${!exportH264 ? "btn-primary" : ""}`} onClick={() => setExportH264(false)}>
+                Original
+              </button>
+              <button className={`btn btn-sm ${exportH264 ? "btn-primary" : ""}`} onClick={() => setExportH264(true)}>
+                H.264
+              </button>
+            </span>
             <span className="pb-clip-hint">
               Set In/Out, then use each camera's <b>⤓ Clip</b> button to download.
             </span>
@@ -563,8 +579,24 @@ export function PlaybackPage() {
             <span className="pb-legend-item pb-legend-tip">Scroll a timeline to zoom · drag to pan · drag the blue handles to trim a clip</span>
           </div>
 
-          {/* Camera rows */}
-          <div className="pb-rows" style={{ "--pb-video-w": `${SIZE_PX[size]}px` } as CSSProperties}>
+          {/* Single shared player for the focused camera */}
+          <div className="pb-player-wrap" style={{ maxWidth: `${SIZE_PX[size]}px` }}>
+            {focusedCam && (
+              <PlaybackPlayer
+                key={focusedCam.id}
+                cameraName={focusedCam.name}
+                recordings={recsByCam[focusedCam.id] ?? []}
+                cursor={referenceCursor}
+                playing={playing}
+                speed={speed}
+                direction={direction}
+                onPlayheadTime={reportPlayhead}
+              />
+            )}
+          </div>
+
+          {/* Per-camera timelines - click "View" to play that camera above. */}
+          <div className="pb-rows">
             {selectedCameras.map((cam) => (
               <PlaybackRow
                 key={cam.id}
@@ -576,19 +608,17 @@ export function PlaybackPage() {
                 viewStart={viewStart}
                 viewEnd={viewEnd}
                 cursor={effCursor(cam.id)}
-                playing={playing}
-                speed={speed}
-                direction={direction}
                 clipIn={clipIn}
                 clipOut={clipOut}
-                isClock={cam.id === clockId}
+                focused={cam.id === focusedCam?.id}
+                exportH264={exportH264}
+                onFocus={() => setFocusedId(cam.id)}
                 onSeek={(ms) => seekTo(cam.id, ms)}
                 onView={onView}
                 onClip={(i, o) => {
                   setClipIn(i);
                   setClipOut(o);
                 }}
-                onPlayheadTime={reportPlayhead}
               />
             ))}
           </div>
