@@ -6,6 +6,24 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Playback & Export redesigned to a single player.** The page now shows one
+  large video for a focused camera plus a click-to-focus timeline per camera,
+  instead of a separate video per camera. Only the focused camera is
+  transcoded, so opening a multi-camera review no longer fires one transcode
+  per camera. Pick which camera plays with each row's **View** button.
+
+### Added
+- **Browser-friendly (H.264) clip export.** Clip export now has a format
+  toggle: **Original** (fast stream-copy in the camera's codec) or **H.264**
+  (re-encoded so the downloaded file plays in any browser).
+
+### Fixed
+- **Playback transcodes are bounded and stop when you leave.** On-demand
+  H.265->H.264 transcodes are capped so a multi-camera view can't peg every
+  core, and ffmpeg is killed the moment the viewer navigates away or hides the
+  tab - CPU no longer stays pinned after leaving the page.
+
 ## [0.2.4] - 2026-07-30
 
 ### Changed
