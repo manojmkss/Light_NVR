@@ -267,7 +267,7 @@ async def get_public_recording_video(
         from app.services.transcode_cache import get_or_transcode_h264
 
         try:
-            out_path = await get_or_transcode_h264(recording_id, recording.file_path)
+            out_path = await get_or_transcode_h264(recording_id, recording.file_path, request=request)
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not transcode for playback: {exc}"

@@ -13,6 +13,10 @@ volume and are cleared on startup.
 import asyncio
 import logging
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +26,32 @@ MAX_CACHE_FILES = 24
 MAX_CACHE_BYTES = 3 * 1024**3  # 3 GB
 TRANSCODE_TIMEOUT_SECONDS = 900  # ceiling for one clip's conversion
 
+# Cap on concurrent transcodes. Opening a multi-camera playback view fires one
+# request per camera at once; without a cap that's N full-file H.265->H.264
+# transcodes pegging every core. Extra requests queue on this instead. 2 leaves
+# headroom for recording + motion on a typical box.
+MAX_CONCURRENT_TRANSCODES = 2
+_transcode_slots = asyncio.Semaphore(MAX_CONCURRENT_TRANSCODES)
+
 # One in-flight transcode per recording: a second viewer of the same clip waits
 # on the first instead of launching a duplicate ffmpeg.
 _locks: dict[int, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
+
+
+async def _kill_when_client_leaves(proc: "asyncio.subprocess.Process", request: "Request") -> None:
+    """Kill the transcode as soon as the viewer navigates away / closes the
+    tab, instead of burning CPU on a clip nobody is waiting for. Polls the ASGI
+    disconnect signal (works even when the server doesn't cancel the handler)."""
+    try:
+        while True:
+            if await request.is_disconnected():
+                if proc.returncode is None:
+                    proc.kill()
+                return
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        pass
 
 
 def _cache_path(recording_id: int) -> str:
@@ -80,10 +106,14 @@ def _evict_if_needed() -> None:
         _remove_quietly(victim)
 
 
-async def get_or_transcode_h264(recording_id: int, src_path: str) -> str:
+async def get_or_transcode_h264(recording_id: int, src_path: str, request: "Request | None" = None) -> str:
     """Return the path to an H.264 copy of `src_path`, transcoding + caching it
     on first request. Raises RuntimeError on failure. Serve the returned file
     with a Range-capable response (FileResponse) so playback stays seekable.
+
+    Pass `request` so the transcode is aborted the moment the viewer navigates
+    away, and is bounded by a global concurrency cap so a multi-camera view
+    can't spawn one ffmpeg per camera at once.
     """
     os.makedirs(TRANSCODE_DIR, exist_ok=True)
     out_path = _cache_path(recording_id)
@@ -112,16 +142,37 @@ async def get_or_transcode_h264(recording_id: int, src_path: str) -> str:
             "-f", "mp4",
             tmp,
         ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
-        )
-        try:
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=TRANSCODE_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            _remove_quietly(tmp)
-            raise RuntimeError("Transcode timed out")
+
+        # Queue behind the concurrency cap. If the viewer already left while we
+        # were waiting for a slot, don't bother starting ffmpeg at all.
+        async with _transcode_slots:
+            if request is not None and await request.is_disconnected():
+                _remove_quietly(tmp)
+                raise RuntimeError("client disconnected before transcode started")
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+            )
+            watcher = (
+                asyncio.create_task(_kill_when_client_leaves(proc, request)) if request is not None else None
+            )
+            try:
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=TRANSCODE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                _remove_quietly(tmp)
+                raise RuntimeError("Transcode timed out")
+            except asyncio.CancelledError:
+                # Handler was cancelled (client disconnect) - don't leave ffmpeg
+                # orphaned burning CPU.
+                proc.kill()
+                await proc.wait()
+                _remove_quietly(tmp)
+                raise
+            finally:
+                if watcher is not None:
+                    watcher.cancel()
 
         if proc.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
             detail = stderr.decode(errors="ignore")[-300:] if stderr else "ffmpeg failed"

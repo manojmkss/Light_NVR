@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { clipExportUrl, recordingPlaybackUrl } from "../api/recordings";
 import type { Camera, NvrEvent, Recording } from "../api/types";
 import { useSettings } from "../context/SettingsContext";
+import { usePageVisible } from "../hooks/usePageVisible";
 import { partsInTz } from "../utils/datetime";
 import { TimelineCanvas } from "./TimelineCanvas";
 
@@ -83,6 +84,7 @@ export function PlaybackRow(props: PlaybackRowProps) {
   } = props;
 
   const { fmtTime, timezone } = useSettings();
+  const pageVisible = usePageVisible();
   const videoRef = useRef<HTMLVideoElement>(null);
   const wantRef = useRef(0);
   const [activeRec, setActiveRec] = useState<Recording | null>(null);
@@ -230,7 +232,10 @@ export function PlaybackRow(props: PlaybackRowProps) {
           muted
           playsInline
           className="tile-video"
-          src={activeRec ? recordingPlaybackUrl(activeRec) : undefined}
+          // Drop the source while the tab is hidden so the transcode request is
+          // aborted (and the server kills its ffmpeg) instead of churning CPU on
+          // a page nobody's looking at; it reloads when the tab is shown again.
+          src={activeRec && pageVisible ? recordingPlaybackUrl(activeRec) : undefined}
           onLoadedMetadata={() => {
             const v = videoRef.current;
             if (v) {
