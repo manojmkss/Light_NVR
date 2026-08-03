@@ -23,7 +23,10 @@ def _camera_dir(camera_id: int) -> str:
     return path
 
 
-def _build_record_cmd(rtsp_url: str, output_path: str, has_audio: bool, duration: int | None) -> list[str]:
+def _build_record_cmd(rtsp_url: str, output_path: str, audio_mode: str, duration: int | None) -> list[str]:
+    """audio_mode: "copy" (stream-copy the camera's own AAC - zero CPU), "aac"
+    (re-encode to AAC - needed for codecs MP4 can't hold as-is, e.g. the G.711/
+    G.726 most cameras actually send over RTSP), or "none" (no audio track)."""
     cmd = [
         "ffmpeg", "-y",
         "-rtsp_transport", "tcp",
@@ -37,7 +40,12 @@ def _build_record_cmd(rtsp_url: str, output_path: str, has_audio: bool, duration
         "-i", rtsp_url,
         "-c:v", "copy",
     ]
-    cmd += ["-c:a", "aac"] if has_audio else ["-an"]
+    if audio_mode == "copy":
+        cmd += ["-c:a", "copy"]
+    elif audio_mode == "aac":
+        cmd += ["-c:a", "aac"]
+    else:
+        cmd += ["-an"]
     if duration:
         cmd += ["-t", str(duration)]
     # Fragmented MP4 instead of faststart: each fragment (moof+mdat) is a
@@ -146,6 +154,40 @@ async def _probe_video_codec(path: str) -> str | None:
     return out.decode(errors="ignore").strip() or None
 
 
+async def _probe_audio_codec(rtsp_url: str) -> str | None:
+    """ffprobe the RTSP stream's first audio codec name (e.g. 'aac',
+    'pcm_mulaw'), or None if there's no audio track or it can't be determined.
+    Bounded timeout: this runs against a live camera, not a file."""
+    cmd = [
+        "ffprobe", "-v", "error", "-rtsp_transport", "tcp", "-select_streams", "a:0",
+        "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", rtsp_url,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except Exception:
+        return None
+    return out.decode(errors="ignore").strip() or None
+
+
+async def _resolve_audio_mode(camera_id: int, rtsp_url: str, has_audio: bool) -> str:
+    """"copy" only when the camera's own audio is already AAC - the one codec
+    that's both valid inside MP4 and something cameras actually send, so a
+    stream-copy costs zero CPU. Anything else (G.711/G.726, which MP4 can't
+    hold directly, or a probe that failed) falls back to re-encoding to AAC -
+    the previous universal behavior - rather than risk `-c:a copy` producing a
+    file ffmpeg's MP4 muxer rejects outright, which would silently kill video
+    recording too since it's the same output file."""
+    if not has_audio:
+        return "none"
+    codec = await _probe_audio_codec(rtsp_url)
+    mode = "copy" if codec == "aac" else "aac"
+    logger.info("Camera %s audio: %s -> recording as %s", camera_id, codec or "unknown", mode)
+    return mode
+
+
 async def _finalize_playback_copy(sub_path: str | None) -> str | None:
     """Finalize the parallel sub-stream recording into a browser-ready playback
     copy. Kept only if it's genuinely H.264 - the whole point is giving HEVC-shy
@@ -185,9 +227,18 @@ class ContinuousRecorder:
         self._proc: asyncio.subprocess.Process | None = None
         self._sub_proc: asyncio.subprocess.Process | None = None
         self._paused_for_space = False
+        # Resolved once (probing a live RTSP stream isn't free) and reused for
+        # every segment this instance records; a fresh instance after a
+        # restart re-resolves it, picking up any camera-side audio change.
+        self._audio_mode: str | None = None
         # In-flight segment finalizations (remux-to-seekable + DB register),
         # run in the background so the next segment starts with no gap.
         self._finalize_tasks: set[asyncio.Task] = set()
+
+    async def _resolve_audio_mode(self) -> str:
+        if self._audio_mode is None:
+            self._audio_mode = await _resolve_audio_mode(self.camera_id, self.rtsp_url, self.has_audio)
+        return self._audio_mode
 
     async def _start_sub(self, sub_path: str | None) -> asyncio.subprocess.Process | None:
         """Launch the best-effort parallel sub-stream copy. A separate process
@@ -197,7 +248,7 @@ class ContinuousRecorder:
         if not sub_path or not self.sub_url:
             return None
         try:
-            cmd = _build_record_cmd(self.sub_url, sub_path, False, SEGMENT_SECONDS)
+            cmd = _build_record_cmd(self.sub_url, sub_path, "none", SEGMENT_SECONDS)
             return await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
             )
@@ -257,7 +308,8 @@ class ContinuousRecorder:
         ts = started_at.strftime("%Y%m%d_%H%M%S")
         output_path = f"{_camera_dir(self.camera_id)}/{ts}_continuous.mp4"
         sub_path = _sub_path_for(output_path) if self.sub_url else None
-        cmd = _build_record_cmd(self.rtsp_url, output_path, self.has_audio, SEGMENT_SECONDS)
+        audio_mode = await self._resolve_audio_mode()
+        cmd = _build_record_cmd(self.rtsp_url, output_path, audio_mode, SEGMENT_SECONDS)
 
         # Published before ffmpeg even starts writing so the live-segment
         # endpoints have somewhere to point as soon as the file exists; the
@@ -360,6 +412,14 @@ class MotionRecorder:
         self._sub_path: str | None = None
         self._stop_timer: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        # Resolved once and reused for every motion clip this instance records
+        # (see ContinuousRecorder._resolve_audio_mode for why).
+        self._audio_mode: str | None = None
+
+    async def _resolve_audio_mode(self) -> str:
+        if self._audio_mode is None:
+            self._audio_mode = await _resolve_audio_mode(self.camera_id, self.rtsp_url, self.has_audio)
+        return self._audio_mode
 
     async def on_motion_start(self) -> None:
         async with self._lock:
@@ -378,7 +438,8 @@ class MotionRecorder:
                 self._started_at = datetime.now(timezone.utc)
                 ts = self._started_at.strftime("%Y%m%d_%H%M%S")
                 self._output_path = f"{_camera_dir(self.camera_id)}/{ts}_motion.mp4"
-                cmd = _build_record_cmd(self.rtsp_url, self._output_path, self.has_audio, self.MAX_CLIP_SECONDS)
+                audio_mode = await self._resolve_audio_mode()
+                cmd = _build_record_cmd(self.rtsp_url, self._output_path, audio_mode, self.MAX_CLIP_SECONDS)
                 self._proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
                 )
@@ -387,7 +448,7 @@ class MotionRecorder:
                 self._sub_proc = None
                 if self._sub_path:
                     try:
-                        sub_cmd = _build_record_cmd(self.sub_url, self._sub_path, False, self.MAX_CLIP_SECONDS)
+                        sub_cmd = _build_record_cmd(self.sub_url, self._sub_path, "none", self.MAX_CLIP_SECONDS)
                         self._sub_proc = await asyncio.create_subprocess_exec(
                             *sub_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
                         )
