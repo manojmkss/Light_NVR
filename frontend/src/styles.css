@@ -1599,6 +1599,32 @@ tr:last-child td {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* Identifying still - the main visual cue for picking a camera */
+.pb-thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #0b0e12;
+  margin-bottom: 6px;
+}
+
+.pb-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pb-thumb-none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 22px;
+  font-weight: 700;
+}
+
 .pb-card-top {
   display: flex;
   align-items: center;

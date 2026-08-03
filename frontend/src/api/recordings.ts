@@ -62,6 +62,11 @@ export function recordingPlaybackUrl(rec: { id: number; codec?: string | null })
   return buildMediaUrl(`/recordings/${rec.id}/video${suffix}`);
 }
 
+/** Poster frame for a recording (generated when the segment was registered). */
+export function recordingThumbnailUrl(id: number): string {
+  return buildMediaUrl(`/recordings/${id}/thumbnail.jpg`);
+}
+
 /** Force-download URL for a single recording (Save-As with a friendly filename). */
 export function recordingDownloadUrl(id: number): string {
   return buildMediaUrl(`/recordings/${id}/video?download=1`);

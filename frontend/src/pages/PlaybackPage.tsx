@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listCameras } from "../api/cameras";
-import { downloadClip, listRecordings } from "../api/recordings";
+import { listCameras, snapshotUrl } from "../api/cameras";
+import { downloadClip, listRecordings, recordingThumbnailUrl } from "../api/recordings";
 import { listEvents } from "../api/system";
 import type { Camera, NvrEvent, Recording } from "../api/types";
 import { PlaybackPlayer } from "../components/PlaybackPlayer";
@@ -61,6 +61,37 @@ function fmtDur(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.round(seconds % 60);
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+/**
+ * Identifying still for a camera in the strip. People recognise a camera by
+ * what it looks at, not by its name, so this prefers a poster frame from the
+ * day being reviewed (that's the footage in question), falls back to the live
+ * snapshot when the day has no thumbnails yet, and finally to the camera's
+ * initial - so a card is never just an empty box.
+ */
+function CameraThumb({ camera, recordings }: { camera: Camera; recordings: Recording[] }) {
+  const [stage, setStage] = useState(0); // 0 = recording poster, 1 = live, 2 = initial
+
+  // Stable per day: picked from the day's recordings, so it doesn't flicker
+  // while scrubbing. Resets when the day's recordings change.
+  const posterId = useMemo(() => recordings.find((r) => r.thumbnail_path)?.id ?? null, [recordings]);
+  useEffect(() => setStage(posterId ? 0 : 1), [posterId, camera.id]);
+
+  const src = stage === 0 && posterId ? recordingThumbnailUrl(posterId) : stage === 1 ? snapshotUrl(camera.id) : null;
+
+  if (!src) {
+    return (
+      <div className="pb-thumb pb-thumb-none" aria-hidden>
+        {camera.name.trim().charAt(0).toUpperCase() || "?"}
+      </div>
+    );
+  }
+  return (
+    <div className="pb-thumb">
+      <img src={src} alt="" loading="lazy" onError={() => setStage((s) => s + 1)} />
+    </div>
+  );
 }
 
 /** Compact coverage bar for a camera strip card: where footage exists today. */
@@ -467,6 +498,7 @@ export function PlaybackPage() {
                   onClick={() => setFocusedId(cam.id)}
                   title={`Show ${cam.name} in the player`}
                 >
+                  <CameraThumb camera={cam} recordings={recs} />
                   <div className="pb-card-top">
                     <span className={`pb-dot ${cam.status === "online" ? "on" : "off"}`} />
                     <span className="pb-card-name">{cam.name}</span>
