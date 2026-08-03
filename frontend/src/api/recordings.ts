@@ -67,6 +67,51 @@ export function recordingDownloadUrl(id: number): string {
   return buildMediaUrl(`/recordings/${id}/video?download=1`);
 }
 
+/**
+ * Download an exported clip, surfacing real failures.
+ *
+ * A plain `<a download>` on the export URL silently saves whatever the server
+ * returned - so a 404 ("No footage found in that time range") or a 500 landed
+ * on disk as a few-hundred-byte ".mp4" that simply wouldn't play, with no error
+ * shown anywhere. Fetching first lets us check the status, surface the server's
+ * own message, and only save the file once we know it's really a video. It also
+ * means the promise resolves when the export is genuinely finished, so the UI
+ * can show an honest progress state instead of a fixed timer.
+ */
+export async function downloadClip(opts: {
+  cameraId: number;
+  startTs: number;
+  endTs: number;
+  name: string;
+  h264?: boolean;
+}): Promise<void> {
+  const url = clipExportUrl(opts.cameraId, opts.startTs, opts.endTs, opts.name, opts.h264);
+  const res = await fetch(url);
+  if (!res.ok) {
+    let detail = `Export failed (HTTP ${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* error body wasn't JSON - keep the status-code message */
+    }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  if (blob.size === 0) throw new Error("Export produced an empty file");
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = `${opts.name}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 /** Streaming .zip download URL for a set of recordings. */
 export function bulkDownloadZipUrl(ids: number[]): string {
   return buildMediaUrl(`/recordings/download-zip?ids=${ids.join(",")}`);

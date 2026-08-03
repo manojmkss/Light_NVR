@@ -26,6 +26,8 @@ interface Props {
   speed: number;
   direction: number;
   onPlayheadTime: (ms: number) => void;
+  /** Lets the page reach the element (e.g. to grab a snapshot frame). */
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
 }
 
 /**
@@ -35,10 +37,15 @@ interface Props {
  * real position drives the shared cursor (it's always the transport clock), so
  * every timeline tracks what this player is actually showing.
  */
-export function PlaybackPlayer({ cameraName, recordings, cursor, playing, speed, direction, onPlayheadTime }: Props) {
+export function PlaybackPlayer({
+  cameraName, recordings, cursor, playing, speed, direction, onPlayheadTime, videoRef: externalVideoRef,
+}: Props) {
   const { fmtTime } = useSettings();
   const pageVisible = usePageVisible();
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const internalVideoRef = useRef<HTMLVideoElement>(null);
+  // Both are "possibly null" refs; the cast is only to satisfy the `ref` prop's
+  // non-null RefObject signature.
+  const videoRef = (externalVideoRef ?? internalVideoRef) as React.RefObject<HTMLVideoElement>;
   const wantRef = useRef(0);
   const [activeRec, setActiveRec] = useState<Recording | null>(null);
 

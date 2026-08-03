@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listCameras } from "../api/cameras";
-import { listRecordings } from "../api/recordings";
+import { downloadClip, listRecordings } from "../api/recordings";
 import { listEvents } from "../api/system";
 import type { Camera, NvrEvent, Recording } from "../api/types";
 import { PlaybackPlayer } from "../components/PlaybackPlayer";
-import { PlaybackRow } from "../components/PlaybackRow";
+import { TimelineCanvas } from "../components/TimelineCanvas";
 import { useSettings } from "../context/SettingsContext";
-import { clock24, startOfDayInTz, todayInTz } from "../utils/datetime";
+import { clock24, partsInTz, startOfDayInTz, todayInTz } from "../utils/datetime";
 
 const DAY_MS = 24 * 3600 * 1000;
 const SPEEDS = [0.5, 1, 2, 4, 16, 64];
@@ -14,11 +14,6 @@ const FRAME_STEP_MS = 100;
 // The transport clock ticks at ~20fps: smooth enough for the playhead while
 // keeping seek-scrub modes and per-camera re-renders cheap.
 const TICK_MS = 50;
-
-// Player max-widths for the size control.
-const SIZE_PX: Record<string, number> = { S: 520, M: 760, L: 1040, XL: 1400 };
-const SIZES = ["S", "M", "L", "XL"] as const;
-type SizeKey = (typeof SIZES)[number];
 
 interface Interval {
   start: number;
@@ -47,49 +42,51 @@ function prevEndBefore(iv: Interval[], ms: number): number | null {
   return best;
 }
 
-// Multi-select dropdown for choosing which cameras to review.
-function CameraSelect({
-  cameras,
-  selectedIds,
-  onToggle,
-}: {
-  cameras: Camera[];
-  selectedIds: number[];
-  onToggle: (id: number) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+function pad(n: number): string {
+  return n.toString().padStart(2, "0");
+}
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+// Filename like "Front Door_20260701_183000-184500" (backend appends .mp4 and
+// sanitises); timestamps are in the NVR's display timezone.
+function clipFilename(name: string, inMs: number, outMs: number, tz?: string): string {
+  const s = partsInTz(inMs, tz);
+  const e = partsInTz(outMs, tz);
+  const day = `${s.year}${pad(s.month)}${pad(s.day)}`;
+  const t1 = `${pad(s.hour)}${pad(s.minute)}${pad(s.second)}`;
+  const t2 = `${pad(e.hour)}${pad(e.minute)}${pad(e.second)}`;
+  return `${name}_${day}_${t1}-${t2}`;
+}
 
-  const label = selectedIds.length === 0 ? "Select cameras" : `${selectedIds.length} camera${selectedIds.length > 1 ? "s" : ""}`;
+function fmtDur(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+/** Compact coverage bar for a camera strip card: where footage exists today. */
+function CoverageBar({ recordings, dayStart, dayEnd }: { recordings: Recording[]; dayStart: number; dayEnd: number }) {
+  const spans = useMemo(() => {
+    const span = dayEnd - dayStart;
+    return recordings.slice(0, 400).map((r) => {
+      const s = Math.max(dayStart, recStartMs(r));
+      const e = Math.min(dayEnd, recEndMs(r));
+      return {
+        left: ((s - dayStart) / span) * 100,
+        width: Math.max(0.4, ((e - s) / span) * 100),
+        motion: r.trigger === "motion",
+      };
+    });
+  }, [recordings, dayStart, dayEnd]);
 
   return (
-    <div className="pb-dropdown" ref={ref}>
-      <button className="btn btn-sm" onClick={() => setOpen((o) => !o)}>
-        {label} ▾
-      </button>
-      {open && (
-        <div className="pb-dropdown-menu">
-          {cameras.length === 0 ? (
-            <div className="pb-dropdown-empty">No enabled cameras</div>
-          ) : (
-            cameras.map((c) => (
-              <label key={c.id} className="pb-dropdown-item">
-                <input type="checkbox" checked={selectedIds.includes(c.id)} onChange={() => onToggle(c.id)} />
-                {c.name}
-              </label>
-            ))
-          )}
-        </div>
-      )}
+    <div className="pb-cov">
+      {spans.map((s, i) => (
+        <i
+          key={i}
+          className={s.motion ? "pb-cov-seg pb-cov-motion" : "pb-cov-seg"}
+          style={{ left: `${s.left}%`, width: `${s.width}%` }}
+        />
+      ))}
     </div>
   );
 }
@@ -97,12 +94,7 @@ function CameraSelect({
 export function PlaybackPage() {
   const { timezone } = useSettings();
   const [cameras, setCameras] = useState<Camera[]>([]);
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [date, setDate] = useState(() => todayInTz(timezone));
-  const [size, setSize] = useState<SizeKey>(() => {
-    const s = localStorage.getItem("lightnvr_pb_size");
-    return (SIZES as readonly string[]).includes(s ?? "") ? (s as SizeKey) : "M";
-  });
 
   const [recsByCam, setRecsByCam] = useState<Record<number, Recording[]>>({});
   const [eventsByCam, setEventsByCam] = useState<Record<number, NvrEvent[]>>({});
@@ -112,7 +104,6 @@ export function PlaybackPage() {
   const dayStart = useMemo(() => startOfDayInTz(date, timezone), [date, timezone]);
   const dayEnd = dayStart + DAY_MS;
 
-  // Shared time axis (all timelines zoom/pan together).
   const [viewStart, setViewStart] = useState(dayStart);
   const [viewEnd, setViewEnd] = useState(dayEnd);
 
@@ -120,90 +111,79 @@ export function PlaybackPage() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [direction, setDirection] = useState(1);
-  // Single-player review: the focused camera plays in the one shared player;
-  // every timeline stays locked to its cursor. There's no independent-cursor
-  // mode when only one video is shown, so this is always on.
-  const syncLocked = true;
-  // Which camera is showing in the shared player.
+  const [cursor, setCursor] = useState(dayStart);
+
+  // Which camera is showing in the main player.
   const [focusedId, setFocusedId] = useState<number | null>(null);
-  // Clip export: original codec (fast stream-copy) vs re-encoded H.264 (plays
-  // in any browser).
-  const [exportH264, setExportH264] = useState(false);
 
-  // Cursors: one master (locked mode) plus per-camera cursors (unlocked mode).
-  const [masterCursor, setMasterCursor] = useState(dayStart);
-  const [indieCursors, setIndieCursors] = useState<Record<number, number>>({});
-
-  // Clip export markers (epoch ms).
+  // Clip export markers (epoch ms) + export state.
   const [clipIn, setClipIn] = useState<number | null>(null);
   const [clipOut, setClipOut] = useState<number | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [exportH264, setExportH264] = useState(false);
+  const [exportingId, setExportingId] = useState<number | null>(null);
+  const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Refs mirror state for the rAF loop (avoids stale closures / re-subscribes).
-  const stateRef = useRef({ playing, speed, direction, syncLocked, dayStart, dayEnd, selectedIds });
-  stateRef.current = { playing, speed, direction, syncLocked, dayStart, dayEnd, selectedIds };
-  const masterRef = useRef(masterCursor);
-  masterRef.current = masterCursor;
-  const indieRef = useRef(indieCursors);
-  indieRef.current = indieCursors;
+  const stateRef = useRef({ playing, speed, direction, dayStart, dayEnd });
+  stateRef.current = { playing, speed, direction, dayStart, dayEnd };
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
   const viewRef = useRef({ start: viewStart, end: viewEnd });
   viewRef.current = { start: viewStart, end: viewEnd };
-  // Merged recording intervals across selected cameras, for gap-skipping.
   const intervalsRef = useRef<Interval[]>([]);
-  // Timestamp of the last position report from the clock video; a fresh value
-  // means the video is actively playing and driving the cursor itself.
+  // Timestamp of the last position report from the player; a fresh value means
+  // the video is actively playing and driving the cursor itself.
   const lastReportRef = useRef(0);
   const lastSetRef = useRef(0);
 
-  useEffect(() => {
-    localStorage.setItem("lightnvr_pb_size", size);
-  }, [size]);
-
-  const effCursor = useCallback(
-    (id: number) => (syncLocked ? masterCursor : indieCursors[id] ?? masterCursor),
-    [syncLocked, masterCursor, indieCursors],
-  );
-
-  // The clock video reports its real position here; it steers the shared cursor
-  // (synced mode only) so playback follows the element instead of a free timer.
+  // The player reports its real position here; it steers the cursor so playback
+  // follows the element instead of a free timer.
   const reportPlayhead = useCallback((ms: number) => {
-    if (!stateRef.current.syncLocked) return;
     const now = performance.now();
     lastReportRef.current = now;
-    masterRef.current = ms;
+    cursorRef.current = ms;
     // Throttle the React state update to ~30fps so a high-fps recording can't
-    // flood re-renders; masterRef stays exact for the transport logic.
+    // flood re-renders; cursorRef stays exact for the transport logic.
     if (now - lastSetRef.current >= 33) {
       lastSetRef.current = now;
-      setMasterCursor(ms);
+      setCursor(ms);
     }
   }, []);
 
-  // Load camera list once.
   useEffect(() => {
     listCameras().then((cams) => {
       setCameras(cams);
-      setSelectedIds(cams.filter((c) => c.enabled).map((c) => c.id).slice(0, 4));
+      setFocusedId((cur) => cur ?? cams.find((c) => c.enabled)?.id ?? null);
     });
   }, []);
-
-  // Keep the focused (player) camera valid as the selection changes.
-  useEffect(() => {
-    setFocusedId((cur) => (cur != null && selectedIds.includes(cur) ? cur : selectedIds[0] ?? null));
-  }, [selectedIds]);
 
   // Reset the view window and clock whenever the day changes.
   useEffect(() => {
     setViewStart(dayStart);
     setViewEnd(dayEnd);
-    setMasterCursor(dayStart);
-    setIndieCursors({});
+    setCursor(dayStart);
     setPlaying(false);
   }, [dayStart, dayEnd]);
 
-  // Load recordings + motion events for the selected cameras / day.
   useEffect(() => {
-    if (selectedIds.length === 0) {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  const enabledCameras = useMemo(() => cameras.filter((c) => c.enabled), [cameras]);
+  const focusedCam = useMemo(
+    () => enabledCameras.find((c) => c.id === focusedId) ?? enabledCameras[0] ?? null,
+    [enabledCameras, focusedId],
+  );
+
+  // Load recordings + motion events for every enabled camera for the day. This
+  // is metadata only (timelines + coverage bars) - it costs no video decoding,
+  // so showing every camera's coverage stays cheap.
+  useEffect(() => {
+    if (enabledCameras.length === 0) {
       setRecsByCam({});
       setEventsByCam({});
       return;
@@ -213,58 +193,57 @@ export function PlaybackPage() {
     let cancelled = false;
 
     Promise.all(
-      selectedIds.map(async (id) => {
+      enabledCameras.map(async (cam) => {
         const [recs, evs] = await Promise.all([
-          listRecordings({ camera_id: id, start: startIso, end: endIso, limit: 500 }),
-          listEvents(id, 500),
+          listRecordings({ camera_id: cam.id, start: startIso, end: endIso, limit: 500 }),
+          listEvents(cam.id, 500),
         ]);
-        return { id, recs, evs };
+        return { id: cam.id, recs, evs };
       }),
-    ).then((results) => {
-      if (cancelled) return;
-      const rMap: Record<number, Recording[]> = {};
-      const eMap: Record<number, NvrEvent[]> = {};
-      for (const { id, recs, evs } of results) {
-        rMap[id] = recs;
-        eMap[id] = evs.filter((e) => {
-          const t = new Date(e.created_at).getTime();
-          return e.type === "motion" && t >= dayStart && t <= dayEnd;
-        });
-      }
-      setRecsByCam(rMap);
-      setEventsByCam(eMap);
-    });
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const rMap: Record<number, Recording[]> = {};
+        const eMap: Record<number, NvrEvent[]> = {};
+        for (const { id, recs, evs } of results) {
+          rMap[id] = recs;
+          eMap[id] = evs.filter((e) => {
+            const t = new Date(e.created_at).getTime();
+            return e.type === "motion" && t >= dayStart && t <= dayEnd;
+          });
+        }
+        setRecsByCam(rMap);
+        setEventsByCam(eMap);
+      })
+      .catch(() => {
+        if (!cancelled) setNotice({ kind: "err", text: "Could not load recordings for this day." });
+      });
 
     return () => {
       cancelled = true;
     };
-  }, [selectedIds, dayStart, dayEnd]);
+  }, [enabledCameras, dayStart, dayEnd]);
 
-  // Rebuild the merged interval list and, on a fresh day, drop the playhead on
-  // the first available footage instead of leaving it stuck at empty midnight.
+  const focusedRecs = focusedCam ? recsByCam[focusedCam.id] ?? [] : [];
+
+  // Gap-skipping intervals follow the focused camera (that's what's playing).
   useEffect(() => {
-    const iv: Interval[] = [];
-    for (const id of selectedIds) {
-      for (const r of recsByCam[id] ?? []) {
-        iv.push({ start: recStartMs(r), end: recEndMs(r) });
-      }
-    }
-    iv.sort((a, b) => a.start - b.start);
+    const iv = focusedRecs
+      .map((r) => ({ start: recStartMs(r), end: recEndMs(r) }))
+      .sort((a, b) => a.start - b.start);
     intervalsRef.current = iv;
-
-    if (iv.length && masterRef.current <= dayStart) {
-      masterRef.current = iv[0].start;
-      setMasterCursor(iv[0].start);
+    if (iv.length && cursorRef.current <= dayStart) {
+      cursorRef.current = iv[0].start;
+      setCursor(iv[0].start);
     }
-  }, [recsByCam, selectedIds, dayStart]);
+  }, [focusedRecs, dayStart]);
 
-  // The transport clock: advances the playhead(s) while playing, skips over
-  // gaps with no footage, and pans the view to follow when zoomed in.
+  // The transport clock: advances the playhead while playing, skips over gaps
+  // with no footage, and pans the view to follow when zoomed in.
   useEffect(() => {
     let last = performance.now();
     let acc = 0;
     let raf = 0;
-    // Pan the view to keep the playhead on screen when zoomed in.
     const applyFollow = (c: number, dayStartV: number, dayEndV: number) => {
       const vs0 = viewRef.current.start;
       const ve0 = viewRef.current.end;
@@ -297,53 +276,42 @@ export function PlaybackPage() {
         const st = stateRef.current;
         if (st.playing) {
           const deltaMs = (acc / 1000) * st.speed * st.direction * 1000;
-          if (st.syncLocked) {
-            const iv = intervalsRef.current;
-            const isNative = st.direction > 0 && st.speed > 0 && st.speed <= 4;
-            const c0 = masterRef.current;
-            const clockAlive = performance.now() - lastReportRef.current < 1000;
-            if (isNative && clockAlive && coveredAt(iv, c0)) {
-              // The clock camera's video is the timebase; don't double-advance.
-              applyFollow(c0, st.dayStart, st.dayEnd);
-            } else {
-              let c = c0 + deltaMs;
-              if (iv.length && !coveredAt(iv, c)) {
-                // Rolled into a gap - jump to the next/prev clip instead of
-                // waiting through empty time in real seconds.
-                if (st.direction > 0) {
-                  const ns = nextStartAfter(iv, c);
-                  if (ns == null) {
-                    c = st.dayEnd;
-                    setPlaying(false);
-                  } else {
-                    c = ns;
-                  }
-                } else {
-                  const pe = prevEndBefore(iv, c);
-                  if (pe == null) {
-                    c = st.dayStart;
-                    setPlaying(false);
-                  } else {
-                    c = pe - 100;
-                  }
-                }
-              } else if (c <= st.dayStart || c >= st.dayEnd) {
-                c = Math.min(st.dayEnd, Math.max(st.dayStart, c));
-                setPlaying(false);
-              }
-              masterRef.current = c;
-              setMasterCursor(c);
-              applyFollow(c, st.dayStart, st.dayEnd);
-            }
+          const iv = intervalsRef.current;
+          const isNative = st.direction > 0 && st.speed > 0 && st.speed <= 4;
+          const c0 = cursorRef.current;
+          const clockAlive = performance.now() - lastReportRef.current < 1000;
+          if (isNative && clockAlive && coveredAt(iv, c0)) {
+            // The player's video is the timebase; don't double-advance.
+            applyFollow(c0, st.dayStart, st.dayEnd);
           } else {
-            const next: Record<number, number> = { ...indieRef.current };
-            for (const id of st.selectedIds) {
-              let c = (next[id] ?? masterRef.current) + deltaMs;
+            let c = c0 + deltaMs;
+            if (iv.length && !coveredAt(iv, c)) {
+              // Rolled into a gap - jump to the next/prev clip instead of
+              // waiting through empty time in real seconds.
+              if (st.direction > 0) {
+                const ns = nextStartAfter(iv, c);
+                if (ns == null) {
+                  c = st.dayEnd;
+                  setPlaying(false);
+                } else {
+                  c = ns;
+                }
+              } else {
+                const pe = prevEndBefore(iv, c);
+                if (pe == null) {
+                  c = st.dayStart;
+                  setPlaying(false);
+                } else {
+                  c = pe - 100;
+                }
+              }
+            } else if (c <= st.dayStart || c >= st.dayEnd) {
               c = Math.min(st.dayEnd, Math.max(st.dayStart, c));
-              next[id] = c;
+              setPlaying(false);
             }
-            indieRef.current = next;
-            setIndieCursors(next);
+            cursorRef.current = c;
+            setCursor(c);
+            applyFollow(c, st.dayStart, st.dayEnd);
           }
         }
         acc = 0;
@@ -355,9 +323,9 @@ export function PlaybackPage() {
   }, []);
 
   // --- Transport actions ---
-  // Give the clock video a grace window so the timer doesn't advance the cursor
-  // (and make the sync effect re-seek, interrupting play()) before the element
-  // has had a chance to actually start playing.
+  // Give the player a grace window so the timer doesn't advance the cursor (and
+  // make the sync effect re-seek, interrupting play()) before the element has
+  // had a chance to actually start playing.
   const graceClock = () => {
     lastReportRef.current = performance.now();
   };
@@ -377,34 +345,15 @@ export function PlaybackPage() {
     }
   };
 
-  const seekTo = useCallback(
-    (id: number, ms: number) => {
-      lastReportRef.current = performance.now();
-      if (syncLocked) {
-        setMasterCursor(ms);
-        masterRef.current = ms;
-      } else {
-        setIndieCursors((prev) => ({ ...prev, [id]: ms }));
-      }
-    },
-    [syncLocked],
-  );
+  const seekTo = useCallback((ms: number) => {
+    lastReportRef.current = performance.now();
+    cursorRef.current = ms;
+    setCursor(ms);
+  }, []);
 
   const stepFrame = (deltaMs: number) => {
     setPlaying(false);
-    if (syncLocked) {
-      const c = Math.min(dayEnd, Math.max(dayStart, masterCursor + deltaMs));
-      setMasterCursor(c);
-      masterRef.current = c;
-    } else {
-      setIndieCursors((prev) => {
-        const next = { ...prev };
-        for (const id of selectedIds) {
-          next[id] = Math.min(dayEnd, Math.max(dayStart, (next[id] ?? masterCursor) + deltaMs));
-        }
-        return next;
-      });
-    }
+    seekTo(Math.min(dayEnd, Math.max(dayStart, cursor + deltaMs)));
   };
 
   const onView = useCallback((s: number, e: number) => {
@@ -417,210 +366,264 @@ export function PlaybackPage() {
     setViewEnd(dayEnd);
   };
 
-  const toggleCamera = (id: number) => {
-    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const jumpToLatest = () => {
+    const iv = intervalsRef.current;
+    if (!iv.length) return;
+    setPlaying(false);
+    seekTo(iv[iv.length - 1].end - 1000);
   };
 
-  // Clip export helpers.
-  const clipUnixIn = clipIn != null ? Math.floor(clipIn / 1000) : null;
-  const clipUnixOut = clipOut != null ? Math.floor(clipOut / 1000) : null;
-  const clipValid = clipUnixIn != null && clipUnixOut != null && clipUnixOut > clipUnixIn;
-  const clipText = clipValid ? `${clipUnixIn},${clipUnixOut}` : "";
+  // --- Clip export ---
+  const clipValid = clipIn != null && clipOut != null && clipOut > clipIn;
+  const clipSeconds = clipValid ? Math.floor((clipOut! - clipIn!) / 1000) : 0;
 
-  const copyClip = async () => {
-    if (!clipText) return;
+  const runExport = async (cam: Camera) => {
+    if (!clipValid || exportingId != null) return;
+    setNotice(null);
+    setExportingId(cam.id);
+    const filename = clipFilename(cam.name, clipIn!, clipOut!, timezone);
     try {
-      await navigator.clipboard.writeText(clipText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard blocked; the values are still shown on screen */
+      await downloadClip({
+        cameraId: cam.id,
+        startTs: Math.floor(clipIn! / 1000),
+        endTs: Math.floor(clipOut! / 1000),
+        name: filename,
+        h264: exportH264,
+      });
+      setNotice({ kind: "ok", text: `Exported ${cam.name} · ${fmtDur(clipSeconds)}` });
+    } catch (err) {
+      setNotice({ kind: "err", text: `${cam.name}: ${(err as Error).message}` });
+    } finally {
+      setExportingId(null);
     }
   };
 
-  const enabledCameras = cameras.filter((c) => c.enabled);
-  const selectedCameras = cameras.filter((c) => selectedIds.includes(c.id));
-  const referenceCursor = masterCursor;
-  // The camera shown in the shared player (and the transport clock).
-  const focusedCam = selectedCameras.find((c) => c.id === focusedId) ?? selectedCameras[0] ?? null;
+  // Grab the frame currently on screen straight from the <video> element - no
+  // server round-trip, and it's exactly what the operator is looking at.
+  const takeSnapshot = () => {
+    const v = videoRef.current;
+    if (!v || !v.videoWidth || !focusedCam) {
+      setNotice({ kind: "err", text: "No video frame to capture yet." });
+      return;
+    }
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = v.videoWidth;
+      canvas.height = v.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("canvas unavailable");
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          setNotice({ kind: "err", text: "Could not capture the frame." });
+          return;
+        }
+        const p = partsInTz(cursor, timezone);
+        const name = `${focusedCam.name}_${p.year}${pad(p.month)}${pad(p.day)}_${pad(p.hour)}${pad(p.minute)}${pad(p.second)}.png`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setNotice({ kind: "ok", text: `Snapshot saved · ${name}` });
+      }, "image/png");
+    } catch {
+      setNotice({ kind: "err", text: "Could not capture the frame." });
+    }
+  };
 
   return (
-    <div className="page playback-page">
-      <div className="page-header">
-        <div className="pb-title-group">
-          <h1>Playback &amp; Export</h1>
-          <CameraSelect cameras={enabledCameras} selectedIds={selectedIds} onToggle={toggleCamera} />
-          <span className="pb-cam-hint">Select the cameras to view playback here</span>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+    <div className="page playback-page pb-vms">
+      {/* ── Header: day + global actions ── */}
+      <div className="page-header pb-head">
+        <h1>Playback &amp; Export</h1>
+        <div className="pb-head-actions">
           <input type="date" value={date} max={todayInTz(timezone)} onChange={(e) => setDate(e.target.value)} />
-          <div className="pb-size-ctrl" title="Video size">
-            {SIZES.map((s) => (
-              <button key={s} className={`btn btn-sm ${size === s ? "btn-primary" : ""}`} onClick={() => setSize(s)}>
-                {s}
-              </button>
-            ))}
-          </div>
+          <button className="btn btn-sm" onClick={jumpToLatest} title="Jump to the newest footage of this camera">
+            Latest
+          </button>
           <button className="btn btn-sm" onClick={zoomOutFull} title="Reset zoom to the full 24h day">
             Full day
           </button>
         </div>
       </div>
 
-      {selectedCameras.length === 0 ? (
-        <div className="empty-state">Select one or more cameras to review footage.</div>
+      {enabledCameras.length === 0 ? (
+        <div className="empty-state">No enabled cameras to review.</div>
       ) : (
         <>
-          {/* Transport bar */}
-          <div className="pb-transport">
-            <div className="pb-transport-group">
-              <button className="btn btn-sm" title="Frame back (−100ms)" onClick={() => stepFrame(-FRAME_STEP_MS)}>
-                ⏮ 100ms
-              </button>
-              <button
-                className={`btn btn-sm ${playing && direction < 0 ? "btn-primary" : ""}`}
-                title="Reverse"
-                onClick={() => beginPlay(-1)}
-              >
-                ◀◀
-              </button>
-              <button className="btn" onClick={togglePlay}>
-                {playing ? "❚❚ Pause" : "▶ Play"}
-              </button>
-              <button
-                className={`btn btn-sm ${playing && direction > 0 ? "btn-primary" : ""}`}
-                title="Forward"
-                onClick={() => beginPlay(1)}
-              >
-                ▶▶
-              </button>
-              <button className="btn btn-sm" title="Frame forward (+100ms)" onClick={() => stepFrame(FRAME_STEP_MS)}>
-                100ms ⏭
-              </button>
-            </div>
-
-            <div className="pb-transport-group pb-speeds">
-              {SPEEDS.map((s) => (
-                <button
-                  key={s}
-                  className={`btn btn-sm ${speed === s ? "btn-primary" : ""}`}
-                  onClick={() => setSpeed(s)}
+          {/* ── Camera strip ── */}
+          <div className="pb-strip">
+            {enabledCameras.map((cam) => {
+              const recs = recsByCam[cam.id] ?? [];
+              const isFocused = cam.id === focusedCam?.id;
+              return (
+                <div
+                  key={cam.id}
+                  className={`pb-card${isFocused ? " pb-card-on" : ""}`}
+                  onClick={() => setFocusedId(cam.id)}
+                  title={`Show ${cam.name} in the player`}
                 >
-                  {s}×
-                </button>
-              ))}
-            </div>
-
-            <div className="pb-transport-group">
-              <span className="pb-clock">
-                {clock24(referenceCursor, timezone)}
-                <span className="pb-unix">{Math.floor(referenceCursor / 1000)}</span>
-              </span>
-            </div>
+                  <div className="pb-card-top">
+                    <span className={`pb-dot ${cam.status === "online" ? "on" : "off"}`} />
+                    <span className="pb-card-name">{cam.name}</span>
+                    <button
+                      className="pb-card-exp"
+                      disabled={!clipValid || exportingId != null}
+                      title={clipValid ? `Export the marked clip for ${cam.name}` : "Mark In and Out on the timeline first"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        runExport(cam);
+                      }}
+                    >
+                      {exportingId === cam.id ? "…" : "⤓"}
+                    </button>
+                  </div>
+                  <CoverageBar recordings={recs} dayStart={dayStart} dayEnd={dayEnd} />
+                  <div className="pb-card-meta">{recs.length} clips</div>
+                </div>
+              );
+            })}
           </div>
 
-          {/* Clip export bar */}
-          <div className="pb-clip-bar">
-            <span className="pb-clip-label">Clip export:</span>
-            <button className="btn btn-sm" onClick={() => setClipIn(referenceCursor)}>
-              Set In
-            </button>
-            <button className="btn btn-sm" onClick={() => setClipOut(referenceCursor)}>
-              Set Out
-            </button>
-            <span className="pb-clip-readout">
-              In: {clipIn != null ? `${clock24(clipIn, timezone)} (${clipUnixIn})` : "—"}
-              {"  "}·{"  "}
-              Out: {clipOut != null ? `${clock24(clipOut, timezone)} (${clipUnixOut})` : "—"}
-              {clipValid && <span className="pb-clip-dur"> · {clipUnixOut! - clipUnixIn!}s</span>}
-            </span>
-            <button className="btn btn-sm" disabled={!clipValid} onClick={copyClip}>
-              {copied ? "Copied!" : "Copy timestamps"}
-            </button>
-            {(clipIn != null || clipOut != null) && (
-              <button
-                className="btn btn-sm"
-                onClick={() => {
-                  setClipIn(null);
-                  setClipOut(null);
-                }}
-              >
-                Clear
-              </button>
-            )}
-            <span className="pb-clip-format" title="H.264 re-encodes so the download plays in any browser; original is a faster stream-copy in the camera's codec">
-              Format:
-              <button className={`btn btn-sm ${!exportH264 ? "btn-primary" : ""}`} onClick={() => setExportH264(false)}>
-                Original
-              </button>
-              <button className={`btn btn-sm ${exportH264 ? "btn-primary" : ""}`} onClick={() => setExportH264(true)}>
-                H.264
-              </button>
-            </span>
-            <span className="pb-clip-hint">
-              Set In/Out, then use each camera's <b>⤓ Clip</b> button to download.
-            </span>
-          </div>
-
-          {/* Legend */}
-          <div className="pb-legend">
-            <span className="pb-legend-item">
-              <i className="pb-swatch" style={{ background: "#2f7fb5" }} /> Continuous
-            </span>
-            <span className="pb-legend-item">
-              <i className="pb-swatch" style={{ background: "#f59e0b" }} /> Motion
-            </span>
-            <span className="pb-legend-item">
-              <i className="pb-swatch pb-swatch-line" style={{ background: "#ef4444" }} /> Motion event
-            </span>
-            <span className="pb-legend-item">
-              <i className="pb-swatch" style={{ background: "#232b34" }} /> No recording
-            </span>
-            <span className="pb-legend-item pb-legend-tip">Scroll a timeline to zoom · drag to pan · drag the blue handles to trim a clip</span>
-          </div>
-
-          {/* Single shared player for the focused camera */}
-          <div className="pb-player-wrap" style={{ maxWidth: `${SIZE_PX[size]}px` }}>
+          {/* ── Main stage ── */}
+          <div className="pb-stage">
             {focusedCam && (
               <PlaybackPlayer
                 key={focusedCam.id}
                 cameraName={focusedCam.name}
-                recordings={recsByCam[focusedCam.id] ?? []}
-                cursor={referenceCursor}
+                recordings={focusedRecs}
+                cursor={cursor}
                 playing={playing}
                 speed={speed}
                 direction={direction}
                 onPlayheadTime={reportPlayhead}
+                videoRef={videoRef}
               />
             )}
           </div>
 
-          {/* Per-camera timelines - click "View" to play that camera above. */}
-          <div className="pb-rows">
-            {selectedCameras.map((cam) => (
-              <PlaybackRow
-                key={cam.id}
-                camera={cam}
-                recordings={recsByCam[cam.id] ?? []}
-                events={eventsByCam[cam.id] ?? []}
-                dayStart={dayStart}
-                dayEnd={dayEnd}
-                viewStart={viewStart}
-                viewEnd={viewEnd}
-                cursor={effCursor(cam.id)}
-                clipIn={clipIn}
-                clipOut={clipOut}
-                focused={cam.id === focusedCam?.id}
-                exportH264={exportH264}
-                onFocus={() => setFocusedId(cam.id)}
-                onSeek={(ms) => seekTo(cam.id, ms)}
-                onView={onView}
-                onClip={(i, o) => {
-                  setClipIn(i);
-                  setClipOut(o);
-                }}
-              />
-            ))}
+          {/* ── Dock: timeline + transport + export ── */}
+          <div className="pb-dock">
+            {notice && <div className={`pb-notice ${notice.kind}`}>{notice.text}</div>}
+
+            <TimelineCanvas
+              recordings={focusedRecs}
+              events={focusedCam ? eventsByCam[focusedCam.id] ?? [] : []}
+              timezone={timezone}
+              dayStart={dayStart}
+              dayEnd={dayEnd}
+              viewStart={viewStart}
+              viewEnd={viewEnd}
+              cursor={cursor}
+              clipIn={clipIn}
+              clipOut={clipOut}
+              height={54}
+              onSeek={seekTo}
+              onView={onView}
+              onClip={(i, o) => {
+                setClipIn(i);
+                setClipOut(o);
+              }}
+            />
+
+            <div className="pb-bar">
+              {/* Transport */}
+              <div className="pb-bar-grp">
+                <button className="btn btn-sm" title="Frame back (−100ms)" onClick={() => stepFrame(-FRAME_STEP_MS)}>
+                  ⏮
+                </button>
+                <button
+                  className={`btn btn-sm ${playing && direction < 0 ? "btn-primary" : ""}`}
+                  title="Reverse"
+                  onClick={() => beginPlay(-1)}
+                >
+                  ◀◀
+                </button>
+                <button className="btn pb-play" onClick={togglePlay} title={playing ? "Pause" : "Play"}>
+                  {playing ? "❚❚" : "▶"}
+                </button>
+                <button
+                  className={`btn btn-sm ${playing && direction > 0 ? "btn-primary" : ""}`}
+                  title="Forward"
+                  onClick={() => beginPlay(1)}
+                >
+                  ▶▶
+                </button>
+                <button className="btn btn-sm" title="Frame forward (+100ms)" onClick={() => stepFrame(FRAME_STEP_MS)}>
+                  ⏭
+                </button>
+              </div>
+
+              {/* Clock */}
+              <span className="pb-clock" title="Playhead position">
+                {clock24(cursor, timezone)}
+              </span>
+
+              {/* Speed */}
+              <div className="pb-bar-grp pb-speeds">
+                {SPEEDS.map((s) => (
+                  <button key={s} className={`btn btn-sm ${speed === s ? "btn-primary" : ""}`} onClick={() => setSpeed(s)}>
+                    {s}×
+                  </button>
+                ))}
+              </div>
+
+              {/* Clip in/out */}
+              <div className="pb-bar-grp">
+                <button className="btn btn-sm" onClick={() => setClipIn(cursor)} title="Mark clip start at the playhead">
+                  Set In
+                </button>
+                <button className="btn btn-sm" onClick={() => setClipOut(cursor)} title="Mark clip end at the playhead">
+                  Set Out
+                </button>
+                <span className="pb-range">
+                  {clipValid
+                    ? `${clock24(clipIn!, timezone)} → ${clock24(clipOut!, timezone)} · ${fmtDur(clipSeconds)}`
+                    : clipIn != null || clipOut != null
+                      ? "Set both In and Out"
+                      : "No clip marked"}
+                </span>
+                {(clipIn != null || clipOut != null) && (
+                  <button
+                    className="btn btn-sm"
+                    title="Clear the clip markers"
+                    onClick={() => {
+                      setClipIn(null);
+                      setClipOut(null);
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {/* Export + snapshot */}
+              <div className="pb-bar-grp pb-bar-end">
+                <span className="pb-fmt" title="H.264 re-encodes so the download plays in any browser; original is a faster stream-copy in the camera's codec">
+                  <button className={`btn btn-sm ${!exportH264 ? "btn-primary" : ""}`} onClick={() => setExportH264(false)}>
+                    Original
+                  </button>
+                  <button className={`btn btn-sm ${exportH264 ? "btn-primary" : ""}`} onClick={() => setExportH264(true)}>
+                    H.264
+                  </button>
+                </span>
+                <button className="btn btn-sm" onClick={takeSnapshot} title="Save the current frame as a PNG">
+                  📷 Snapshot
+                </button>
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={!clipValid || exportingId != null || !focusedCam}
+                  onClick={() => focusedCam && runExport(focusedCam)}
+                  title={clipValid ? "Download the marked clip for the camera in the player" : "Mark In and Out on the timeline first"}
+                >
+                  {exportingId != null ? "Exporting…" : "⤓ Export clip"}
+                </button>
+              </div>
+            </div>
           </div>
         </>
       )}
