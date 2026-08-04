@@ -82,13 +82,31 @@ if ($behind -eq "0" -and -not $DryRun) {
 # 3. Rebuild + restart
 # ---------------------------------------------------------------------------
 
-Write-Step "Fetching updated images and restarting..."
+# Get the running containers onto the code we just checked out. Prebuilt images
+# are only published for `v*` release tags, so an image can match this checkout
+# only when HEAD *is* such a tag. Blindly pulling would otherwise "succeed"
+# against a stale :latest and silently restart the OLD build over the new
+# source, with no error to notice.
 if (-not $DryRun) {
-    docker compose pull
-    if ($LASTEXITCODE -eq 0) {
-        docker compose up -d
+    $tagAtHead = (git tag --points-at HEAD 2>$null | Where-Object { $_ -match '^v[0-9]' } | Sort-Object | Select-Object -Last 1)
+
+    if ($tagAtHead) {
+        # Pull that version by name rather than the moving :latest, so what
+        # starts is exactly what this checkout says it is.
+        $env:LIGHTNVR_VERSION = $tagAtHead -replace '^v', ''
+        Write-Step "Now at release $tagAtHead - fetching its prebuilt images..."
+        docker compose pull
+        if ($LASTEXITCODE -eq 0) {
+            docker compose up -d
+        } else {
+            Write-Warn2 "Prebuilt images for $tagAtHead aren't published (yet) - building from source instead."
+            docker compose up -d --build
+        }
     } else {
-        Write-Warn2 "Prebuilt images not available - building from source instead (slower)."
+        # Newer commits than the last release: no published image contains this
+        # code, so building is the only way to run what was just pulled.
+        Write-Step "This checkout has changes newer than the last release, so no prebuilt image matches it."
+        Write-Step "Building from source (slower, but it's the code you just pulled)..."
         docker compose up -d --build
     }
     if ($LASTEXITCODE -ne 0) { Write-Die "docker compose up failed - see the output above." }

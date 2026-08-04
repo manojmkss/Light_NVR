@@ -126,17 +126,40 @@ fi
 # 4. Rebuild + restart  (.env's COMPOSE_FILE, if set, layers in overrides)
 # ---------------------------------------------------------------------------
 
-# Pull the updated prebuilt images (matching the code just pulled); fall back
-# to building from source if they aren't available.
-log "Fetching updated images and restarting..."
-if $DRY_RUN; then
+# Get the running containers onto the code we just checked out - whichever way
+# that has to happen. Prebuilt images are only ever published for `v*` release
+# tags, so an image can match this checkout only when HEAD *is* such a tag.
+# Blindly pulling would otherwise "succeed" against a stale `:latest` and
+# silently restart the OLD build over the new source, with no error to notice.
+pinned="$(env_get LIGHTNVR_VERSION)"
+tag_at_head="$(git tag --points-at HEAD 2>/dev/null | grep -E '^v[0-9]' | sort -V | tail -1 || true)"
+
+if [[ -n "$pinned" ]]; then
+  # Explicitly pinned in .env - the user is asking for that exact version.
+  log "Fetching prebuilt images for pinned version $pinned..."
   run docker compose pull
   run docker compose up -d
-elif docker compose pull; then
-  docker compose up -d
+elif [[ -n "$tag_at_head" ]]; then
+  # On a release commit: pull that version by name rather than the moving
+  # `latest`, so what starts is exactly what this checkout says it is.
+  export LIGHTNVR_VERSION="${tag_at_head#v}"
+  log "Now at release $tag_at_head - fetching its prebuilt images..."
+  if $DRY_RUN; then
+    run docker compose pull
+    run docker compose up -d
+  elif docker compose pull; then
+    docker compose up -d
+  else
+    warn "Prebuilt images for $tag_at_head aren't published (yet) - building from source instead."
+    docker compose up -d --build
+  fi
 else
-  warn "Prebuilt images not available - building from source instead (slower)."
-  docker compose up -d --build
+  # Newer commits than the last release: no published image contains this code,
+  # so building is the only way to actually run what was just pulled.
+  latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo 'the last release')"
+  log "This checkout has changes newer than $latest_tag, so no prebuilt image matches it."
+  log "Building from source (slower, but it's the code you just pulled)..."
+  run docker compose up -d --build
 fi
 
 if ! $DRY_RUN; then
