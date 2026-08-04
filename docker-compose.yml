@@ -12,6 +12,16 @@ services:
       dockerfile: Dockerfile
     container_name: lightnvr-backend
     restart: unless-stopped
+    # Memory ceiling. Without one, a leak or a burst of viewers can consume the
+    # whole host and take the machine down with it (swapping, then the kernel
+    # OOM killer picking a victim at random). With one, the container is the
+    # only thing that dies and `restart: unless-stopped` brings recording
+    # straight back. install-linux.sh sizes this from the host's RAM and caps
+    # it, so a big server doesn't hand over far more than the NVR can use; set
+    # BACKEND_MEM_LIMIT in .env to override. Memory reservation keeps the
+    # scheduler aware of what it actually needs.
+    mem_limit: ${BACKEND_MEM_LIMIT:-2g}
+    mem_reservation: ${BACKEND_MEM_RESERVATION:-512m}
     # No env_file here on purpose - .env is fully optional. Everything below
     # has a working default; these only take effect if you create a .env
     # with overrides (see .env.example). Accounts, email, storage, and
@@ -83,6 +93,9 @@ services:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
     container_name: lightnvr-frontend
     restart: unless-stopped
+    # Static file server - it only ever needs a few MB, so this is purely a
+    # guard against something pathological.
+    mem_limit: ${FRONTEND_MEM_LIMIT:-256m}
     depends_on:
       - backend
     networks:
@@ -92,6 +105,9 @@ services:
     image: nginx:1.27-alpine
     container_name: lightnvr-nginx
     restart: unless-stopped
+    # Proxying is streamed, not buffered (see the nginx config), so this stays
+    # small however many viewers are connected.
+    mem_limit: ${NGINX_MEM_LIMIT:-256m}
     depends_on:
       backend:
         condition: service_healthy

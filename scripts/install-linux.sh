@@ -178,6 +178,28 @@ for dir in storage primary-storage backup-storage certs; do
 done
 
 # ---------------------------------------------------------------------------
+# 3b. Size the backend's memory ceiling for this machine
+# ---------------------------------------------------------------------------
+# Give the NVR a generous slice of RAM but never the whole box, so a leak or a
+# burst of viewers can't push the host into swap and take everything else down
+# with it. Capped as well as proportional: past a couple of GB more memory buys
+# the recorder nothing (frames and the transcode cache are individually
+# bounded), so on a 64GB server we still hand it a sane number rather than 32GB
+# it would only ever waste. Only written if the user hasn't set their own.
+
+if [[ -z "$(env_get BACKEND_MEM_LIMIT)" ]]; then
+  total_mb="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+  if [[ "$total_mb" -gt 0 ]]; then
+    half_mb=$(( total_mb / 2 ))
+    limit_mb=$half_mb
+    (( limit_mb > 4096 )) && limit_mb=4096   # absolute ceiling
+    (( limit_mb < 768 ))  && limit_mb=768    # floor: below this it can't work
+    log "Detected ${total_mb}MB RAM - limiting the backend to ${limit_mb}MB (half the host, capped at 4GB)."
+    run env_set BACKEND_MEM_LIMIT "${limit_mb}m"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Migrate an old bind-mounted ./data into the named volume, if present
 # ---------------------------------------------------------------------------
 
