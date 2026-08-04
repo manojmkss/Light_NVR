@@ -121,15 +121,23 @@ else
     || die "Can't fast-forward (local history diverged). Sort it out manually, then re-run."
 fi
 
-# If the pull updated this script, restart with the new copy before doing
-# anything else. Bash reads a script lazily as it runs, so carrying on after the
-# file changed underneath us can execute a mangled mix of old and new lines.
+# If the pull updated any of the update machinery, restart with the new copy
+# before doing anything else.
+#
+# Watching the whole scripts/ directory, not just this file, is deliberate:
+# lib-env.sh is *sourced*, so its functions are already resident in memory by
+# the time the pull lands. A fix shipped in there would sit on disk unused for
+# the rest of the run - which is precisely how a broken env_get kept aborting
+# the update immediately after the merge, on the very run that pulled its own
+# fix. Bash also reads a script lazily, so continuing after this file changed
+# underneath us risks executing a mangled mix of old and new lines.
+#
 # Re-exec'ing keeps `update-linux.sh` a genuine one-command update - nobody
-# should have to run `git pull` first just to get a working updater.
-SELF_REL="${SELF#"$REPO_ROOT"/}"
+# should have to run it twice, or `git pull` first, to get a working updater.
+SCRIPTS_REL="${SCRIPT_DIR#"$REPO_ROOT"/}"
 if [[ -z "${LIGHTNVR_UPDATE_REEXEC:-}" ]] && ! $DRY_RUN \
-   && ! git diff --quiet "$head_before" HEAD -- "$SELF_REL" 2>/dev/null; then
-  log "The updater itself changed in this pull - restarting with the new version..."
+   && ! git diff --quiet "$head_before" HEAD -- "$SCRIPTS_REL" 2>/dev/null; then
+  log "The update scripts changed in this pull - restarting with the new versions..."
   export LIGHTNVR_UPDATE_REEXEC=1
   exec bash "$SELF" "$@"
 fi
