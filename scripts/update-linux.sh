@@ -42,6 +42,7 @@ confirm() { $ASSUME_YES && return 0; read -r -p "$1 [y/N] " r; [[ "$r" =~ ^[Yy]$
 run() { if $DRY_RUN; then printf '\033[2m[DRY RUN] %s\033[0m\n' "$*"; else "$@"; fi; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 [[ -f docker-compose.yml ]] || die "docker-compose.yml not found in $REPO_ROOT - run this from inside the cloned repo."
@@ -109,6 +110,7 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 log "Fetching latest on '$branch'..."
 run git fetch origin "$branch"
 
+head_before="$(git rev-parse HEAD)"
 behind="$(git rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo 0)"
 if [[ "$behind" == "0" ]] && ! $DRY_RUN; then
   log "Already up to date. Rebuilding anyway to pick up any local image changes."
@@ -117,6 +119,19 @@ else
   confirm "Pull and rebuild now?" || die "Aborted."
   run git merge --ff-only "origin/$branch" \
     || die "Can't fast-forward (local history diverged). Sort it out manually, then re-run."
+fi
+
+# If the pull updated this script, restart with the new copy before doing
+# anything else. Bash reads a script lazily as it runs, so carrying on after the
+# file changed underneath us can execute a mangled mix of old and new lines.
+# Re-exec'ing keeps `update-linux.sh` a genuine one-command update - nobody
+# should have to run `git pull` first just to get a working updater.
+SELF_REL="${SELF#"$REPO_ROOT"/}"
+if [[ -z "${LIGHTNVR_UPDATE_REEXEC:-}" ]] && ! $DRY_RUN \
+   && ! git diff --quiet "$head_before" HEAD -- "$SELF_REL" 2>/dev/null; then
+  log "The updater itself changed in this pull - restarting with the new version..."
+  export LIGHTNVR_UPDATE_REEXEC=1
+  exec bash "$SELF" "$@"
 fi
 
 # ---------------------------------------------------------------------------
