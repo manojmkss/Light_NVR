@@ -30,10 +30,45 @@ export function restoreBackup(filename: string): Promise<{ detail: string }> {
   return apiFetch<{ detail: string }>(`/backup/restore/${encodeURIComponent(filename)}`, { method: "POST" });
 }
 
-export function downloadBackupUrl(filename: string): string {
+/**
+ * Download a config backup.
+ *
+ * This used to be a plain `<a href>` carrying `?token=` - but the download
+ * route authenticates from the Authorization *header* only, so the query token
+ * was ignored and every download 401'd ("API error"). Fetching with the header
+ * is what the endpoint actually expects; it also keeps an admin token out of
+ * the URL (backups are the whole config DB, so their URLs shouldn't be sitting
+ * in proxy access logs) and lets a real failure surface instead of silently
+ * saving an error page as a .db file.
+ */
+export async function downloadBackup(filename: string): Promise<void> {
   const token = getAccessToken();
-  const base = `${API_BASE}/backup/download/${encodeURIComponent(filename)}`;
-  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  const res = await fetch(`${API_BASE}/backup/download/${encodeURIComponent(filename)}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    let detail = `Download failed (HTTP ${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      /* error body wasn't JSON - keep the status-code message */
+    }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  if (blob.size === 0) throw new Error("Backup file is empty");
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export function optimizeDatabase(): Promise<OptimizeResult> {

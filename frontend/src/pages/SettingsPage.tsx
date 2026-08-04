@@ -11,7 +11,7 @@ import {
 import {
   createBackupNow,
   deleteBackup,
-  downloadBackupUrl,
+  downloadBackup,
   getBackupSettings,
   listBackups,
   optimizeDatabase,
@@ -874,6 +874,15 @@ function BackupTab() {
     }
   };
 
+  const handleDownload = async (filename: string) => {
+    setActionError(null);
+    try {
+      await downloadBackup(filename);
+    } catch (err) {
+      setActionError(`Download failed: ${(err as Error).message}`);
+    }
+  };
+
   const handleRestore = async (filename: string) => {
     if (!window.confirm(`Restore "${filename}"? This replaces all current cameras, users, and settings, and the server will restart.`)) {
       return;
@@ -996,9 +1005,9 @@ function BackupTab() {
                     <td>{formatBackupSize(b.size_bytes)}</td>
                     <td>
                       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                        <a className="btn btn-sm" href={downloadBackupUrl(b.filename)}>
+                        <button className="btn btn-sm" onClick={() => handleDownload(b.filename)}>
                           Download
-                        </a>
+                        </button>
                         <button className="btn btn-sm" onClick={() => handleRestore(b.filename)}>
                           Restore
                         </button>
