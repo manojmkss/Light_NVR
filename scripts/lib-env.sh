@@ -26,10 +26,18 @@ env_set() {
 }
 
 # env_get KEY - print KEY's current value from $ENV_FILE (empty if unset).
+#
+# Always succeeds: an absent key is a normal answer for a getter, not an error.
+# The trailing `|| true` is load-bearing. Callers write `x="$(env_get KEY)"`,
+# and an assignment from a command substitution takes that command's exit
+# status - so under the `set -euo pipefail` these scripts run with, grep's
+# exit 1 for "no match" aborts the whole script, silently, with no message at
+# all. That is exactly how an update could stop dead right after pulling and
+# never rebuild anything.
 env_get() {
   local key="$1"
   [[ -f "$ENV_FILE" ]] || return 0
-  grep -E "^${key}=" "$ENV_FILE" | tail -1 | cut -d= -f2-
+  grep -E "^${key}=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true
 }
 
 # env_unset KEY - remove KEY's line from $ENV_FILE entirely.
