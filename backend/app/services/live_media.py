@@ -16,6 +16,11 @@ from app.services.hq_stream import hq_frame_bus, hq_stream_manager
 
 MJPEG_BOUNDARY = "lightnvrframe"
 
+# How long to wait for a new frame before re-sending the last one to hold the
+# connection open. Comfortably under the 60s idle timeout proxies typically
+# default to, so an MJPEG viewer is never dropped for being quiet.
+KEEPALIVE_SECONDS = 10
+
 
 def wrap_mjpeg_frame(jpeg_bytes: bytes) -> bytes:
     return (
@@ -44,10 +49,22 @@ async def mjpeg_stream_response(camera: Camera, quality: str) -> StreamingRespon
             if latest is not None:
                 yield wrap_mjpeg_frame(latest)
             while True:
-                frame = await asyncio.wait_for(queue.get(), timeout=30)
+                try:
+                    frame = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    # The camera has gone quiet - reconnecting, a brief network
+                    # drop, a reboot. Ending the response here would complete
+                    # the multipart stream *cleanly*, and a clean end is not an
+                    # error to an <img>: it fires no onerror, so the viewer has
+                    # nothing to react to and the tile sits frozen/blank until
+                    # something else reloads the page. Re-send the last known
+                    # frame instead. That keeps this connection (and any proxy
+                    # in front of it) alive, and the tile picks straight back up
+                    # on its own the moment real frames return.
+                    frame = bus.get_latest(camera.id)
+                    if frame is None:
+                        continue  # nothing to hold the picture with yet
                 yield wrap_mjpeg_frame(frame)
-        except asyncio.TimeoutError:
-            return
         finally:
             bus.unsubscribe(camera.id, queue)
             if quality == "main":

@@ -11,6 +11,10 @@ import { StatusBadge } from "./StatusBadge";
 const SCRUB_WINDOW_MS = 60 * 60 * 1000;
 const LIVE_EDGE_MS = 3000; // within 3s of "now" counts as live
 
+// How often a live tile re-requests its MJPEG stream so a stalled picture
+// recovers on its own (see the watchdog effect for why this is needed).
+const STREAM_WATCHDOG_MS = 60 * 1000;
+
 function fmtDuration(seconds: number | null): string {
   if (!seconds) return "";
   const m = Math.floor(seconds / 60);
@@ -294,6 +298,31 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
 
   const streamUrl = endpoints.streamUrl(camera.id, activeQuality, streamKey);
   const offline = camera.status === "offline" || errorCount > 2;
+
+  // Stream watchdog.
+  //
+  // An <img> gives no per-frame signal, and a stream that simply stops - a
+  // proxy dropping an idle connection, a wedged decoder, a tab that was
+  // backgrounded - ends without firing onerror, so nothing above ever learns
+  // the picture is dead. Rather than leave a tile frozen until someone walks
+  // past and notices, re-request the stream on a timer: it's one cheap HTTP
+  // request and it guarantees any stall self-heals within the interval.
+  // Reconnecting on tab-visible covers the common case of a display waking up.
+  useEffect(() => {
+    if (view !== "live" || offline) return;
+    const reconnect = () => setStreamKey((k) => k + 1);
+    // Spread tiles out so a full wall doesn't reconnect in lockstep.
+    const jitter = (camera.id % 7) * 1500;
+    const timer = setInterval(reconnect, STREAM_WATCHDOG_MS + jitter);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") reconnect();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [view, offline, camera.id]);
 
   const liveState =
     offline
