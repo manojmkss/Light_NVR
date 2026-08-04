@@ -14,9 +14,10 @@
 #   --dry-run    Show what would happen; change nothing.
 #   -h, --help   Show this help.
 #
-# Docker itself is run without sudo here (assumes your user is in the docker
-# group, which install-linux.sh arranges). If you get a permission error on
-# the docker socket, either re-login so the group applies, or run with sudo.
+# Docker is run directly when your user can reach the Docker socket (i.e. it's
+# in the docker group, which install-linux.sh arranges) and automatically via
+# sudo when it can't - so this works whether or not that group membership has
+# been set up or applied to your current login.
 
 set -euo pipefail
 
@@ -51,6 +52,29 @@ source "$SCRIPT_DIR/lib-env.sh"
 
 command -v git >/dev/null 2>&1 || die "git is not installed."
 git rev-parse --git-dir >/dev/null 2>&1 || die "This isn't a git checkout - update only works on a 'git clone' install, not a tarball download."
+
+# ---------------------------------------------------------------------------
+# How to invoke Docker
+# ---------------------------------------------------------------------------
+# Talking to the Docker socket needs either membership of the `docker` group or
+# root. Rather than assume the former and fail on the socket - which surfaces as
+# a confusing permission error part-way through an update - work out which one
+# applies now and use it for every Docker call below.
+
+command -v docker >/dev/null 2>&1 || die "Docker is not installed. See docs/linux-production-install.md."
+
+DOCKER=(docker)
+if ! docker info >/dev/null 2>&1; then
+  command -v sudo >/dev/null 2>&1 || die \
+    "Can't reach the Docker daemon, and sudo isn't available. Run this as root, or add your user to the 'docker' group: usermod -aG docker $USER (then log out and back in)."
+  DOCKER=(sudo docker)
+  if ! sudo -n true 2>/dev/null; then
+    log "Your user can't reach the Docker socket, so Docker will run via sudo (you may be prompted for your password)."
+    log "To avoid the prompt next time: sudo usermod -aG docker $USER   (then log out and back in)"
+  fi
+  "${DOCKER[@]}" info >/dev/null 2>&1 || die \
+    "Still can't reach the Docker daemon, even with sudo. Is it running? Try: sudo systemctl start docker"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Make sure the working tree is clean enough to fast-forward
@@ -137,21 +161,21 @@ tag_at_head="$(git tag --points-at HEAD 2>/dev/null | grep -E '^v[0-9]' | sort -
 if [[ -n "$pinned" ]]; then
   # Explicitly pinned in .env - the user is asking for that exact version.
   log "Fetching prebuilt images for pinned version $pinned..."
-  run docker compose pull
-  run docker compose up -d
+  run "${DOCKER[@]}" compose pull
+  run "${DOCKER[@]}" compose up -d
 elif [[ -n "$tag_at_head" ]]; then
   # On a release commit: pull that version by name rather than the moving
   # `latest`, so what starts is exactly what this checkout says it is.
   export LIGHTNVR_VERSION="${tag_at_head#v}"
   log "Now at release $tag_at_head - fetching its prebuilt images..."
   if $DRY_RUN; then
-    run docker compose pull
-    run docker compose up -d
-  elif docker compose pull; then
-    docker compose up -d
+    run "${DOCKER[@]}" compose pull
+    run "${DOCKER[@]}" compose up -d
+  elif "${DOCKER[@]}" compose pull; then
+    "${DOCKER[@]}" compose up -d
   else
     warn "Prebuilt images for $tag_at_head aren't published (yet) - building from source instead."
-    docker compose up -d --build
+    "${DOCKER[@]}" compose up -d --build
   fi
 else
   # Newer commits than the last release: no published image contains this code,
@@ -159,7 +183,7 @@ else
   latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo 'the last release')"
   log "This checkout has changes newer than $latest_tag, so no prebuilt image matches it."
   log "Building from source (slower, but it's the code you just pulled)..."
-  run docker compose up -d --build
+  run "${DOCKER[@]}" compose up -d --build
 fi
 
 if ! $DRY_RUN; then
@@ -170,9 +194,9 @@ if ! $DRY_RUN; then
     sleep 3
   done
   $ready && log "Update complete - backend healthy." \
-         || warn "Health check didn't pass within 2 minutes - check 'docker compose logs backend'."
+         || warn "Health check didn't pass within 2 minutes - check '${DOCKER[*]} compose logs backend'."
 fi
 
 echo
 log "Tip: browsers cache the app (PWA). If the UI looks unchanged after an"
-log "update, hard-refresh once with Ctrl+Shift+R."
+log "update, reload the page once - the app now activates updates immediately."
