@@ -11,9 +11,13 @@ import { StatusBadge } from "./StatusBadge";
 const SCRUB_WINDOW_MS = 60 * 60 * 1000;
 const LIVE_EDGE_MS = 3000; // within 3s of "now" counts as live
 
-// How often a live tile re-requests its MJPEG stream so a stalled picture
-// recovers on its own (see the watchdog effect for why this is needed).
-const STREAM_WATCHDOG_MS = 60 * 1000;
+// Backstop interval for re-requesting a live tile's MJPEG stream. Deliberately
+// long: every reconnect costs a visible hitch in the picture, and the server
+// now holds streams open across camera hiccups (see live_media's keep-alive),
+// so this only has to catch rarer silent deaths - a proxy dropping the
+// connection, a wedged decoder. A dropped connection raises onerror and is
+// already retried within seconds, so nothing depends on this being frequent.
+const STREAM_WATCHDOG_MS = 15 * 60 * 1000;
 
 function fmtDuration(seconds: number | null): string {
   if (!seconds) return "";
