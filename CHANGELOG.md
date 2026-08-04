@@ -6,23 +6,65 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-04
+
+Playback and export are rebuilt around a single player, and a run of issues
+that made the system feel slow or unresponsive over time are fixed - several of
+which also made updates themselves appear to do nothing.
+
 ### Changed
-- **Playback & Export redesigned to a single player.** The page now shows one
-  large video for a focused camera plus a click-to-focus timeline per camera,
-  instead of a separate video per camera. Only the focused camera is
-  transcoded, so opening a multi-camera review no longer fires one transcode
-  per camera. Pick which camera plays with each row's **View** button.
+- **Playback & Export redesigned as a VMS review screen.** A horizontal camera
+  strip across the top - each card showing a still from that camera so you can
+  recognise it by its view rather than its name - one large player for the
+  selected camera, and a docked timeline plus transport controls that stay in
+  view. The whole page fits the window without scrolling. Only the selected
+  camera is ever transcoded, so opening a multi-camera review no longer fires
+  one transcode per camera.
 
 ### Added
-- **Browser-friendly (H.264) clip export.** Clip export now has a format
-  toggle: **Original** (fast stream-copy in the camera's codec) or **H.264**
+- **Browser-friendly (H.264) clip export.** Clip export has a format toggle:
+  **Original** (fast stream-copy in the camera's codec) or **H.264**
   (re-encoded so the downloaded file plays in any browser).
+- **Snapshot.** Save the frame currently on screen as a PNG, straight from the
+  player - no server round-trip.
+- **Container memory ceilings.** `install-linux.sh` sizes the backend's limit
+  from the host's RAM (half of it, capped at 4GB, floored at 768MB) and all
+  limits are `.env`-overridable. A runaway backend is now contained and
+  restarted instead of exhausting the host and dragging everything else down.
 
 ### Fixed
-- **Playback transcodes are bounded and stop when you leave.** On-demand
-  H.265->H.264 transcodes are capped so a multi-camera view can't peg every
-  core, and ffmpeg is killed the moment the viewer navigates away or hides the
-  tab - CPU no longer stays pinned after leaving the page.
+- **Live and kiosk tiles no longer go permanently blank.** A camera going quiet
+  for 30s ended the MJPEG response *cleanly*, which an `<img>` doesn't report
+  as an error - so nothing retried and the tile stayed frozen until the kiosk's
+  6-hourly reload. The stream is now held open across camera hiccups and
+  resumes on its own.
+- **The app no longer stalls when moving between pages.** nginx serves HTTP/2,
+  so long-lived video streams and ordinary API calls stop competing for the
+  ~6 connections a browser allows per origin. Previously, opening Live View and
+  a recording could fill that pool and leave every subsequent request queued for
+  minutes.
+- **Updates take effect on reload.** The service worker now activates
+  immediately rather than waiting for every tab of the site to be closed, which
+  had made new versions look like they hadn't installed.
+- **Config backup download** returned an API error every time: the link carried
+  a query token but the endpoint only reads the `Authorization` header.
+- **Clip export failures are visible.** A failed export saved the error response
+  as a `.mp4` instead of reporting it.
+- **Playback transcodes are bounded and stop when you leave.** Capped so a
+  multi-camera view can't peg every core, and ffmpeg is killed as soon as the
+  viewer navigates away or hides the tab.
+- **Audio is stream-copied when the camera already sends AAC**, instead of
+  always re-encoding.
+
+### Infrastructure
+- **`update-linux.sh` actually updates.** Four separate faults could each make
+  it appear to do nothing: it pulled an unchanged `:latest` and left the old
+  containers running; a missing `.env` key made `env_get` abort the whole script
+  silently under `set -e`; it assumed the user could reach the Docker socket; and
+  it couldn't pick up fixes to its own scripts mid-run. It now builds from
+  source when no published image matches the checkout, falls back to `sudo`
+  automatically, and re-execs when the update machinery itself changes - so it
+  remains a genuine one-command update.
 
 ## [0.2.4] - 2026-07-30
 
@@ -140,7 +182,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/manojmkss/Light_NVR/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/manojmkss/Light_NVR/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/manojmkss/Light_NVR/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/manojmkss/Light_NVR/compare/v0.2.1...v0.2.2
