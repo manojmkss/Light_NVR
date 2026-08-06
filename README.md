@@ -1,6 +1,76 @@
-# LightNVR
+<div align="center">
 
-A self-hosted home NVR. FastAPI + SQLite backend, React frontend, FFmpeg for recording, OpenCV for motion detection. Runs anywhere Docker runs: Linux, Windows, Proxmox.
+# 🎥 LightNVR
+
+### The self-hosted NVR that's actually easy.
+
+**Point-and-click camera setup. No YAML. Runs on a Raspberry Pi. Free forever.**
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/manojmkss/Light_NVR)](https://github.com/manojmkss/Light_NVR/releases)
+[![Docker images](https://img.shields.io/badge/images-GHCR%20(amd64%20%2B%20arm64)-2496ED?logo=docker&logoColor=white)](https://github.com/manojmkss?tab=packages)
+
+![LightNVR dashboard](docs/screenshots/dashboard.png)
+
+</div>
+
+---
+
+LightNVR is an open-source network video recorder for your own IP cameras — record, watch live, scrub back through footage, and get smart motion alerts, all on hardware you own with **nothing in the cloud**. It aims to give you the power of the big NVR apps **without the config files, the paywalls, or the vendor lock-in**.
+
+```bash
+docker compose pull && docker compose up -d
+# open https://<host>:8443 — the browser wizard does the rest
+```
+
+## Why LightNVR?
+
+- 🖱️ **Set up entirely in the browser.** A first-run wizard creates your admin account, picks storage, and scans for cameras. No editing YAML, no config files.
+- 📦 **One command to run.** Prebuilt Docker images for **amd64 and arm64** — the same setup works on a home server, a mini-PC, or a Raspberry Pi.
+- 🧠 **Smart alerts, not noise.** Optional AI (YOLO) means an alert fires when there's *actually a person or car* — not every swaying tree or passing shadow.
+- 🎞️ **Plays everywhere.** Records efficient H.265 but plays back instantly in any browser (Firefox/Chrome included) — no "unsupported codec" black screens.
+- 🔒 **Truly free & open.** AGPLv3 — it can't be taken closed-source or turned into a paywalled product. Your footage never leaves your network.
+- 🛡️ **Set-and-forget resilience.** Survives reboots, flaky NAS connections, and even a camera's IP changing after a router reboot (self-healing re-discovery).
+
+## Features
+
+| | |
+|---|---|
+| **📹 Cameras** | ONVIF auto-discovery, multi-channel NVR import, auto main/sub stream detection, H.264 & H.265, per-camera settings |
+| **⏺️ Recording** | Continuous or motion-triggered, stream-copy (no re-encode), 3-tier storage (local cache → primary → backup), per-camera retention |
+| **▶️ Playback & export** | 24-hour multi-camera timeline, frame-step, variable speed, clip export (original or browser-friendly H.264) |
+| **🚨 Motion & AI** | OpenCV motion detection with draw-your-own ignore/watch **zones**; optional YOLO object detection (local CPU or remote GPU); optional AI scene descriptions |
+| **🔔 Notifications** | Email, Telegram, WhatsApp, and web push — **each alert carries a snapshot of what triggered it** |
+| **🌐 Remote access** | Native **Tailscale** and **Cloudflare Tunnel** integration, configured from the GUI |
+| **📺 Kiosk mode** | Shareable, login-free live-view grids for a wall display |
+| **🔐 Security** | HTTPS by default, first-run admin setup, admin/viewer roles, credentials never exposed to non-admins |
+| **📱 PWA** | Installs to your phone's home screen; push notifications work like a native app |
+
+## How it compares
+
+> Frigate and ZoneMinder are excellent, mature projects. LightNVR's priority is different: **be the easiest all-in-one NVR to stand up and forget about**, while staying completely free.
+
+| | **LightNVR** | Frigate | ZoneMinder | Blue Iris |
+|---|:---:|:---:|:---:|:---:|
+| Price | **Free** | Free* | Free | Paid (~$70) |
+| License | AGPLv3 | MIT/Frigate+ | GPL | Proprietary |
+| Setup | **GUI wizard** | YAML config | Complex web UI | Windows GUI |
+| Runs on a Raspberry Pi (arm64) | ✅ | ✅ | ⚠️ | ❌ (Windows only) |
+| H.265 recording + in-browser playback | ✅ | ⚠️ (restream) | ⚠️ | ✅ |
+| AI object detection | ✅ (CPU/GPU, optional) | ✅ (Coral/GPU) | via add-ons | via add-ons |
+| Notifications w/ snapshot built-in | ✅ | via Home Assistant | ⚠️ | ✅ |
+| Remote access built-in | ✅ (Tailscale/Cloudflare) | ❌ (DIY) | ❌ (DIY) | ⚠️ |
+| Home Assistant integration | ✅ | ✅ | ⚠️ | ⚠️ |
+
+<sub>*Frigate is free; some hardware acceleration/features are easier with paid Frigate+. Comparison reflects out-of-the-box defaults and is provided in good faith.</sub>
+
+## Screenshots
+
+| Live view | Playback & Export |
+|---|---|
+| ![Live view](docs/screenshots/live.png) | ![Playback & Export](docs/screenshots/playback.png) |
+
+<sub>Camera feeds blurred for privacy in these screenshots.</sub>
 
 ## Quick start
 
@@ -69,7 +139,7 @@ docker compose pull && docker compose up -d
 
 Prefer to build from source instead (or no release published yet)? Use
 `docker compose up -d --build`. Pin a specific release rather than `:latest`
-by setting `LIGHTNVR_VERSION=v0.1.0` in `.env`.
+by setting `LIGHTNVR_VERSION=v0.2.4` in `.env`.
 
 No `.env` file needed either way. Open `https://<host>:8443` (your browser will warn
 about the self-signed certificate on first visit — that's expected; accept
@@ -109,6 +179,8 @@ From **Cameras → Add camera** you get two paths:
 
 1. **Auto-discover (ONVIF)** — scans the LAN for ONVIF devices, or connects directly to a camera IP you type in. Either way, once connected with the camera's ONVIF credentials, it lists the camera's media profiles and lets you pick the main (recording) and sub (live view/motion) streams — RTSP URLs are filled in automatically.
 2. **Manual RTSP** — paste an RTSP URL directly for cameras without ONVIF support, with a "Test connection" button that probes codec/resolution/audio via ffprobe.
+
+> 💡 **Tip for H.265 cameras:** set the camera's *sub-stream* to H.264 in its web UI. LightNVR records the H.265 main stream (efficient storage) and uses the small H.264 sub-stream for instant, seekable browser playback — best of both.
 
 ### A note on ONVIF network discovery in Docker
 
@@ -192,9 +264,13 @@ Mounting network shares from inside the backend container (rather than requiring
 
 NFS mounts use `soft` semantics deliberately (not the kernel default `hard`) — a hard mount makes any process touching it block forever if the server goes away, which would defeat the whole point of having a backup tier to fail over to.
 
-## Email alerts
+## Notifications
 
-Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL_TO` in `.env` to enable. Alert toggles and thresholds (motion cooldown, low-storage %) are configurable per-deployment in Settings → Alerts (admin only).
+Configure channels under **Settings → Alerts** (admin only): email (SMTP), Telegram, WhatsApp (Cloud API), and web push. Every alert includes a snapshot of the frame that triggered it. Alert toggles and thresholds (motion cooldown, low-storage %) are configurable per-deployment.
+
+## Home Assistant
+
+A monitoring integration (camera view + motion/connectivity/system sensors) lives in [homeassistant/](homeassistant/) — copy the `custom_components/lightnvr` folder into your HA config and restart. It talks to LightNVR's own API (a low-privilege viewer account is enough), not your cameras directly.
 
 ## Accounts
 
@@ -223,6 +299,8 @@ Proxies `/api` to `http://localhost:8000` by default (see `vite.config.ts`).
 Bug reports and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for
 dev setup and conventions. Found a security issue? See
 [SECURITY.md](SECURITY.md) instead of opening a public issue.
+
+If LightNVR is useful to you, **a ⭐ on the repo genuinely helps others find it.**
 
 ## License
 
