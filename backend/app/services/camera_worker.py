@@ -60,6 +60,8 @@ class CameraWorker:
         self.motion_enabled = camera.motion_enabled or camera.recording_mode == "motion"
         self.motion_sensitivity = camera.motion_sensitivity
         self.motion_zones = camera.motion_zones
+        self.pre_roll_seconds = camera.pre_roll_seconds if camera.pre_roll_seconds is not None else 5
+        self.post_roll_seconds = camera.post_roll_seconds if camera.post_roll_seconds is not None else 10
 
         self._tasks: list[asyncio.Task] = []
         # Held only so the loop keeps a strong reference to in-flight AI
@@ -77,8 +79,16 @@ class CameraWorker:
 
         if self.recording_mode == "motion":
             self._motion_recorder = MotionRecorder(
-                self.camera_id, self.rtsp_main_url, self.has_audio, sub_url=self._playback_sub_url
+                self.camera_id,
+                self.rtsp_main_url,
+                self.has_audio,
+                sub_url=self._playback_sub_url,
+                pre_roll_seconds=self.pre_roll_seconds,
+                post_roll_seconds=self.post_roll_seconds,
             )
+            # The rolling buffer runs all the time, so a clip can start before
+            # the motion that triggered it.
+            await self._motion_recorder.start()
 
         self._stream_viewer = StreamViewer(
             self.camera_id,

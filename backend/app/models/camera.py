@@ -27,6 +27,10 @@ class Camera(Base):
     # (a waving tree, a busy road); include = watch only there. None/empty =
     # the whole frame is watched, i.e. the previous behaviour.
     motion_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Motion-triggered recording: how much footage before detection (from the
+    # rolling buffer) and after motion ends goes into each clip.
+    pre_roll_seconds: Mapped[int] = mapped_column(Integer, default=5)
+    post_roll_seconds: Mapped[int] = mapped_column(Integer, default=10)
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)  # overrides global retention when set
 
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)  # pinned to the dashboard strip

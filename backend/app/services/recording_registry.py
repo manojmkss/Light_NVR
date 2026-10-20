@@ -14,11 +14,12 @@ async def register_recording(
     started_at: datetime,
     ended_at: datetime,
     playback_path: str | None = None,
+    thumbnail_at: float = 0.5,
 ) -> Recording | None:
     if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
         return None
 
-    thumbnail_path = await generate_thumbnail(file_path)
+    thumbnail_path = await generate_thumbnail(file_path, thumbnail_at)
     size_bytes = os.path.getsize(file_path)
     duration = (ended_at - started_at).total_seconds()
     # Only keep the playback copy if it actually made it to disk with content.

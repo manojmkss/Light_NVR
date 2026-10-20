@@ -29,6 +29,8 @@ export interface Camera {
   motion_enabled: boolean;
   motion_sensitivity: number;
   motion_zones: MotionZone[] | null;
+  pre_roll_seconds: number;
+  post_roll_seconds: number;
   retention_days: number | null;
   is_favorite: boolean;
   enabled: boolean;
@@ -52,6 +54,8 @@ export interface CameraCreatePayload {
   motion_enabled?: boolean;
   motion_sensitivity?: number;
   motion_zones?: MotionZone[] | null;
+  pre_roll_seconds?: number;
+  post_roll_seconds?: number;
   retention_days?: number | null;
   is_favorite?: boolean;
   hardware_id?: string | null;

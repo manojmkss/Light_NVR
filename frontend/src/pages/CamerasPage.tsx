@@ -297,6 +297,8 @@ export function CamerasPage() {
                 recording_mode: editingCamera.recording_mode,
                 motion_enabled: editingCamera.motion_enabled,
                 motion_sensitivity: editingCamera.motion_sensitivity,
+                pre_roll_seconds: editingCamera.pre_roll_seconds,
+                post_roll_seconds: editingCamera.post_roll_seconds,
                 retention_days: editingCamera.retention_days,
               }}
               submitLabel="Save changes"

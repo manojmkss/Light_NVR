@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel
+from pydantic import AfterValidator, BaseModel, Field
 
 from app.schemas.common import UtcDatetime
 
@@ -26,6 +26,10 @@ def _check_rtsp_scheme(v: str | None) -> str | None:
 RtspUrl = Annotated[str, AfterValidator(_check_rtsp_scheme)]
 OptionalRtspUrl = Annotated[str | None, AfterValidator(_check_rtsp_scheme)]
 
+# Bounded so a typo can't make the buffer hold minutes of footage per camera.
+PreRoll = Annotated[int, Field(ge=0, le=30)]
+PostRoll = Annotated[int, Field(ge=0, le=120)]
+
 
 class CameraCreate(BaseModel):
     name: str
@@ -39,6 +43,8 @@ class CameraCreate(BaseModel):
     recording_mode: str = "continuous"
     motion_enabled: bool = True
     motion_sensitivity: int = 50
+    pre_roll_seconds: PreRoll = 5
+    post_roll_seconds: PostRoll = 10
     retention_days: int | None = None  # overrides the global retention setting when set
     is_favorite: bool = False
     hardware_id: str | None = None  # ONVIF serial, for self-healing relocation
@@ -57,6 +63,8 @@ class CameraUpdate(BaseModel):
     motion_enabled: bool | None = None
     motion_sensitivity: int | None = None
     motion_zones: list[MotionZone] | None = None
+    pre_roll_seconds: PreRoll | None = None
+    post_roll_seconds: PostRoll | None = None
     retention_days: int | None = None
     enabled: bool | None = None
     is_favorite: bool | None = None
@@ -75,6 +83,8 @@ class CameraOut(BaseModel):
     motion_enabled: bool
     motion_sensitivity: int
     motion_zones: list[MotionZone] | None = None
+    pre_roll_seconds: int = 5
+    post_roll_seconds: int = 10
     retention_days: int | None
     is_favorite: bool
     enabled: bool

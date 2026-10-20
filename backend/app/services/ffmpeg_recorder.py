@@ -1,11 +1,14 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 from app.services.active_segment import active_segment_registry
+from app.services.clip_exporter import export_clip
 from app.services.events import emit_event
 from app.services.recording_registry import register_recording
+from app.services.segment_buffer import SegmentBuffer
 from app.services.status_tracker import mark_offline, mark_online
 from app.services.storage_manager import storage_manager
 
@@ -391,125 +394,210 @@ class ContinuousRecorder:
 
 
 class MotionRecorder:
-    """Starts an ffmpeg recording when motion begins and finalizes it a short
-    post-roll delay after motion ends, so brief gaps in detection don't split
-    one event into multiple clips. Pre-roll buffering is not implemented in
-    Phase 1 - the clip starts at motion detection, not slightly before it.
+    """Motion clips cut from an always-running rolling buffer (SegmentBuffer).
+
+    The buffer keeps the last few seconds of the main stream on disk, so when
+    motion starts the clip simply *begins `pre_roll` seconds in the past* -
+    nothing is launched and nothing is lost to RTSP connect + keyframe wait.
+    When motion stops, the clip stays open for `post_roll` seconds (a re-trigger
+    in that window extends the same clip), then the covering segments are
+    stitched into one MP4 with a stream copy. Clip start/end times come from
+    the segments themselves, so they match the footage exactly.
+
+    Very long events are cut into MAX_CLIP_SECONDS pieces instead of stopping
+    recording. An H.264 sub-stream buffer is kept alongside an H.265 main so
+    every clip has a browser-playable copy (see _finalize_playback_copy).
     """
 
-    POST_ROLL_SECONDS = 10
     MAX_CLIP_SECONDS = 600
+    COVER_TIMEOUT = 20.0  # how long to wait for the segment containing the clip end to close
 
-    def __init__(self, camera_id: int, rtsp_url: str, has_audio: bool, sub_url: str | None = None):
+    def __init__(
+        self,
+        camera_id: int,
+        rtsp_url: str,
+        has_audio: bool,
+        sub_url: str | None = None,
+        pre_roll_seconds: float = 5,
+        post_roll_seconds: float = 10,
+        on_clip_saved=None,
+    ):
         self.camera_id = camera_id
         self.rtsp_url = rtsp_url
         self.has_audio = has_audio
         self.sub_url = sub_url if sub_url and sub_url != rtsp_url else None
-        self._proc: asyncio.subprocess.Process | None = None
-        self._sub_proc: asyncio.subprocess.Process | None = None
-        self._started_at: datetime | None = None
-        self._output_path: str | None = None
-        self._sub_path: str | None = None
-        self._stop_timer: asyncio.Task | None = None
-        self._lock = asyncio.Lock()
-        # Resolved once and reused for every motion clip this instance records
-        # (see ContinuousRecorder._resolve_audio_mode for why).
-        self._audio_mode: str | None = None
+        self.pre_roll = max(0.0, float(pre_roll_seconds))
+        self.post_roll = max(0.0, float(post_roll_seconds))
+        # Awaitable callback(Recording, clip_start, clip_end) - lets the event
+        # layer link its summary to the saved clip.
+        self.on_clip_saved = on_clip_saved
 
-    async def _resolve_audio_mode(self) -> str:
-        if self._audio_mode is None:
-            self._audio_mode = await _resolve_audio_mode(self.camera_id, self.rtsp_url, self.has_audio)
-        return self._audio_mode
+        async def resolve_audio() -> str:
+            return await _resolve_audio_mode(camera_id, rtsp_url, has_audio)
+
+        self.buffer = SegmentBuffer(camera_id, rtsp_url, resolve_audio, "main", keep_seconds=self.pre_roll)
+        self.sub_buffer = (
+            SegmentBuffer(camera_id, self.sub_url, None, "sub", keep_seconds=self.pre_roll, report_offline=False)
+            if self.sub_url else None
+        )
+        self._tasks: list[asyncio.Task] = []
+        self._clip_start: float | None = None  # wall time; None = no clip open
+        self._trigger_at: float | None = None
+        self._stop_timer: asyncio.Task | None = None
+        self._rollover_task: asyncio.Task | None = None
+        self._finalize_tasks: set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+
+    @property
+    def _buffers(self) -> list[SegmentBuffer]:
+        return [b for b in (self.buffer, self.sub_buffer) if b is not None]
+
+    async def start(self) -> None:
+        for buf in self._buffers:
+            self._tasks.append(asyncio.create_task(buf.run()))
 
     async def on_motion_start(self) -> None:
         async with self._lock:
             if self._stop_timer:
                 self._stop_timer.cancel()
                 self._stop_timer = None
-            if self._proc is not None:
-                return  # already recording this motion episode
-
-            try:
-                has_room, detail = await storage_manager.cache_has_room()
-                if not has_room:
-                    logger.warning("Skipping motion recording for camera %s: %s", self.camera_id, detail)
-                    return
-
-                self._started_at = datetime.now(timezone.utc)
-                ts = self._started_at.strftime("%Y%m%d_%H%M%S")
-                self._output_path = f"{_camera_dir(self.camera_id)}/{ts}_motion.mp4"
-                audio_mode = await self._resolve_audio_mode()
-                cmd = _build_record_cmd(self.rtsp_url, self._output_path, audio_mode, self.MAX_CLIP_SECONDS)
-                self._proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-                )
-                # Best-effort parallel H.264 sub-stream copy for browser playback.
-                self._sub_path = _sub_path_for(self._output_path) if self.sub_url else None
-                self._sub_proc = None
-                if self._sub_path:
-                    try:
-                        sub_cmd = _build_record_cmd(self.sub_url, self._sub_path, "none", self.MAX_CLIP_SECONDS)
-                        self._sub_proc = await asyncio.create_subprocess_exec(
-                            *sub_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-                        )
-                    except Exception:
-                        self._sub_path = None
-                        self._sub_proc = None
-                active_segment_registry.set(self.camera_id, self._output_path, self._started_at, self._sub_path)
-            except Exception:
-                # Called directly from a scheduled future (StreamViewer's
-                # motion callback) with nothing awaiting its result - an
-                # uncaught exception here would only ever surface as an
-                # asyncio "exception was never retrieved" log line, silently
-                # dropping this one motion clip with no visible error.
-                logger.exception("Failed to start motion recording for camera %s", self.camera_id)
-                self._started_at = None
-                self._output_path = None
-                self._sub_path = None
-                self._sub_proc = None
+            if self._clip_start is not None:
+                return  # re-trigger inside the post-roll: same clip continues
+            now = time.time()
+            self._trigger_at = now
+            self._clip_start = now - self.pre_roll
+            for buf in self._buffers:
+                buf.hold(self, self._clip_start)
+            self._rollover_task = asyncio.create_task(self._rollover_loop())
 
     async def on_motion_stop(self) -> None:
         async with self._lock:
-            if self._proc is None:
+            if self._clip_start is None:
                 return
+            if self._stop_timer:
+                self._stop_timer.cancel()
             self._stop_timer = asyncio.create_task(self._finalize_after_delay())
 
     async def _finalize_after_delay(self) -> None:
-        await asyncio.sleep(self.POST_ROLL_SECONDS)
-        await self._finalize()
+        await asyncio.sleep(self.post_roll)
+        await self._close_clip(time.time())
 
-    async def _finalize(self) -> None:
+    async def _close_clip(self, end: float, cover_timeout: float | None = None) -> None:
         async with self._lock:
-            if self._proc is None:
+            if self._clip_start is None:
                 return
-            proc, output_path, started_at = self._proc, self._output_path, self._started_at
-            sub_proc, sub_path = self._sub_proc, self._sub_path
-            self._proc = None
-            self._output_path = None
-            self._sub_proc = None
-            self._sub_path = None
+            start, trigger_at = self._clip_start, self._trigger_at
+            self._clip_start = None
+            self._trigger_at = None
             self._stop_timer = None
-            active_segment_registry.clear(self.camera_id)
+            if self._rollover_task:
+                self._rollover_task.cancel()
+                self._rollover_task = None
+        try:
+            await self._assemble(start, end, trigger_at, wait=True, cover_timeout=cover_timeout)
+        finally:
+            for buf in self._buffers:
+                buf.release(self)
 
-        for p in (proc, sub_proc):
-            if p is not None and p.returncode is None:
-                p.terminate()
-                try:
-                    await asyncio.wait_for(p.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    p.kill()
+    async def _rollover_loop(self) -> None:
+        """Cut very long events into MAX_CLIP_SECONDS pieces, at a segment
+        boundary so no footage is duplicated or dropped between pieces."""
+        try:
+            while True:
+                await asyncio.sleep(5)
+                boundary = self.buffer.latest_end()
+                async with self._lock:
+                    start = self._clip_start
+                    if start is None or boundary is None or boundary - start < self.MAX_CLIP_SECONDS:
+                        continue
+                    trigger_at = self._trigger_at
+                    self._clip_start = boundary
+                    self._trigger_at = None
+                    # The finished piece gets its own hold so its segments
+                    # survive until stitched, even if the event closes (and
+                    # releases the clip-level hold) meanwhile.
+                    piece = object()
+                    for buf in self._buffers:
+                        buf.hold(piece, start)
+                        buf.hold(self, boundary)
+                task = asyncio.create_task(self._assemble_piece(piece, start, boundary, trigger_at))
+                self._finalize_tasks.add(task)
+                task.add_done_callback(self._finalize_tasks.discard)
+        except asyncio.CancelledError:
+            pass
 
-        ended_at = datetime.now(timezone.utc)
-        # Same fragmented -> seekable remux as continuous segments, so a
-        # motion clip can be scrubbed in the browser too. Motion clips aren't
-        # recorded back-to-back, so doing it inline here adds no coverage gap.
-        await _remux_to_seekable(output_path)
-        playback_path = await _finalize_playback_copy(sub_path)
-        await register_recording(
-            self.camera_id, output_path, "motion", started_at, ended_at, playback_path=playback_path
-        )
+    async def _assemble_piece(self, piece: object, start: float, end: float, trigger_at: float | None) -> None:
+        try:
+            await self._assemble(start, end, trigger_at, wait=False)
+        finally:
+            for buf in self._buffers:
+                buf.release(piece)
+
+    async def _assemble(
+        self, start: float, end: float, trigger_at: float | None, wait: bool, cover_timeout: float | None = None
+    ) -> None:
+        try:
+            if wait:
+                await self.buffer.wait_until_covered(end, cover_timeout or self.COVER_TIMEOUT)
+            segs = self.buffer.segments_overlapping(start, end)
+            if not segs:
+                logger.warning(
+                    "Motion clip for camera %s has no buffered footage (is the main stream reachable?)", self.camera_id
+                )
+                return
+            has_room, detail = await storage_manager.cache_has_room()
+            if not has_room:
+                logger.warning("Skipping motion clip for camera %s: %s", self.camera_id, detail)
+                return
+
+            clip_start, clip_end = segs[0].start, segs[-1].end
+            ts = datetime.fromtimestamp(clip_start, timezone.utc).strftime("%Y%m%d_%H%M%S")
+            output_path = f"{_camera_dir(self.camera_id)}/{ts}_motion.mp4"
+            await export_clip([(s.path, 0.0, s.duration, s.duration) for s in segs], output_path)
+
+            playback_path = None
+            if self.sub_buffer is not None:
+                if wait:
+                    await self.sub_buffer.wait_until_covered(clip_end, 5)
+                sub_segs = self.sub_buffer.segments_overlapping(clip_start, clip_end)
+                if sub_segs:
+                    sub_path = _sub_path_for(output_path)
+                    try:
+                        await export_clip([(s.path, 0.0, s.duration, s.duration) for s in sub_segs], sub_path)
+                        playback_path = await _finalize_playback_copy(sub_path)
+                    except RuntimeError as exc:
+                        logger.warning("Playback copy for motion clip %s failed: %s", output_path, exc)
+                        _remove_quietly(sub_path)
+
+            thumb_at = max(0.5, (trigger_at - clip_start) if trigger_at else 0.5)
+            recording = await register_recording(
+                self.camera_id,
+                output_path,
+                "motion",
+                datetime.fromtimestamp(clip_start, timezone.utc),
+                datetime.fromtimestamp(clip_end, timezone.utc),
+                playback_path=playback_path,
+                thumbnail_at=min(thumb_at, max(0.5, clip_end - clip_start - 0.5)),
+            )
+            if recording is not None and self.on_clip_saved:
+                await self.on_clip_saved(recording, clip_start, clip_end)
+        except Exception:
+            # Runs from a timer task nothing awaits - log, never raise, or the
+            # failure would only show as "exception was never retrieved".
+            logger.exception("Failed to save motion clip for camera %s", self.camera_id)
 
     async def stop(self) -> None:
         if self._stop_timer:
             self._stop_timer.cancel()
-        await self._finalize()
+        # An event still open at shutdown is saved with what was buffered
+        # (short wait: a container stop gives us ~10s in total).
+        await self._close_clip(time.time(), cover_timeout=3)
+        if self._finalize_tasks:
+            await asyncio.gather(*self._finalize_tasks, return_exceptions=True)
+        for buf in self._buffers:
+            await buf.stop()
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        for buf in self._buffers:
+            await asyncio.to_thread(buf.cleanup)

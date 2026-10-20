@@ -169,6 +169,38 @@ export function CameraDetailsForm({ initial, submitLabel, submitting, serverErro
         </div>
       )}
 
+      {form.recording_mode === "motion" && (
+        <div className="field">
+          <label>Clip padding (seconds)</label>
+          <div style={{ display: "flex", gap: 12 }}>
+            <label style={{ flex: 1 }}>
+              Before motion
+              <input
+                type="number"
+                min={0}
+                max={30}
+                value={form.pre_roll_seconds ?? 5}
+                onChange={(e) => update("pre_roll_seconds", Math.min(30, Math.max(0, Number(e.target.value) || 0)))}
+              />
+            </label>
+            <label style={{ flex: 1 }}>
+              After motion ends
+              <input
+                type="number"
+                min={0}
+                max={120}
+                value={form.post_roll_seconds ?? 10}
+                onChange={(e) => update("post_roll_seconds", Math.min(120, Math.max(0, Number(e.target.value) || 0)))}
+              />
+            </label>
+          </div>
+          <div className="muted">
+            The last few seconds are always kept in a rolling buffer, so each clip starts this long before motion was
+            detected. Motion again within the "after" window continues the same clip.
+          </div>
+        </div>
+      )}
+
       <div className="field">
         <label>Retention override (days)</label>
         <input
