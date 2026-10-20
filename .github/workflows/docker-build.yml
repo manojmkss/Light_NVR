@@ -31,8 +31,10 @@ jobs:
           set -o pipefail
           python -m pytest -q -rA tests 2>&1 | tee pytest.out || status=$?
           # Surface failures as annotations so they're readable from the
-          # check-run API without downloading logs.
-          grep -E "^(FAILED|ERROR) " pytest.out | while read -r line; do
+          # check-run API without downloading logs. `|| true`: the step runs
+          # under bash -e, and grep exits 1 when there's nothing to report -
+          # which, without it, failed the job precisely when every test passed.
+          { grep -E "^(FAILED|ERROR) " pytest.out || true; } | while read -r line; do
             echo "::error title=pytest::${line:0:900}"
           done
           tail -n 1 pytest.out | sed 's/^/::notice title=pytest summary::/'
