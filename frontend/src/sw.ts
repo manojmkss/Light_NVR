@@ -31,6 +31,11 @@ self.addEventListener("activate", (event) => {
 interface PushPayload {
   title?: string;
   body?: string;
+  url?: string; // deep link, e.g. /events/123
+  image?: string; // signed snapshot URL (works without a login, expires)
+  tag?: string;
+  event_id?: number;
+  urgent?: boolean;
 }
 
 self.addEventListener("push", (event: PushEvent) => {
@@ -42,23 +47,39 @@ self.addEventListener("push", (event: PushEvent) => {
   }
 
   const title = payload.title || "LightNVR";
-  event.waitUntil(
-    self.registration.showNotification(title, {
-      body: payload.body || "",
-      icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
-    })
-  );
+  const options: NotificationOptions & { image?: string; renotify?: boolean; actions?: { action: string; title: string }[] } = {
+    body: payload.body || "",
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    data: { url: payload.url || "/", eventId: payload.event_id },
+    tag: payload.tag,
+    // Urgent alerts stay on screen until dealt with, and re-alert on update.
+    requireInteraction: !!payload.urgent,
+    renotify: !!payload.urgent && !!payload.tag,
+  };
+  if (payload.image) options.image = payload.image;
+  if (payload.urgent && payload.event_id) {
+    options.actions = [{ action: "ack", title: "I've seen it" }];
+  }
+  event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener("notificationclick", (event: NotificationEvent) => {
   event.notification.close();
+  const data = (event.notification.data || {}) as { url?: string; eventId?: number };
+  let url = data.url || "/";
+  if (event.action === "ack" && data.eventId) {
+    // The page acknowledges it (the worker has no login to call the API with).
+    url = `/events/${data.eventId}?ack=1`;
+  }
   event.waitUntil(
     self.clients.matchAll({ type: "window" }).then((clientList) => {
       for (const client of clientList) {
-        if ("focus" in client) return (client as WindowClient).focus();
+        if ("navigate" in client && "focus" in client) {
+          return (client as WindowClient).navigate(url).then((c) => c?.focus());
+        }
       }
-      return self.clients.openWindow("/");
+      return self.clients.openWindow(url);
     })
   );
 });

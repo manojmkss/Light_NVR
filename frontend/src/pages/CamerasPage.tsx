@@ -299,6 +299,7 @@ export function CamerasPage() {
                 motion_sensitivity: editingCamera.motion_sensitivity,
                 pre_roll_seconds: editingCamera.pre_roll_seconds,
                 post_roll_seconds: editingCamera.post_roll_seconds,
+                area: editingCamera.area,
                 retention_days: editingCamera.retention_days,
               }}
               submitLabel="Save changes"

@@ -1,0 +1,8 @@
+# Intel iGPU / Arc for the ai-worker (OpenVINO). RENDER_GID = the host's
+# `render` group id: getent group render | cut -d: -f3
+services:
+  ai-worker:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:-109}"

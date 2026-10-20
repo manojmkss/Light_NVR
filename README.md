@@ -234,6 +234,16 @@ costly to ask about every motion event and won't give reliable boxes, while
 YOLO can't tell you *what happened*. Used together, detection filters the noise
 and descriptions explain the few events that survive.
 
+## Home security features
+
+- **Arm modes** (Home / Away / Night / Disarmed) from the sidebar, Home Assistant or a weekly schedule, with **alert rules** per mode, camera, object, zone and person: notify, urgent (repeats until acknowledged) or quiet. Settings → Modes. Recording is never affected.
+- **Visits across cameras**: give cameras an area and link areas with walking times; a visit gets one alert and one route summary ("Gate → Driveway → Porch, waited 4m"). Visits page.
+- **Named zones and lines** (Cameras → Zones): loitering and line-crossing alerts.
+- **Faces you enrol** (People page, opt-in, local only): "Ramesh (milkman) arrived", unknown faces flagged, watch list always urgent. Delete or forget all at any time.
+- **Package left / taken**, **camera tamper** (covered, blurred, turned) alerts.
+- **Search** in plain words: "person in red shirt yesterday", "car driveway".
+- **Local AI service** with CPU, Intel GPU and NVIDIA images: `./scripts/enable-ai.sh` detects your hardware, starts the right one and benchmarks it. Settings → AI → "Measure this hardware" shows what each feature can sustain.
+
 ## Recording modes
 
 Set per-camera under Cameras → Edit:
@@ -244,6 +254,8 @@ Set per-camera under Cameras → Edit:
 Motion detection (`motion_enabled`) is independent of recording mode — you can run continuous recording *and* get motion alerts/event tagging at the same time. Detection runs on the substream when configured, to keep CPU usage low. It compares each frame with the frames from ~0.4s and ~0.8s earlier (so it reacts to real movement, not to one glitched frame), needs the change to last about half a second, ignores whole-scene changes such as lights or the IR switch, and uses a background model to keep the event open while someone stands still.
 
 With AI on, the newest frame is checked every 500ms while motion lasts (configurable). The first confirmed person/vehicle/animal sends one alert with boxes drawn on the full-resolution frame, and when the event ends a **summary** follows: start/end time, duration, what was seen (counts, most at once, appear/leave timeline), the clip's time range, and — with a vision model configured — a sentence describing the clearest frame. Summaries also work without AI (duration and how much moved) and can be turned off under Settings → AI.
+
+A person keeps the event open while the AI can see them, even standing completely still (up to 15 minutes), so someone waiting at the gate is one event, one clip and one summary. Vehicles that stop are marked parked: they never keep events open or alert, and are remembered between events. Objects outside your motion zones are ignored by the AI too.
 
 ## Storage management
 

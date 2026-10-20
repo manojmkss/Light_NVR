@@ -1,21 +1,28 @@
-# Runs on the GPU machine, NOT on the NVR box.
+# LightNVR Vision on ANOTHER machine (typically a PC with a GPU).
+# (On the NVR box itself, use ./scripts/enable-ai.sh in the main folder instead.)
 #
 #   cd ai-worker
-#   cp .env.example .env      # set AI_WORKER_API_KEY
-#   docker compose up -d --build
+#   cp .env.example .env          # set AI_WORKER_API_KEY, pick AI_WORKER_VARIANT
+#   docker compose up -d
+#   ../scripts/fetch-ai-models.sh yolov8s --volume lightnvr-ai-worker-models
 #
-# Then in LightNVR: Settings -> AI -> "Another PC with a GPU",
-# address http://<this-machine-ip>:8811, paste the same key, "Check it works".
+# Then in LightNVR: Settings -> AI -> "Another PC running the LightNVR ai-worker",
+# address http://<this-machine-ip>:8811, the same key, "Check it works".
+#
+# NVIDIA: set AI_WORKER_VARIANT=cuda and also start with the GPU override:
+#   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d
+# (needs the NVIDIA Container Toolkit). Intel GPU: AI_WORKER_VARIANT=openvino
+# plus -f docker-compose.intel.yml.
 
 services:
   ai-worker:
+    image: ghcr.io/manojmkss/light_nvr-ai-worker:${LIGHTNVR_VERSION:-latest}-${AI_WORKER_VARIANT:-cpu}
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: ai-worker/Dockerfile
       args:
-        # For NVIDIA, swap to a CUDA base and uncomment the GPU block below:
-        #   BASE_IMAGE: pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
-        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim}
+        VARIANT: ${AI_WORKER_VARIANT:-cpu}
+        BASE_IMAGE: ${AI_WORKER_BASE_IMAGE:-python:3.11-slim}
     container_name: lightnvr-ai-worker
     restart: unless-stopped
     environment:
@@ -23,23 +30,11 @@ services:
       # endpoint decodes any image posted to it.
       AI_WORKER_API_KEY: ${AI_WORKER_API_KEY:-}
       AI_WORKER_MODEL: ${AI_WORKER_MODEL:-yolov8n}
+      AI_WORKER_PROVIDER: ${AI_WORKER_PROVIDER:-auto}
     ports:
-      # Bound to all interfaces on purpose - the whole point is that the NVR on
-      # another host can reach it. Keep it on a trusted network, or set a key.
       - "${AI_WORKER_PORT:-8811}:8811"
     volumes:
-      # Model weights cache. Without this, every restart re-downloads them.
-      - ai-worker-models:/models
-
-    # ── NVIDIA GPU: uncomment, and build with the CUDA BASE_IMAGE above ──
-    # Requires the NVIDIA Container Toolkit on the host.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+      - ai-worker-models:/data
 
 volumes:
   ai-worker-models:

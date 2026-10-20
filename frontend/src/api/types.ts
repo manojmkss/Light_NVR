@@ -12,8 +12,14 @@ export type CameraStatus = "online" | "offline" | "unknown";
 export type Codec = "h264" | "h265";
 
 export interface MotionZone {
-  kind: "include" | "exclude";
+  // include/exclude: where motion is watched. zone: a named area AI rules use
+  // (entered / loitering). line: a 2-point tripwire.
+  kind: "include" | "exclude" | "zone" | "line";
   points: number[][]; // [[x, y], ...] normalized to 0-1
+  name?: string | null;
+  loiter_seconds?: number | null;
+  direction?: "both" | "forward" | "backward" | null;
+  objects?: string[] | null;
 }
 
 export interface Camera {
@@ -31,6 +37,7 @@ export interface Camera {
   motion_zones: MotionZone[] | null;
   pre_roll_seconds: number;
   post_roll_seconds: number;
+  area: string | null;
   retention_days: number | null;
   is_favorite: boolean;
   enabled: boolean;
@@ -56,6 +63,7 @@ export interface CameraCreatePayload {
   motion_zones?: MotionZone[] | null;
   pre_roll_seconds?: number;
   post_roll_seconds?: number;
+  area?: string | null;
   retention_days?: number | null;
   is_favorite?: boolean;
   hardware_id?: string | null;
@@ -137,6 +145,15 @@ export interface Recording {
 export type EventType =
   | "motion"
   | "motion_summary"
+  | "motion_update"
+  | "loitering"
+  | "line_cross"
+  | "mode_changed"
+  | "incident_summary"
+  | "arrival"
+  | "tamper"
+  | "package"
+  | "audit"
   | "camera_offline"
   | "camera_online"
   | "low_storage"
@@ -150,6 +167,9 @@ export interface NvrEvent {
   message: string;
   created_at: string;
   snapshot_path: string | null; // presence only; the image loads from the event's own id
+  payload?: Record<string, unknown> | null;
+  priority?: number; // 0 normal, 1 important, 2 urgent
+  acked_at?: string | null;
 }
 
 export interface LiveSegmentInfo {
@@ -213,6 +233,7 @@ export interface AlertSettings {
   whatsapp_enabled: boolean;
   whatsapp_phone_number_id: string;
   whatsapp_recipient_number: string;
+  public_base_url?: string;
 }
 
 export interface AlertSettingsUpdate extends Partial<AlertSettings> {

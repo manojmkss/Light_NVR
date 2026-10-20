@@ -7,15 +7,12 @@ from abc import ABC, abstractmethod
 import cv2
 import numpy as np
 
-from app.services.ai.types import COCO_CLASSES, MODEL_DIR, DetectedObject
+from app.services.ai.types import MODEL_DIR, DetectedObject
+from app.vision import yolo
+from app.vision.engine import make_session
 
 logger = logging.getLogger(__name__)
 
-# YOLOv8/YOLO11 are trained at 640x640; feeding anything else silently costs
-# accuracy, so the letterbox below always lands on this regardless of the
-# camera's substream size.
-_INPUT_SIZE = 640
-_NMS_IOU = 0.45
 
 
 class InferenceBackend(ABC):
@@ -31,6 +28,17 @@ class InferenceBackend(ABC):
     async def detect(self, jpeg: bytes, min_confidence: float) -> list[DetectedObject]:
         ...
 
+    async def detect_frame(self, frame: np.ndarray, min_confidence: float) -> list[DetectedObject]:
+        """Detect on a decoded BGR frame. Default: encode and use detect();
+        the local backend overrides this to skip the JPEG round-trip."""
+        ok, buf = await asyncio.to_thread(cv2.imencode, ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            return []
+        return await self.detect(buf.tobytes(), min_confidence)
+
+    # How many requests this backend can usefully run at once (scheduler slots).
+    slots: int = 1
+
     @abstractmethod
     async def health(self) -> tuple[bool, str]:
         """(ok, human-readable detail) - drives the Test button in Settings."""
@@ -39,98 +47,16 @@ class InferenceBackend(ABC):
         return None
 
 
-def _letterbox(img: np.ndarray) -> tuple[np.ndarray, float, int, int]:
-    """Resize preserving aspect ratio and pad to a square, the way YOLO expects.
-    A plain resize would stretch the image and shift every box; returns the
-    scale/pad so boxes can be mapped back to the original frame.
-    """
-    h, w = img.shape[:2]
-    scale = min(_INPUT_SIZE / w, _INPUT_SIZE / h)
-    nw, nh = int(round(w * scale)), int(round(h * scale))
-    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((_INPUT_SIZE, _INPUT_SIZE, 3), 114, dtype=np.uint8)
-    dx, dy = (_INPUT_SIZE - nw) // 2, (_INPUT_SIZE - nh) // 2
-    canvas[dy:dy + nh, dx:dx + nw] = resized
-    return canvas, scale, dx, dy
-
-
-def _nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list[int]:
-    """Greedy non-max suppression. YOLO emits many overlapping candidates for
-    one object; without this a single person becomes six detections and six
-    alerts."""
-    if len(boxes) == 0:
-        return []
-    x1, y1 = boxes[:, 0], boxes[:, 1]
-    x2, y2 = boxes[:, 0] + boxes[:, 2], boxes[:, 1] + boxes[:, 3]
-    areas = (x2 - x1) * (y2 - y1)
-    order = scores.argsort()[::-1]
-
-    keep: list[int] = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(int(i))
-        if order.size == 1:
-            break
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
-        iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-9)
-        order = order[1:][iou <= iou_threshold]
-    return keep
+def _to_obj(b) -> DetectedObject:
+    return DetectedObject(label=b.label, confidence=b.confidence, x=b.x, y=b.y, w=b.w, h=b.h)
 
 
 def decode_yolo_output(
     output: np.ndarray, scale: float, dx: int, dy: int, orig_w: int, orig_h: int, min_confidence: float
 ) -> list[DetectedObject]:
-    """Turn a raw YOLOv8/11 tensor into normalised, de-duplicated objects.
-
-    Output is (1, 84, 8400): 8400 candidate boxes, each with 4 box values
-    (cx, cy, w, h in letterboxed pixels) followed by 80 per-class scores.
-    Shared by both backends so a local and a remote run can't drift apart.
-    """
-    preds = np.squeeze(output)            # (84, 8400)
-    if preds.ndim != 2:
-        return []
-    if preds.shape[0] < preds.shape[1]:   # (84, 8400) -> (8400, 84)
-        preds = preds.transpose()
-
-    class_scores = preds[:, 4:]
-    class_ids = np.argmax(class_scores, axis=1)
-    confidences = class_scores[np.arange(len(class_ids)), class_ids]
-
-    mask = confidences >= min_confidence
-    if not np.any(mask):
-        return []
-    preds, class_ids, confidences = preds[mask], class_ids[mask], confidences[mask]
-
-    # cx,cy,w,h (letterboxed) -> x,y,w,h in original-frame pixels
-    cx, cy, bw, bh = preds[:, 0], preds[:, 1], preds[:, 2], preds[:, 3]
-    x = (cx - bw / 2 - dx) / scale
-    y = (cy - bh / 2 - dy) / scale
-    w = bw / scale
-    h = bh / scale
-    boxes = np.stack([x, y, w, h], axis=1)
-
-    results: list[DetectedObject] = []
-    for i in _nms(boxes, confidences, _NMS_IOU):
-        bx, by, bw_, bh_ = boxes[i]
-        cid = int(class_ids[i])
-        label = COCO_CLASSES[cid] if 0 <= cid < len(COCO_CLASSES) else str(cid)
-        results.append(
-            DetectedObject(
-                label=label,
-                confidence=float(confidences[i]),
-                # Clamped: boxes on a frame edge can extend past it, and a
-                # negative/over-1 box breaks the UI overlay that draws them.
-                x=max(0.0, min(1.0, float(bx) / orig_w)),
-                y=max(0.0, min(1.0, float(by) / orig_h)),
-                w=max(0.0, min(1.0, float(bw_) / orig_w)),
-                h=max(0.0, min(1.0, float(bh_) / orig_h)),
-            )
-        )
-    return results
+    """Raw YOLO tensor -> normalised objects. The decoding itself lives in
+    app.vision.yolo, shared with the ai-worker so the two can never drift."""
+    return [_to_obj(b) for b in yolo.decode(output, scale, dx, dy, orig_w, orig_h, min_confidence)]
 
 
 class LocalOnnxBackend(InferenceBackend):
@@ -162,38 +88,42 @@ class LocalOnnxBackend(InferenceBackend):
         except ImportError as exc:  # pragma: no cover - depends on image build
             raise RuntimeError("onnxruntime is not installed in this image") from exc
 
-        opts = ort.SessionOptions()
         # This runs alongside FFmpeg recorders and OpenCV decoders; letting ORT
         # grab every core would starve them and stutter live recording, which
         # matters far more than shaving milliseconds off a detection.
-        opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self._session = ort.InferenceSession(self.model_path, opts, providers=["CPUExecutionProvider"])
+        self._session, self.provider = make_session(
+            self.model_path, "cpu", threads=max(1, (os.cpu_count() or 2) // 2)
+        )
+        del ort  # imported above only to fail early with a clear message
         self._input_name = self._session.get_inputs()[0].name
         logger.info("AI: loaded local ONNX model %s", self.model_path)
 
     def _infer_sync(self, jpeg: bytes, min_confidence: float) -> list[DetectedObject]:
-        self._load()
         buf = np.frombuffer(jpeg, dtype=np.uint8)
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
         if img is None:
             return []
+        return self._infer_array(img, min_confidence)
+
+    def _infer_array(self, img: np.ndarray, min_confidence: float) -> list[DetectedObject]:
+        self._load()
         orig_h, orig_w = img.shape[:2]
 
-        canvas, scale, dx, dy = _letterbox(img)
-        blob = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        blob = np.transpose(blob, (2, 0, 1))[np.newaxis, ...]  # NCHW
-
-        outputs = self._session.run(None, {self._input_name: blob})
+        canvas, scale, dx, dy = yolo.letterbox(img)
+        outputs = self._session.run(None, {self._input_name: yolo.to_blob(canvas)})
         return decode_yolo_output(outputs[0], scale, dx, dy, orig_w, orig_h, min_confidence)
 
     async def detect(self, jpeg: bytes, min_confidence: float) -> list[DetectedObject]:
         # ORT inference is blocking C++; on the event loop it would stall every
-        # live-view stream and API request for its whole duration. The lock
-        # keeps concurrent motion on several cameras from running N inferences
-        # at once and pinning every core.
+        # live-view stream and API request for its whole duration. Concurrency
+        # across cameras is the scheduler's job (one slot here); the lock is a
+        # backstop for direct callers such as the Test button.
         async with self._lock:
             return await asyncio.to_thread(self._infer_sync, jpeg, min_confidence)
+
+    async def detect_frame(self, frame: np.ndarray, min_confidence: float) -> list[DetectedObject]:
+        async with self._lock:
+            return await asyncio.to_thread(self._infer_array, frame, min_confidence)
 
     async def health(self) -> tuple[bool, str]:
         if not os.path.exists(self.model_path):
@@ -215,6 +145,7 @@ class RemoteHttpBackend(InferenceBackend):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.slots = 2  # a GPU worker overlaps network + inference fine
         self._client: "httpx.AsyncClient | None" = None
         self._client_lock = asyncio.Lock()
 

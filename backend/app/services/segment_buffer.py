@@ -201,6 +201,13 @@ class SegmentBuffer:
         stderr_task = asyncio.create_task(self._proc.stderr.read())
         offset: float | None = None
         produced = False
+        # Stream times of this run's segments. When a better (smaller) offset
+        # estimate arrives, the whole run is re-timed with it, so segments of
+        # one run stay back-to-back with their real durations. (Re-timing only
+        # new segments made them overlap the earlier, later-estimated ones, and
+        # the overlap guard then trimmed real footage out of the timeline.)
+        run_times: dict[str, tuple[float, float]] = {}
+        floor = self._segments[-1].end if self._segments else 0.0  # previous run's end
         try:
             while True:
                 line = await self._proc.stdout.readline()
@@ -211,12 +218,20 @@ class SegmentBuffer:
                 if parsed is None:
                     continue
                 fname, s_start, s_end = parsed
-                offset = arrived - s_end if offset is None else min(offset, arrived - s_end)
-                seg = BufferSegment(os.path.join(self.directory, os.path.basename(fname)), s_start + offset, s_end + offset)
-                if self._segments and seg.start < self._segments[-1].end:
-                    # A new run (or clock-estimate jitter) must never overlap
-                    # what's already buffered - that would duplicate footage.
-                    seg = BufferSegment(seg.path, self._segments[-1].end, max(seg.end, self._segments[-1].end))
+                path = os.path.join(self.directory, os.path.basename(fname))
+                run_times[path] = (s_start, s_end)
+                new_offset = arrived - s_end if offset is None else min(offset, arrived - s_end)
+                if offset is not None and new_offset < offset:
+                    self._segments = [
+                        BufferSegment(sg.path, max(floor, run_times[sg.path][0] + new_offset),
+                                      max(floor, run_times[sg.path][1] + new_offset))
+                        if sg.path in run_times else sg
+                        for sg in self._segments
+                    ]
+                offset = new_offset
+                # A new run must never overlap what an earlier run buffered -
+                # that would duplicate footage.
+                seg = BufferSegment(path, max(floor, s_start + offset), max(floor, s_end + offset))
                 self._segments.append(seg)
                 if not produced:
                     produced = True

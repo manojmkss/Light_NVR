@@ -96,6 +96,24 @@ async def list_events(
     return result.scalars().all()
 
 
+@router.get("/events/{event_id}", response_model=EventOut)
+async def get_event(event_id: int, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    event = await db.get(Event, event_id)
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    return event
+
+
+@router.post("/events/{event_id}/ack")
+async def acknowledge_event(event_id: int, user: User = Depends(get_current_user_flexible)):
+    """Stops an urgent alert from being sent again ('I've seen it')."""
+    from app.services.alerts import acknowledge
+
+    if not await acknowledge(event_id, user.username):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    return {"acknowledged": True}
+
+
 @router.get("/events/{event_id}/snapshot.jpg")
 async def get_event_snapshot(
     event_id: int,

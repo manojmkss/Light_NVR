@@ -31,6 +31,10 @@ class Camera(Base):
     # rolling buffer) and after motion ends goes into each clip.
     pre_roll_seconds: Mapped[int] = mapped_column(Integer, default=5)
     post_roll_seconds: Mapped[int] = mapped_column(Integer, default=10)
+    # Which part of the property this camera watches ("Gate", "Driveway"...).
+    # Cameras in the same area, or in areas linked by a walking time, have
+    # their events joined into one visit. Empty = the whole property is one area.
+    area: Mapped[str | None] = mapped_column(String(64), nullable=True)
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)  # overrides global retention when set
 
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)  # pinned to the dashboard strip

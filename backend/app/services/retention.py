@@ -125,6 +125,13 @@ async def enforce_retention() -> None:
     await _prune_old_events()
     await _prune_old_detections()
     await _sweep_orphaned_detection_snapshots()
+    try:
+        # Unnamed face captures are kept only a few days (for "Who is this?").
+        from app.api.routes.faces import prune_unknown_faces
+
+        await prune_unknown_faces()
+    except Exception:
+        logger.exception("Retention: could not prune unknown face samples")
     await _check_low_storage()
 
 
@@ -266,9 +273,24 @@ async def _prune_old_events() -> None:
 
         result = await db.execute(delete(Event).where(Event.created_at < cutoff))
         removed = result.rowcount or 0
-        if removed:
+
+        # Visits (multi-camera incidents) follow the same retention.
+        from app.models.incident import Incident
+
+        inc_paths = (await db.execute(
+            select(Incident.snapshot_path).where(Incident.started_at < cutoff, Incident.snapshot_path.is_not(None))
+        )).scalars().all()
+        for path in set(inc_paths):
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        removed_inc = (await db.execute(delete(Incident).where(Incident.started_at < cutoff))).rowcount or 0
+        if removed or removed_inc:
             await db.commit()
-            logger.info("Retention: pruned %d event(s) older than %d days", removed, EVENT_RETENTION_DAYS)
+            logger.info("Retention: pruned %d event(s) and %d visit(s) older than %d days",
+                        removed, removed_inc, EVENT_RETENTION_DAYS)
 
 
 async def _enforce_storage_cap(max_storage_gb: int) -> None:

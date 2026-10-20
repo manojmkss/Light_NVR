@@ -49,6 +49,7 @@ import type {
   User,
 } from "../api/types";
 import { AISettingsTab } from "../components/AISettingsTab";
+import { SecurityModesTab } from "../components/SecurityModesTab";
 import { StorageHealthCards } from "../components/StorageHealthCards";
 import { useAuth } from "../context/AuthContext";
 import { useSettings } from "../context/SettingsContext";
@@ -57,6 +58,7 @@ type Tab =
   | "account"
   | "users"
   | "alerts"
+  | "modes"
   | "storage"
   | "backup"
   | "security"
@@ -469,6 +471,23 @@ export function AlertsTab() {
             {testingWhatsapp ? "Sending..." : "Send test message"}
           </button>
           {whatsappTestResult && <div style={{ marginTop: 8, fontSize: 13 }}>{whatsappTestResult}</div>}
+        </div>
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Links in alerts</h3>
+        <div className="field">
+          <label>This NVR's address from outside (optional)</label>
+          <input
+            type="text"
+            placeholder="https://nvr.example.com"
+            value={settings.public_base_url ?? ""}
+            onChange={(e) => update("public_base_url", e.target.value)}
+          />
+          <div className="muted">
+            When set (for example your Cloudflare or Tailscale address), every alert includes a link that opens the
+            event - picture, details and "I've seen it" for urgent alerts.
+          </div>
         </div>
       </div>
 
@@ -2015,6 +2034,9 @@ export function SettingsPage() {
             <div className={`tab ${tab === "alerts" ? "active" : ""}`} onClick={() => setTab("alerts")}>
               Alerts
             </div>
+            <div className={`tab ${tab === "modes" ? "active" : ""}`} onClick={() => setTab("modes")}>
+              Modes
+            </div>
             <div className={`tab ${tab === "storage" ? "active" : ""}`} onClick={() => setTab("storage")}>
               Storage
             </div>
@@ -2059,6 +2081,7 @@ export function SettingsPage() {
       )}
       {tab === "users" && isAdmin && <UsersTab currentUser={user} />}
       {tab === "alerts" && isAdmin && <AlertsTab />}
+      {tab === "modes" && isAdmin && <SecurityModesTab />}
       {tab === "storage" && isAdmin && <StorageTab />}
       {tab === "backup" && isAdmin && <BackupTab />}
       {tab === "security" && isAdmin && <TlsTab />}

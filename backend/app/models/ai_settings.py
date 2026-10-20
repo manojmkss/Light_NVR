@@ -83,6 +83,8 @@ class AISettings(Base):
     face_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     face_threshold: Mapped[int] = mapped_column(Integer, default=60)
     alpr_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Faces seen but not (yet) named are kept this long for "Who is this?".
+    face_unknown_retention_days: Mapped[int] = mapped_column(Integer, default=7)
 
     # Detections are metadata about footage; they'd otherwise outlive the clips
     # they describe and grow forever. Pruned by the existing retention loop.

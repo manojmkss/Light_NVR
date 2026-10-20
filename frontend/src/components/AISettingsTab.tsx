@@ -8,6 +8,10 @@ import {
   updateAISettings,
 } from "../api/ai";
 import type { AISettings, AITestResult } from "../api/types";
+import { AIPerformanceCard } from "./AIPerformanceCard";
+
+// The AI sidecar started by scripts/enable-ai.sh, reached over the compose network.
+const SIDECAR_URL = "http://ai-worker:8811";
 
 const MODELS = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m"];
 
@@ -123,6 +127,8 @@ export function AISettingsTab() {
     setS((p) => (p ? { ...p, [k]: v } : p));
     setSaved(false);
   };
+
+  const where = s.backend === "remote" && s.remote_url === SIDECAR_URL ? "sidecar" : s.backend;
 
   const toggleClass = (cls: string) =>
     up(
@@ -273,13 +279,39 @@ export function AISettingsTab() {
               <strong>“Describe what's happening”</strong> lower down, not here.
             </div>
             <div className="field" style={{ marginTop: 10 }}>
-              <select value={s.backend} onChange={(e) => up("backend", e.target.value as AISettings["backend"])}>
-                <option value="local">This machine (CPU) — simplest</option>
+              <select
+                value={where}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "sidecar") {
+                    up("backend", "remote");
+                    up("remote_url", SIDECAR_URL);
+                  } else {
+                    up("backend", v as AISettings["backend"]);
+                    if (v === "remote" && s.remote_url === SIDECAR_URL) up("remote_url", "");
+                  }
+                }}
+              >
+                <option value="local">This machine (CPU, inside the NVR) — simplest</option>
+                <option value="sidecar">This NVR's AI service (separate container, GPU if available)</option>
                 <option value="remote">Another PC running the LightNVR ai-worker</option>
               </select>
             </div>
 
-            {s.backend === "local" ? (
+            {where === "sidecar" && (
+              <div style={{ color: "var(--text-dim)", fontSize: 12 }}>
+                <p style={{ marginTop: 0 }}>
+                  Runs the models in their own container next to the NVR, so AI can never slow down or crash
+                  recording, and uses an Intel or NVIDIA GPU when there is one. One-time setup, on the machine
+                  hosting LightNVR (it checks the hardware and proves it with a benchmark):
+                </p>
+                <code style={{ display: "block", padding: "6px 8px", background: "var(--bg-alt, #0d1117)", borderRadius: 4 }}>
+                  ./scripts/enable-ai.sh
+                </code>
+              </div>
+            )}
+
+            {where === "sidecar" ? null : s.backend === "local" ? (
               <div style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 0 }}>
                 <p style={{ marginTop: 0 }}>
                   Runs here on the CPU, only when motion happens (never on every frame) — that's what
@@ -341,6 +373,8 @@ export function AISettingsTab() {
               on screen.
             </p>
           </div>
+
+          <AIPerformanceCard onUseInterval={(ms) => up("monitor_interval_ms", ms)} />
 
           {/* ── Tier 1: what to look for ─────────────────────────────── */}
           <div className="card">

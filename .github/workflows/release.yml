@@ -40,11 +40,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # flavor: tag suffix ("" for backend/frontend; the ai-worker ships one
+        # image per accelerator: -cpu (both arches), -openvino and -cuda (amd64)).
         include:
-          - { name: backend,  context: ./backend,  platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
-          - { name: backend,  context: ./backend,  platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
-          - { name: frontend, context: ./frontend, platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
-          - { name: frontend, context: ./frontend, platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { name: backend,   flavor: "",          context: ./backend,  file: "",                   args: "",                platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { name: backend,   flavor: "",          context: ./backend,  file: "",                   args: "",                platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { name: frontend,  flavor: "",          context: ./frontend, file: "",                   args: "",                platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { name: frontend,  flavor: "",          context: ./frontend, file: "",                   args: "",                platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { name: ai-worker, flavor: "-cpu",      context: .,          file: ai-worker/Dockerfile, args: "VARIANT=cpu",     platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { name: ai-worker, flavor: "-cpu",      context: .,          file: ai-worker/Dockerfile, args: "VARIANT=cpu",     platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { name: ai-worker, flavor: "-openvino", context: .,          file: ai-worker/Dockerfile, args: "VARIANT=openvino", platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { name: ai-worker, flavor: "-cuda",     context: .,          file: ai-worker/Dockerfile, args: "VARIANT=cuda\nBASE_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04", platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -59,17 +65,23 @@ jobs:
       # push-by-digest publishes the image blob without a tag; the merge job
       # below assembles the tags. name-canonical keeps the pushed reference
       # under the final repo name so imagetools can find it by digest.
-      - name: Build and push ${{ matrix.name }} (${{ matrix.arch }}) by digest
+      - name: Free disk space for the CUDA image
+        if: matrix.flavor == '-cuda'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Build and push ${{ matrix.name }}${{ matrix.flavor }} (${{ matrix.arch }}) by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.file != '' && matrix.file || format('{0}/Dockerfile', matrix.context) }}
+          build-args: ${{ matrix.args }}
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ env.IMAGE_PREFIX }}-${{ matrix.name }},push-by-digest=true,name-canonical=true,push=true
-          # Cache is per image AND per arch so the two legs don't clobber each
+          # Cache is per image, flavor AND arch so the legs don't clobber each
           # other's layers.
-          cache-from: type=gha,scope=${{ matrix.name }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.name }}${{ matrix.flavor }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}${{ matrix.flavor }}-${{ matrix.arch }}
 
       - name: Export digest
         run: |
@@ -80,7 +92,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.name }}-${{ matrix.arch }}
+          name: digests-${{ matrix.name }}${{ matrix.flavor }}-${{ matrix.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -92,13 +104,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        name: [backend, frontend]
+        include:
+          - { name: backend,   flavor: "" }
+          - { name: frontend,  flavor: "" }
+          - { name: ai-worker, flavor: "-cpu" }
+          - { name: ai-worker, flavor: "-openvino" }
+          - { name: ai-worker, flavor: "-cuda" }
     steps:
       - name: Download this image's digests
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-${{ matrix.name }}-*
+          pattern: digests-${{ matrix.name }}${{ matrix.flavor }}-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
@@ -118,12 +135,12 @@ jobs:
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
-            -t "${IMAGE_PREFIX}-${{ matrix.name }}:${{ steps.ver.outputs.version }}" \
-            -t "${IMAGE_PREFIX}-${{ matrix.name }}:latest" \
+            -t "${IMAGE_PREFIX}-${{ matrix.name }}:${{ steps.ver.outputs.version }}${{ matrix.flavor }}" \
+            -t "${IMAGE_PREFIX}-${{ matrix.name }}:latest${{ matrix.flavor }}" \
             $(printf "${IMAGE_PREFIX}-${{ matrix.name }}@sha256:%s " *)
 
       - name: Inspect the pushed manifest
-        run: docker buildx imagetools inspect "${IMAGE_PREFIX}-${{ matrix.name }}:${{ steps.ver.outputs.version }}"
+        run: docker buildx imagetools inspect "${IMAGE_PREFIX}-${{ matrix.name }}:${{ steps.ver.outputs.version }}${{ matrix.flavor }}"
 
   release:
     needs: merge
@@ -137,17 +154,18 @@ jobs:
         with:
           generate_release_notes: true
           body: |
-            Prebuilt images for this release (multi-arch: amd64 + arm64):
+            Prebuilt images for this release (tags without the leading "v"):
 
-            - `ghcr.io/${{ github.repository_owner }}/light_nvr-backend:${{ github.ref_name }}`
-            - `ghcr.io/${{ github.repository_owner }}/light_nvr-frontend:${{ github.ref_name }}`
+            - `ghcr.io/${{ github.repository_owner }}/light_nvr-backend` and `light_nvr-frontend` (amd64 + arm64)
+            - `ghcr.io/${{ github.repository_owner }}/light_nvr-ai-worker` `-cpu` (amd64 + arm64), `-openvino` and `-cuda` (amd64)
 
-            Install / upgrade:
+            Upgrade an existing install:
 
             ```bash
-            # download the code (git clone or the ZIP - see the README), then:
-            docker compose pull && docker compose up -d
+            ./scripts/update-linux.sh
             ```
+
+            Set up (or re-check) the local AI service: `./scripts/enable-ai.sh`
 
             No build step needed - the images above are pulled directly. See
             [CHANGELOG.md](CHANGELOG.md) for what changed.

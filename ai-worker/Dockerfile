@@ -1,45 +1,48 @@
-# Default build is CPU-only so `docker compose up` works on any machine.
-# For an NVIDIA GPU, build with:
-#   docker compose build --build-arg BASE_IMAGE=pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
-# and uncomment the `deploy.resources` GPU block in docker-compose.yml.
+# LightNVR Vision (ai-worker). Build from the REPOSITORY ROOT - it shares the
+# model code in backend/app/vision with the NVR:
+#
+#   docker build -f ai-worker/Dockerfile -t lightnvr-ai-worker .                         # cpu
+#   docker build -f ai-worker/Dockerfile --build-arg VARIANT=openvino -t ... .           # Intel GPU
+#   docker build -f ai-worker/Dockerfile --build-arg VARIANT=cuda \
+#                --build-arg BASE_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 -t ... .   # NVIDIA
+#
+# Prebuilt: ghcr.io/manojmkss/light_nvr-ai-worker:<version>-cpu | -openvino | -cuda
 ARG BASE_IMAGE=python:3.11-slim
 FROM ${BASE_IMAGE}
 
+ARG VARIANT=cpu
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    AI_WORKER_MODEL_DIR=/models \
-    YOLO_CONFIG_DIR=/models
+    DEBIAN_FRONTEND=noninteractive \
+    AI_WORKER_MODEL_DIR=/data/models \
+    AI_WORKER_VARIANT=${VARIANT}
 
-# libgl/libglib: ultralytics imports OpenCV, which needs them even in a
-# headless container. curl is for the healthcheck.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 \
-    libglib2.0-0 \
-    curl \
+# curl: healthcheck. libglib/libgl: OpenCV. The CUDA base is Ubuntu without
+# Python, so it gets python3 + pip too. The OpenVINO variant needs Intel's
+# compute runtime for the iGPU (the CPU path works without it).
+RUN apt-get update && apt-get install -y --no-install-recommends curl libglib2.0-0 libgl1 \
+    && if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then \
+         apt-get install -y --no-install-recommends python3 python3-pip && ln -sf /usr/bin/python3 /usr/bin/python; \
+       fi \
+    && if [ "$VARIANT" = "openvino" ]; then \
+         apt-get install -y --no-install-recommends intel-opencl-icd ocl-icd-libopencl1 || true; \
+       fi \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY ai-worker/requirements*.txt ./
+RUN python3 -m pip install --no-cache-dir -r requirements.txt \
+    && python3 -m pip install --no-cache-dir -r requirements-${VARIANT}.txt
 
-COPY requirements.txt .
-# The CUDA base image already ships torch; installing ultralytics would drag in
-# a second (CPU) copy and silently shadow it, so torch is left to the base image
-# when it's already there.
-RUN if python -c "import torch" 2>/dev/null; then \
-        grep -v '^ultralytics' requirements.txt > /tmp/req.txt && \
-        pip install --no-cache-dir -r /tmp/req.txt && \
-        pip install --no-cache-dir --no-deps ultralytics==8.3.0 && \
-        pip install --no-cache-dir pyyaml requests scipy matplotlib pandas seaborn psutil py-cpuinfo opencv-python-headless ; \
-    else \
-        pip install --no-cache-dir -r requirements.txt ; \
-    fi
+# The shared vision package keeps its import path (app.vision).
+COPY backend/app/vision /app/app/vision
+RUN touch /app/app/__init__.py
+COPY ai-worker/app.py /app/worker.py
 
-COPY app.py .
-
-RUN mkdir -p /models
-
+RUN mkdir -p /data/models
 EXPOSE 8811
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=60s \
     CMD curl -f http://localhost:8811/health || exit 1
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8811"]
+CMD ["python3", "-m", "uvicorn", "worker:app", "--host", "0.0.0.0", "--port", "8811"]

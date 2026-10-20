@@ -172,6 +172,12 @@ class LightNVRApiClient:
                 return None
             raise
 
+    async def async_get_security_mode(self) -> dict[str, Any]:
+        return await self.async_request_json("GET", "/security/mode")
+
+    async def async_set_security_mode(self, mode: str) -> dict[str, Any]:
+        return await self.async_request_json("PUT", "/security/mode", json={"mode": mode, "source": "ha"})
+
     def mjpeg_url(self, camera_id: int, quality: str) -> str:
         return f"{self._base_url}/cameras/{camera_id}/stream.mjpeg?quality={quality}"
 

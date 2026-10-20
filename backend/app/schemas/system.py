@@ -25,6 +25,9 @@ class EventOut(BaseModel):
     message: str
     created_at: UtcDatetime
     snapshot_path: str | None = None
+    payload: dict | None = None
+    priority: int = 0
+    acked_at: UtcDatetime | None = None
 
     class Config:
         from_attributes = True
@@ -53,6 +56,8 @@ class AlertSettingsOut(BaseModel):
     whatsapp_phone_number_id: str
     whatsapp_recipient_number: str
 
+    public_base_url: str = ""
+
     class Config:
         from_attributes = True
 
@@ -80,6 +85,8 @@ class AlertSettingsUpdate(BaseModel):
     whatsapp_phone_number_id: str | None = None
     whatsapp_access_token: str | None = None
     whatsapp_recipient_number: str | None = None
+
+    public_base_url: str | None = None
 
 
 class TestEmailRequest(BaseModel):

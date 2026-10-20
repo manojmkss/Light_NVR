@@ -7,7 +7,11 @@ from app.db.session import AsyncSessionLocal
 from app.models.ai_settings import AISettings
 from app.models.detection import Detection
 from app.services.ai.backends import InferenceBackend, build_backend
+from app.services.ai.scheduler import P_MOVING, SKIPPED, scheduler
 from app.services.ai.types import DetectedObject
+
+# Weakest detection passed to the tracker (see detect_frame).
+LOW_CONFIDENCE = 0.15
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +64,33 @@ class AIPipeline:
         """Detached copy of the AI settings, or None if the row is missing."""
         return await self._load_settings()
 
-    async def detect_frame(self, settings: AISettings, jpeg: bytes) -> list[DetectedObject] | None:
-        """Objects of interest in one frame (class filter applied), or None
-        when detection is off or failed - the caller then carries on as plain
-        motion. Used by the per-event monitoring loop."""
+    async def detect_frame(
+        self, settings: AISettings, frame, camera_id: int = 0, priority: int = P_MOVING
+    ) -> list[DetectedObject] | None | object:
+        """Objects of interest in one decoded frame (class filter applied).
+
+        Returns boxes down to LOW_CONFIDENCE, not just the user's threshold:
+        the tracker uses the weak ones only to keep following an object it
+        already knows (partly hidden, turning away) - never to start one.
+        None when detection is off or failed (the caller carries on as plain
+        motion); scheduler.SKIPPED when this tick's request was superseded by
+        a newer frame or ran out of time."""
         if not settings.enabled or not settings.detection_enabled:
             return None
         try:
             backend = await self._backend_for(settings)
-            objects = await backend.detect(jpeg, settings.detection_confidence / 100.0)
         except Exception as exc:
-            logger.warning("AI: detection failed (%s) - treating as plain motion", exc)
+            logger.warning("AI: backend unavailable (%s) - treating as plain motion", exc)
             return None
+        scheduler.set_slots(getattr(backend, "slots", 1))
+        floor = min(LOW_CONFIDENCE, settings.detection_confidence / 100.0)
+
+        async def run():
+            return await backend.detect_frame(frame, floor)
+
+        objects = await scheduler.submit(camera_id, priority, run)
+        if objects is None or objects is SKIPPED:
+            return objects
         wanted = self._wanted(settings)
         return [o for o in objects if not wanted or o.label.lower() in wanted]
 
@@ -84,8 +103,11 @@ class AIPipeline:
         event_id: int | None = None,
         recording_id: int | None = None,
         seen_at: datetime | None = None,
+        extra: dict | None = None,
     ) -> list[int]:
-        return await self._store(camera_id, objects, jpeg, description, event_id, recording_id, seen_at)
+        """`extra`: further Detection columns shared by these rows (track_uid,
+        first_seen, last_seen, stationary_seconds, zones)."""
+        return await self._store(camera_id, objects, jpeg, description, event_id, recording_id, seen_at, extra)
 
     def write_snapshot(self, camera_id: int, jpeg: bytes) -> str | None:
         return self._write_snapshot(camera_id, jpeg)
@@ -99,6 +121,7 @@ class AIPipeline:
         event_id: int | None = None,
         recording_id: int | None = None,
         seen_at: datetime | None = None,
+        extra: dict | None = None,
     ) -> list[int]:
         snapshot_path = await asyncio.to_thread(self._write_snapshot, camera_id, jpeg)
         now = seen_at or datetime.now(timezone.utc)
@@ -120,6 +143,7 @@ class AIPipeline:
                         event_id=event_id,
                         recording_id=recording_id,
                         created_at=now,
+                        **(extra or {}),
                     )
                     for obj in objects
                 ]

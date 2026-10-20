@@ -3,11 +3,32 @@ import { buildMediaUrl } from "../api/client";
 import { updateCamera } from "../api/cameras";
 import type { Camera, MotionZone } from "../api/types";
 
-// exclude = ignore motion here (red); include = only watch here (green).
+// exclude = ignore motion here (red); include = only watch here (green);
+// zone = a named area for AI rules (blue); line = a tripwire (amber).
 const COLORS = {
   exclude: { stroke: "#e05555", fill: "rgba(224,85,85,0.28)" },
   include: { stroke: "#3fbf78", fill: "rgba(63,191,120,0.28)" },
+  zone: { stroke: "#4c8dff", fill: "rgba(76,141,255,0.22)" },
+  line: { stroke: "#f0b429", fill: "none" },
 } as const;
+
+const KIND_LABEL: Record<MotionZone["kind"], string> = {
+  exclude: "Ignore",
+  include: "Watch only",
+  zone: "Named zone",
+  line: "Line",
+};
+
+function describe(z: MotionZone): string {
+  if (z.kind === "zone") {
+    return `${z.name || "Zone"}${z.loiter_seconds ? ` · alert if someone stays ${z.loiter_seconds}s` : " · records who enters"}`;
+  }
+  if (z.kind === "line") {
+    const dir = z.direction === "forward" ? "→ one way" : z.direction === "backward" ? "← other way" : "either way";
+    return `${z.name || "Line"} · alert on crossing (${dir})`;
+  }
+  return `${z.points.length} points`;
+}
 
 interface Props {
   camera: Camera;
@@ -37,11 +58,40 @@ export function MotionZoneEditor({ camera, onClose, onSaved }: Props) {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+    if (draft.kind === "line" && draft.points.length >= 2) return;
     setDraft({ ...draft, points: [...draft.points, [x, y]] });
   };
 
+  const needed = (kind: MotionZone["kind"]) => (kind === "line" ? 2 : 3);
+
+  const handleDraftClick = (e: React.MouseEvent<SVGSVGElement>) => {
+    handleClick(e);
+  };
+
   const finishDraft = () => {
-    if (draft && draft.points.length >= 3) {
+    if (!draft || draft.points.length < needed(draft.kind)) {
+      setDraft(null);
+      return;
+    }
+    if (draft.kind === "zone") {
+      const name = window.prompt("Name this zone (e.g. Doorstep, Driveway)", "Doorstep")?.trim();
+      if (!name) return;
+      const loiter = window.prompt(
+        "Alert if a person stays in it for how many seconds? (0 = just record who enters)",
+        "60",
+      );
+      const secs = Math.max(0, Math.min(3600, Number(loiter) || 0));
+      setZones((z) => [...z, { kind: "zone", points: draft.points, name, loiter_seconds: secs || null, objects: ["person"] }]);
+    } else if (draft.kind === "line") {
+      const name = window.prompt("Name this line (e.g. Gate)", "Gate")?.trim();
+      if (!name) return;
+      const way = window.prompt(
+        "Alert when crossed: type 'both', 'forward' (left→right of the line as drawn) or 'backward'",
+        "both",
+      );
+      const direction = way === "forward" || way === "backward" ? way : "both";
+      setZones((z) => [...z, { kind: "line", points: draft.points.slice(0, 2), name, direction, objects: ["person"] }]);
+    } else {
       setZones((z) => [...z, { kind: draft.kind, points: draft.points }]);
     }
     setDraft(null);
@@ -73,6 +123,9 @@ export function MotionZoneEditor({ camera, onClose, onSaved }: Props) {
           Draw regions to <strong style={{ color: COLORS.exclude.stroke }}>ignore</strong> (a waving tree, a
           busy road) or, if you add any, to <strong style={{ color: COLORS.include.stroke }}>watch only</strong>.
           Click to place points; click <em>Finish</em> to close a shape (3+ points). Empty = the whole frame is watched.
+          With AI on, add a <strong style={{ color: COLORS.zone.stroke }}>named zone</strong> (e.g. "Doorstep" — alert
+          if someone lingers) or a <strong style={{ color: COLORS.line.stroke }}>line</strong> (e.g. the gate — alert when
+          someone crosses it). These don't change where motion is detected.
         </p>
 
         <div
@@ -102,19 +155,30 @@ export function MotionZoneEditor({ camera, onClose, onSaved }: Props) {
           <svg
             viewBox="0 0 1 1"
             preserveAspectRatio="none"
-            onClick={handleClick}
+            onClick={handleDraftClick}
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
           >
-            {zones.map((z, i) => (
-              <polygon
-                key={i}
-                points={pts(z.points)}
-                fill={COLORS[z.kind].fill}
-                stroke={COLORS[z.kind].stroke}
-                strokeWidth={2}
-                vectorEffect="non-scaling-stroke"
-              />
-            ))}
+            {zones.map((z, i) =>
+              z.kind === "line" ? (
+                <polyline
+                  key={i}
+                  points={pts(z.points)}
+                  fill="none"
+                  stroke={COLORS.line.stroke}
+                  strokeWidth={3}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ) : (
+                <polygon
+                  key={i}
+                  points={pts(z.points)}
+                  fill={COLORS[z.kind].fill}
+                  stroke={COLORS[z.kind].stroke}
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ),
+            )}
             {draft && draft.points.length > 0 && (
               <>
                 <polyline
@@ -143,6 +207,12 @@ export function MotionZoneEditor({ camera, onClose, onSaved }: Props) {
               <button className="btn btn-sm" onClick={() => setDraft({ kind: "include", points: [] })}>
                 + Watch-only zone
               </button>
+              <button className="btn btn-sm" onClick={() => setDraft({ kind: "zone", points: [] })}>
+                + Named zone (AI)
+              </button>
+              <button className="btn btn-sm" onClick={() => setDraft({ kind: "line", points: [] })}>
+                + Line (AI)
+              </button>
               {zones.length > 0 && (
                 <button className="btn btn-sm" onClick={() => setZones([])}>
                   Clear all
@@ -152,9 +222,10 @@ export function MotionZoneEditor({ camera, onClose, onSaved }: Props) {
           ) : (
             <>
               <span style={{ fontSize: 13, color: "var(--text-dim)", alignSelf: "center" }}>
-                Drawing {draft.kind === "exclude" ? "ignore" : "watch-only"} zone — {draft.points.length} point(s)
+                Drawing {KIND_LABEL[draft.kind].toLowerCase()} — {draft.points.length} point(s)
+                {draft.kind === "line" ? " (click 2 points)" : ""}
               </span>
-              <button className="btn btn-sm btn-primary" disabled={draft.points.length < 3} onClick={finishDraft}>
+              <button className="btn btn-sm btn-primary" disabled={draft.points.length < needed(draft.kind)} onClick={finishDraft}>
                 Finish
               </button>
               <button className="btn btn-sm" onClick={() => setDraft(null)}>
@@ -171,7 +242,7 @@ export function MotionZoneEditor({ camera, onClose, onSaved }: Props) {
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
                 <span style={{ width: 10, height: 10, borderRadius: 2, background: COLORS[z.kind].stroke }} />
                 <span style={{ flex: 1 }}>
-                  {z.kind === "exclude" ? "Ignore" : "Watch only"} · {z.points.length} points
+                  {KIND_LABEL[z.kind]} · {describe(z)}
                 </span>
                 <button className="btn btn-sm" onClick={() => setZones((zs) => zs.filter((_, j) => j !== i))}>
                   Delete

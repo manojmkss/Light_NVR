@@ -133,6 +133,50 @@ async def test_ai_backend(_: User = Depends(require_admin)):
     )
 
 
+@router.get("/stats")
+async def ai_stats(_: User = Depends(require_admin)):
+    """Live inference load: per camera how many checks were served, skipped
+    because a newer frame replaced them, or dropped as too old, plus wait and
+    inference times - the first place to look when AI feels slow."""
+    from app.services.ai.scheduler import scheduler
+
+    return scheduler.snapshot()
+
+
+@router.get("/capabilities")
+async def ai_capabilities(_: User = Depends(require_admin)):
+    """Hardware visible to the NVR (and the AI worker, if one is set) - no
+    benchmark, so it's instant."""
+    from app.services.ai.capabilities import probe
+
+    async with AsyncSessionLocal() as db:
+        settings = await db.get(AISettings, 1)
+        if settings is not None:
+            db.expunge(settings)
+    return await probe(settings)
+
+
+@router.post("/benchmark")
+async def ai_benchmark(_: User = Depends(require_admin)):
+    """Runs real detections on the configured backend and says, per feature,
+    what this hardware can sustain for the number of cameras you have."""
+    from sqlalchemy import func
+
+    from app.models.camera import Camera
+    from app.services.ai.capabilities import full_report
+
+    async with AsyncSessionLocal() as db:
+        settings = await db.get(AISettings, 1)
+        if settings is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI settings not initialised")
+        db.expunge(settings)
+        cameras = (await db.execute(select(func.count()).select_from(Camera).where(Camera.enabled.is_(True)))).scalar() or 1
+    try:
+        return await full_report(ai_pipeline, settings, int(cameras))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Benchmark failed: {exc}") from exc
+
+
 @router.get("/ollama/models")
 async def list_ollama_models_route(
     url: str = Query(..., description="Base URL of the Ollama host, e.g. http://192.168.1.20:11434"),

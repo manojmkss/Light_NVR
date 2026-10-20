@@ -1,0 +1,8 @@
+# Intel iGPU / Arc for the AI sidecar (OpenVINO). Written into COMPOSE_FILE by
+# scripts/enable-ai.sh only when a real benchmark showed the GPU working.
+services:
+  ai-worker:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:-109}"

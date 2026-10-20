@@ -1,0 +1,29 @@
+# LightNVR Vision as a sidecar on the NVR host. Added to COMPOSE_FILE in .env
+# by ./scripts/enable-ai.sh - don't edit; re-run the script to change it.
+#
+# Why a separate container: AI runs isolated from recording (a crash or
+# out-of-memory in a model can never stop a recording), and its CPU share is
+# capped so ffmpeg always has headroom.
+services:
+  ai-worker:
+    image: ghcr.io/manojmkss/light_nvr-ai-worker:${LIGHTNVR_VERSION:-latest}-${AI_WORKER_VARIANT:-cpu}
+    build:
+      context: .
+      dockerfile: ai-worker/Dockerfile
+      args:
+        VARIANT: ${AI_WORKER_VARIANT:-cpu}
+        BASE_IMAGE: ${AI_WORKER_BASE_IMAGE:-python:3.11-slim}
+    container_name: lightnvr-ai-worker
+    restart: unless-stopped
+    cpus: ${AI_CPUS:-2}
+    mem_limit: ${AI_MEM_LIMIT:-1536m}
+    environment:
+      AI_WORKER_MODEL: ${AI_WORKER_MODEL:-yolov8n}
+      AI_WORKER_PROVIDER: ${AI_WORKER_PROVIDER:-auto}
+      AI_WORKER_VARIANT: ${AI_WORKER_VARIANT:-cpu}
+    # Shares the NVR's data volume: the models fetched with
+    # scripts/fetch-ai-models.sh live in /data/models.
+    volumes:
+      - lightnvr-data:/data
+    networks:
+      - lightnvr

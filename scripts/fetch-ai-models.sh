@@ -12,26 +12,36 @@
 # Usage:
 #   ./scripts/fetch-ai-models.sh              # default: yolov8n
 #   ./scripts/fetch-ai-models.sh yolov8s      # a bigger/more accurate variant
+#   ./scripts/fetch-ai-models.sh yolov8s --volume lightnvr-ai-worker-models
+#                                             # on a GPU PC running the ai-worker
 #
 # Models are exported from Ultralytics inside a throwaway container, so
 # nothing is installed on your host and the export is reproducible.
 
 set -euo pipefail
 
-MODEL="${1:-yolov8n}"
+MODEL="yolov8n"
 VOLUME="lightnvr-data"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --volume) VOLUME="$2"; shift 2 ;;
+    --volume=*) VOLUME="${1#*=}"; shift ;;
+    -*) echo "Unknown option $1" >&2; exit 1 ;;
+    *) MODEL="$1"; shift ;;
+  esac
+done
 
 case "$MODEL" in
-  yolov8n|yolov8s|yolov8m|yolo11n|yolo11s|yolo11m) ;;
+  yolov8n|yolov8s|yolov8m|yolo11n|yolo11s|yolo11m|yolo26n|yolo26s|yolo26m) ;;
   *)
     echo "Unsupported model '$MODEL'." >&2
-    echo "Supported: yolov8n yolov8s yolov8m yolo11n yolo11s yolo11m" >&2
+    echo "Supported: yolov8n yolov8s yolov8m yolo11n yolo11s yolo11m yolo26n yolo26s yolo26m" >&2
     exit 1
     ;;
 esac
 
 if ! docker volume inspect "$VOLUME" >/dev/null 2>&1; then
-  echo "Docker volume '$VOLUME' not found - start LightNVR once first (docker compose up -d)." >&2
+  echo "Docker volume '$VOLUME' not found - start LightNVR (or the ai-worker) once first (docker compose up -d)." >&2
   exit 1
 fi
 

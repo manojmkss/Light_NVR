@@ -1,78 +1,54 @@
-"""LightNVR AI worker - object detection over HTTP, meant to run on a machine
-with a GPU (not the NVR box).
+"""LightNVR AI worker ("LightNVR Vision") - the local AI service.
 
-Why this exists: the NVR itself runs YOLO on CPU via ONNX Runtime, which is
-fine for a few cameras because detection only ever fires on a motion event.
-Once you have more cameras, a Pi, or want a bigger model, you want that work
-somewhere else. Point Settings -> AI -> "Another PC with a GPU" at this and
-the NVR stops doing inference entirely.
+Runs object detection and face recognition over HTTP, either as a sidecar
+next to the NVR (isolating AI from recording: a crash or out-of-memory here
+can never stop a recording) or on another PC with a GPU.
 
-Deliberately NOT the same implementation as the NVR's local backend: this uses
-ultralytics (torch), which does decode/NMS itself and gets CUDA for free. The
-NVR keeps the lean ONNX path so a stock install never pulls in torch. Both
-speak the same tiny HTTP contract, which is the only thing that has to match:
+ONNX Runtime only - no PyTorch - with one image per accelerator family:
+  cpu (any x86/ARM), openvino (Intel iGPU/Arc), cuda (NVIDIA).
+The provider actually in use is reported, never assumed.
 
-    GET  /health  -> {"status","device","models"}
-    POST /detect  -> {"detections":[{"label","confidence","x","y","w","h"}]}
-
-Coordinates are normalised 0..1 against the frame, matching the NVR's
-Detection model (pixels would break the moment a substream resolution changed).
+API (all coordinates normalised 0..1 against the frame):
+  GET  /health                  - liveness + device
+  POST /detect                  - v1, kept for older NVRs
+  GET  /v2/capabilities         - device, providers, slots, models, latencies
+  POST /v2/detect               - image -> objects (down to min_confidence)
+  POST /v2/faces                - image (+ person boxes) -> faces with embeddings
+  POST /v2/benchmark            - time the loaded models
+  GET  /v2/models               - which optional models are present
+  POST /v2/models/{name}        - download one (checksum-verified)
 """
 
-import io
+import asyncio
+import json
 import logging
 import os
 import time
 
+import cv2
+import numpy as np
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
-from PIL import Image
+from starlette.concurrency import run_in_threadpool
+
+from app.vision import models as model_registry
+from app.vision.engine import available_providers, device_label
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ai-worker")
 
-# Shared secret. Optional, but this endpoint will happily decode any image
-# posted to it, so on anything but a trusted LAN set it.
 API_KEY = os.environ.get("AI_WORKER_API_KEY", "")
 DEFAULT_MODEL = os.environ.get("AI_WORKER_MODEL", "yolov8n")
-# Where ultralytics caches weights. Mount a volume here or every restart
-# re-downloads them.
 MODEL_DIR = os.environ.get("AI_WORKER_MODEL_DIR", "/models")
+PROVIDER = os.environ.get("AI_WORKER_PROVIDER", "auto")  # auto | cuda | openvino | rocm | cpu
+SLOTS = int(os.environ.get("AI_WORKER_SLOTS", "0") or 0)  # 0 = decide from the device
+VARIANT = os.environ.get("AI_WORKER_VARIANT", "cpu")
 
-app = FastAPI(title="LightNVR AI Worker", version="1.0.0")
+app = FastAPI(title="LightNVR Vision", version="2.0.0")
 
-_models: dict[str, object] = {}
-_device = "cpu"
-
-
-def _resolve_device() -> str:
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            return "cuda"
-        # Apple Silicon, for anyone running this on a Mac.
-        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            return "mps"
-    except Exception:
-        pass
-    return "cpu"
-
-
-def _get_model(name: str):
-    """Loaded once per model name and cached: a YOLO load is ~1s, which would
-    otherwise be paid on every single detection request."""
-    if name not in _models:
-        from ultralytics import YOLO
-
-        path = os.path.join(MODEL_DIR, f"{name}.pt")
-        # Falls back to the bare name so ultralytics fetches it itself on first
-        # use; after that it's cached in MODEL_DIR.
-        source = path if os.path.exists(path) else f"{name}.pt"
-        logger.info("Loading model %s (device=%s)", source, _device)
-        model = YOLO(source)
-        model.to(_device)
-        _models[name] = model
-    return _models[name]
+_detectors: dict[str, object] = {}
+_faces = None
+_latency: dict[str, float] = {}
+_lock = asyncio.Lock()
 
 
 def require_key(x_api_key: str | None = Header(default=None)) -> None:
@@ -80,83 +56,155 @@ def require_key(x_api_key: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing X-API-Key")
 
 
+def _detector(name: str):
+    if name not in _detectors:
+        from app.vision.yolo import YoloDetector
+
+        path = os.path.join(MODEL_DIR, f"{name}.onnx")
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Model '{name}' not found at {path} - run scripts/fetch-ai-models.sh {name} on this machine"
+            )
+        threads = None if PROVIDER != "cpu" else max(1, (os.cpu_count() or 2) // 2)
+        _detectors[name] = YoloDetector(path, PROVIDER, threads)
+        logger.info("Loaded %s on %s", name, _detectors[name].provider)
+    return _detectors[name]
+
+
+def _face_engine():
+    global _faces
+    if _faces is None:
+        from app.vision.face import FaceEngine
+
+        if not (model_registry.present("yunet", MODEL_DIR) and model_registry.present("sface", MODEL_DIR)):
+            raise FileNotFoundError("Face models not downloaded - enable faces in LightNVR (Settings -> AI)")
+        _faces = FaceEngine(model_registry.path_for("yunet", MODEL_DIR), model_registry.path_for("sface", MODEL_DIR))
+    return _faces
+
+
+def _provider() -> str:
+    for d in _detectors.values():
+        return d.provider
+    return "CPUExecutionProvider" if PROVIDER in ("auto", "cpu") else PROVIDER
+
+
+def _slots() -> int:
+    if SLOTS:
+        return SLOTS
+    return 4 if device_label(_provider()) in ("cuda", "tensorrt", "rocm") else 2 if device_label(_provider()) == "openvino" else 1
+
+
+async def _decode(image: UploadFile) -> np.ndarray:
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty image")
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not a decodable image")
+    return img
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    global _device
     os.makedirs(MODEL_DIR, exist_ok=True)
-    # ultralytics writes weights relative to cwd unless told otherwise.
-    os.environ.setdefault("YOLO_CONFIG_DIR", MODEL_DIR)
-    _device = _resolve_device()
-    logger.info("AI worker starting on device=%s, default model=%s", _device, DEFAULT_MODEL)
-    if _device == "cpu":
-        logger.warning(
-            "No GPU detected - this worker will run on CPU, which is no faster than the NVR doing it "
-            "itself. Check your CUDA/driver setup if you expected a GPU."
-        )
+    logger.info("LightNVR Vision (%s image) starting; ONNX providers available: %s", VARIANT, available_providers())
     try:
-        _get_model(DEFAULT_MODEL)  # warm up so the first real detection isn't slow
-    except Exception:
-        logger.exception("Could not preload default model - it will be retried on first request")
+        await run_in_threadpool(_detector, DEFAULT_MODEL)
+    except Exception as exc:
+        logger.warning("Default model not loaded yet: %s", exc)
+    if device_label(_provider()) == "cpu" and VARIANT != "cpu":
+        logger.warning("The %s image is running on CPU - the accelerator isn't reachable from the container", VARIANT)
 
 
 @app.get("/health")
 async def health():
-    """Drives the "Check it works" button in the NVR's Settings -> AI."""
-    return {
-        "status": "ok",
-        "device": _device,
-        "default_model": DEFAULT_MODEL,
-        "loaded_models": sorted(_models.keys()),
-    }
+    return {"status": "ok", "device": device_label(_provider()), "provider": _provider(),
+            "default_model": DEFAULT_MODEL, "loaded_models": sorted(_detectors)}
+
+
+def _run_detect(img: np.ndarray, name: str, min_confidence: float) -> tuple[list, float]:
+    started = time.perf_counter()
+    boxes = _detector(name).detect(img, min_confidence)
+    took = time.perf_counter() - started
+    _latency[name] = took if name not in _latency else 0.8 * _latency[name] + 0.2 * took
+    return [b.__dict__ for b in boxes], took
 
 
 @app.post("/detect", dependencies=[Depends(require_key)])
-async def detect(
-    image: UploadFile = File(...),
-    min_confidence: float = Form(default=0.5),
-    model: str = Form(default=""),
-):
-    raw = await image.read()
-    if not raw:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty image")
-
-    try:
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Not a decodable image: {exc}")
-
+@app.post("/v2/detect", dependencies=[Depends(require_key)])
+async def detect(image: UploadFile = File(...), min_confidence: float = Form(default=0.5), model: str = Form(default="")):
+    img = await _decode(image)
     name = model or DEFAULT_MODEL
     try:
-        yolo = _get_model(name)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not load model '{name}': {exc}"
-        ) from exc
+        dets, took = await run_in_threadpool(_run_detect, img, name, min_confidence)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {"detections": dets, "took_ms": int(took * 1000), "device": device_label(_provider()), "model": name}
 
-    width, height = img.size
-    started = time.monotonic()
-    # verbose=False or ultralytics prints a line per inference; at one call per
-    # motion event across several cameras that's a lot of noise for no value.
-    results = yolo.predict(img, conf=min_confidence, verbose=False, device=_device)
 
-    detections = []
-    for result in results:
-        names = result.names
-        for box in result.boxes:
-            x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].tolist())
-            detections.append(
-                {
-                    "label": names[int(box.cls.item())],
-                    "confidence": float(box.conf.item()),
-                    # Normalised + clamped: a box on the frame edge can extend
-                    # past it, and the NVR draws these directly as an overlay.
-                    "x": max(0.0, min(1.0, x1 / width)),
-                    "y": max(0.0, min(1.0, y1 / height)),
-                    "w": max(0.0, min(1.0, (x2 - x1) / width)),
-                    "h": max(0.0, min(1.0, (y2 - y1) / height)),
-                }
-            )
+@app.post("/v2/faces", dependencies=[Depends(require_key)])
+async def faces(image: UploadFile = File(...), boxes: str = Form(default=""), min_face: int = Form(default=40)):
+    """`boxes`: JSON [[x, y, w, h], ...] person boxes (normalised). Empty =
+    search the whole image (used for enrolment photos)."""
+    img = await _decode(image)
+    try:
+        person_boxes = json.loads(boxes) if boxes else None
+        engine = await run_in_threadpool(_face_engine)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Bad boxes: {exc}") from exc
+    found = await run_in_threadpool(engine.find, img, person_boxes, min_face)
+    return {"faces": [f.to_dict() for f in found]}
 
-    took_ms = int((time.monotonic() - started) * 1000)
-    logger.info("detect: %d object(s) in %dms (model=%s, device=%s)", len(detections), took_ms, name, _device)
-    return {"detections": detections, "took_ms": took_ms, "device": _device, "model": name}
+
+@app.get("/v2/capabilities")
+async def capabilities():
+    return {
+        "variant": VARIANT,
+        "device": device_label(_provider()),
+        "provider": _provider(),
+        "available_providers": available_providers(),
+        "slots": _slots(),
+        "models": sorted(_detectors),
+        "optional_models": model_registry.status(MODEL_DIR),
+        "latency_ms": {k: round(v * 1000, 1) for k, v in _latency.items()},
+        "cpu_count": os.cpu_count(),
+    }
+
+
+@app.post("/v2/benchmark", dependencies=[Depends(require_key)])
+async def benchmark(runs: int = Form(default=12), model: str = Form(default="")):
+    name = model or DEFAULT_MODEL
+    frame = np.random.default_rng(0).integers(0, 255, (360, 640, 3), dtype=np.uint8)
+    try:
+        await run_in_threadpool(_run_detect, frame, name, 0.5)
+        times = []
+        for _ in range(max(1, min(runs, 50))):
+            _, took = await run_in_threadpool(_run_detect, frame, name, 0.5)
+            times.append(took)
+    except FileNotFoundError as exc:
+        return {"ok": False, "error": str(exc)}
+    times.sort()
+    return {"ok": True, "runs": len(times), "p50_ms": round(times[len(times) // 2] * 1000, 1),
+            "p95_ms": round(times[min(len(times) - 1, int(len(times) * 0.95))] * 1000, 1),
+            "device": device_label(_provider()), "provider": _provider()}
+
+
+@app.get("/v2/models")
+async def list_models():
+    return {"models": model_registry.status(MODEL_DIR)}
+
+
+@app.post("/v2/models/{name}", dependencies=[Depends(require_key)])
+async def fetch_model(name: str):
+    if name not in model_registry.MANIFEST:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model")
+    async with _lock:
+        try:
+            path = await run_in_threadpool(model_registry.download, name, MODEL_DIR)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Download failed: {exc}") from exc
+    global _faces
+    _faces = None
+    return {"downloaded": name, "path": path}

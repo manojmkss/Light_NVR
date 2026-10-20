@@ -202,6 +202,22 @@ export function CameraDetailsForm({ initial, submitLabel, submitting, serverErro
       )}
 
       <div className="field">
+        <label>Area (optional)</label>
+        <input
+          type="text"
+          maxLength={64}
+          placeholder="e.g. Gate, Driveway, Back yard"
+          value={form.area ?? ""}
+          onChange={(e) => update("area", e.target.value || null)}
+        />
+        <div className="muted">
+          Which part of the property this camera watches. Events on cameras in the same area — or in areas you link
+          with a walking time (Settings → Modes → Areas) — are joined into one visit, with one summary. Leave empty and
+          all cameras count as one area.
+        </div>
+      </div>
+
+      <div className="field">
         <label>Retention override (days)</label>
         <input
           type="number"

@@ -65,7 +65,8 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}, retry
   const token = getAccessToken();
   const headers = new Headers(options.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (options.body && !headers.has("Content-Type")) {
+  // FormData sets its own multipart Content-Type (with the boundary).
+  if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -96,6 +97,10 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}, retry
     return undefined as T;
   }
   return res.json() as Promise<T>;
+}
+
+export function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  return apiFetch<T>(path, { method: "POST", body: form });
 }
 
 export { ApiError };

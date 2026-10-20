@@ -19,7 +19,23 @@ from app.core.log_buffer import install_log_buffer  # noqa: E402
 
 install_log_buffer()
 
-from app.api.routes import ai, auth, backup, cameras, kiosk, live, push, recordings, remote_access, storage, system, tls
+from app.api.routes import (
+    ai,
+    auth,
+    backup,
+    cameras,
+    faces,
+    kiosk,
+    live,
+    push,
+    recordings,
+    remote_access,
+    search,
+    security,
+    storage,
+    system,
+    tls,
+)
 from app.core.bootstrap import (
     create_default_admin,
     create_default_ai_settings,
@@ -98,6 +114,14 @@ async def lifespan(app: FastAPI):
     # Self-healing for DHCP IP changes: only scans the network when a camera has
     # actually been unreachable for a while, so it's idle in the normal case.
     relocator_task = asyncio.create_task(camera_relocator_loop())
+    # Records scheduled Home/Away/Night changes as events (cheap: one row read every 30s).
+    from app.services.security_mode import watch_schedule
+
+    mode_task = asyncio.create_task(watch_schedule())
+    # Closes finished multi-camera visits and sends their summaries.
+    from app.services.incident_store import incident_loop
+
+    incident_task = asyncio.create_task(incident_loop())
 
     from app.db.session import AsyncSessionLocal
     from app.models.remote_access_settings import RemoteAccessSettings
@@ -120,6 +144,8 @@ async def lifespan(app: FastAPI):
         cert_expiry_task,
         digest_task,
         relocator_task,
+        mode_task,
+        incident_task,
     ]
     for task in background_tasks:
         task.cancel()
@@ -134,7 +160,7 @@ async def lifespan(app: FastAPI):
     await hq_stream_manager.shutdown()
 
 
-app = FastAPI(title="LightNVR API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="LightNVR API", version="0.4.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,10 +178,14 @@ app.include_router(ai.router)
 app.include_router(auth.router)
 app.include_router(backup.router)
 app.include_router(cameras.router)
+app.include_router(faces.router)
 app.include_router(live.router)
 app.include_router(push.router)
 app.include_router(recordings.router)
 app.include_router(remote_access.router)
+app.include_router(search.router)
+app.include_router(security.router)
+app.include_router(security.public_router)
 app.include_router(kiosk.admin_router)
 app.include_router(kiosk.public_router)
 app.include_router(storage.router)

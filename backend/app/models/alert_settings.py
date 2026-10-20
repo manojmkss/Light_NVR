@@ -34,3 +34,7 @@ class AlertSettings(Base):
     whatsapp_phone_number_id: Mapped[str] = mapped_column(String(128), default="")
     whatsapp_access_token: Mapped[str] = mapped_column(String(512), default="")
     whatsapp_recipient_number: Mapped[str] = mapped_column(String(32), default="")
+
+    # How this NVR is reached from outside (e.g. https://nvr.example.com via
+    # Cloudflare/Tailscale). When set, alerts include a link to the event.
+    public_base_url: Mapped[str] = mapped_column(String(255), default="")

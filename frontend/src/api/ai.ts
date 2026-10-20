@@ -36,6 +36,55 @@ export function listOllamaModels(url: string): Promise<{ models: string[]; visio
   );
 }
 
+export interface FeatureLevel {
+  level: string;
+  reason: string;
+}
+
+export interface AIBenchmarkReport {
+  cpu: { model: string; arch: string; cores: number; avx2: boolean };
+  memory: { total_mb?: number; available_mb?: number; container_limit_mb?: number };
+  devices: { intel_or_amd_render_node: boolean; amd_kfd: boolean; nvidia: boolean };
+  onnx_providers: string[];
+  worker: { reachable: boolean; device?: string; error?: string } | null;
+  benchmark: { ok: boolean; p50_ms?: number; p95_ms?: number; error?: string };
+  feasibility: {
+    detection: FeatureLevel;
+    faces?: FeatureLevel;
+    search?: FeatureLevel;
+    descriptions?: FeatureLevel;
+    recommended_interval_ms: number | null;
+    capacity_fps?: number;
+    demand_fps?: number;
+  };
+}
+
+export interface AIStats {
+  slots: number;
+  busy: number;
+  queued: number;
+  avg_infer_ms: number;
+  active_cameras: number;
+  cameras: Record<string, {
+    submitted: number;
+    served: number;
+    superseded: number;
+    expired: number;
+    failed: number;
+    wait_p95_ms: number | null;
+    infer_p50_ms: number | null;
+  }>;
+}
+
+export function getAIStats(): Promise<AIStats> {
+  return apiFetch<AIStats>("/ai/stats");
+}
+
+/** Runs real detections on the configured backend (a few seconds). */
+export function runAIBenchmark(): Promise<AIBenchmarkReport> {
+  return apiFetch<AIBenchmarkReport>("/ai/benchmark", { method: "POST" });
+}
+
 export function detectionSnapshotUrl(detectionId: number): string {
   return buildMediaUrl(`/ai/detections/${detectionId}/snapshot.jpg`);
 }

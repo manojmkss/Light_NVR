@@ -11,6 +11,7 @@ from app.services.frame_bus import frame_bus
 from app.services.motion_detector import MotionDetector, MotionSample
 from app.services.status_tracker import mark_offline, mark_online
 from app.services.stream_stats import stream_stats
+from app.services.tamper import TamperDetector
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class StreamViewer:
         motion_zones: list | None = None,
         on_motion_start: Callable[[], Awaitable[None]] | None = None,
         on_motion_stop: Callable[[], Awaitable[None]] | None = None,
+        on_tamper: Callable[[str, str], Awaitable[None]] | None = None,
     ):
         self.camera_id = camera_id
         self.stream_url = stream_url
@@ -56,6 +58,8 @@ class StreamViewer:
         self.on_motion_start = on_motion_start
         self.on_motion_stop = on_motion_stop
         self._detector = MotionDetector(sensitivity, motion_zones) if motion_enabled else None
+        self.on_tamper = on_tamper
+        self._tamper = TamperDetector() if on_tamper else None
         # The sample that started the current event, and the latest one - read
         # by the event/AI layer (e.g. to know where the motion was).
         self.trigger_sample: MotionSample | None = None
@@ -83,6 +87,17 @@ class StreamViewer:
         sees a person who is standing still."""
         if self._detector is not None:
             self._detector.hold(time.monotonic() + seconds)
+
+    def set_presence_hold(self, seconds: float) -> None:
+        if self._detector is not None:
+            self._detector.presence_hold_max = seconds
+
+    def revive_motion(self, seconds: float) -> None:
+        """Re-open the motion event the detector just closed (AI still sees a
+        person); it ends normally once nothing holds it any more."""
+        if self._detector is not None:
+            now = time.monotonic()
+            self._detector.revive(now, now + seconds)
 
     @property
     def motion_active(self) -> bool:
@@ -218,6 +233,11 @@ class StreamViewer:
                                 self._schedule(self.on_motion_start())
                         elif sample.stopped and self.on_motion_stop:
                             self._schedule(self.on_motion_stop())
+
+                if self._tamper is not None:
+                    change = self._tamper.check(frame, captured_at)
+                    if change is not None:
+                        self._schedule(self.on_tamper(*change))
 
                 now = time.monotonic()
                 if now - last_live_at >= live_interval:

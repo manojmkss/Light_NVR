@@ -25,7 +25,7 @@ from .coordinator import LightNVRCameraCoordinator, LightNVRSystemCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR]
+PLATFORMS = [Platform.ALARM_CONTROL_PANEL, Platform.CAMERA, Platform.BINARY_SENSOR, Platform.SENSOR]
 
 
 @dataclass

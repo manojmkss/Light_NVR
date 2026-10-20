@@ -49,6 +49,7 @@ class CameraCoordinatorData:
 class SystemCoordinatorData:
     status: dict[str, Any] = field(default_factory=dict)
     dashboard: dict[str, Any] = field(default_factory=dict)
+    security: dict[str, Any] = field(default_factory=dict)  # arm mode (LightNVR 0.4+)
 
 
 def _parse_utc(value: str | None) -> datetime | None:
@@ -135,4 +136,8 @@ class LightNVRSystemCoordinator(DataUpdateCoordinator[SystemCoordinatorData]):
         except LightNVRConnectionError as err:
             raise UpdateFailed(str(err)) from err
 
-        return SystemCoordinatorData(status=status, dashboard=dashboard)
+        try:
+            security = await self._api.async_get_security_mode()
+        except Exception:  # noqa: BLE001 - older LightNVR without modes: just no alarm panel state
+            security = {}
+        return SystemCoordinatorData(status=status, dashboard=dashboard, security=security)

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -53,6 +53,20 @@ class Detection(Base):
     embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
     snapshot_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    # One row per tracked object: which track it was, how long it was in view
+    # and standing still, and which named zones it entered.
+    track_uid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    stationary_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    incident_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Faces (Phase 6): who this was, if recognised.
+    person_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    face_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Searchable appearance: {"upper": "red", "lower": "blue"} / {"colour": "white"}.
+    attributes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc), index=True

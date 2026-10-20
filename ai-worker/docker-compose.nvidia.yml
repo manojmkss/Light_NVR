@@ -1,0 +1,10 @@
+# NVIDIA GPU for the ai-worker (needs the NVIDIA Container Toolkit on the host).
+services:
+  ai-worker:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

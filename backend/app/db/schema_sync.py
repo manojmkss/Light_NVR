@@ -52,6 +52,23 @@ async def sync_missing_columns(conn: AsyncConnection) -> None:
             await _relax_constraints(conn, table)
 
 
+async def ensure_indexes(conn: AsyncConnection) -> None:
+    """create_all() only builds indexes together with a brand-new table, so an
+    index added to an *existing* table's model never reaches an upgraded
+    install - queries silently fall back to full scans. Create any that are
+    missing (CREATE INDEX IF NOT EXISTS is a no-op when it's there)."""
+    for table in Base.metadata.sorted_tables:
+        for index in table.indexes:
+            cols = ", ".join(c.name for c in index.columns)
+            unique = "UNIQUE " if index.unique else ""
+            try:
+                await conn.execute(
+                    text(f"CREATE {unique}INDEX IF NOT EXISTS {index.name} ON {table.name} ({cols})")
+                )
+            except Exception:
+                logger.warning("Schema sync: could not create index %s", index.name, exc_info=True)
+
+
 async def _relax_constraints(conn: AsyncConnection, table) -> None:
     """Only safe/used for tables with no incoming foreign keys and a simple
     primary key - currently just system_secret. A table with relationships

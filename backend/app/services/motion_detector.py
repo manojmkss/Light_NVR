@@ -102,6 +102,27 @@ def build_zone_mask(zones: list | None, width: int, height: int) -> np.ndarray |
         return None
 
 
+def point_in_watch_area(zones: list | None, x: float, y: float) -> bool:
+    """Whether normalised point (x, y) is inside the watched area - the same
+    include/exclude semantics as build_zone_mask, for AI objects (tested at a
+    person's feet), so someone on the street beyond an exclude zone can't
+    alert or hold an event. Malformed zones fail open (watched)."""
+    if not zones:
+        return True
+    try:
+        def inside(z) -> bool:
+            pts = np.array([[float(px), float(py)] for px, py in z["points"]], dtype=np.float32)
+            return cv2.pointPolygonTest(pts, (float(x), float(y)), False) >= 0
+
+        includes = [z for z in zones if z.get("kind") == "include" and len(z.get("points", [])) >= 3]
+        excludes = [z for z in zones if z.get("kind") == "exclude" and len(z.get("points", [])) >= 3]
+        if includes and not any(inside(z) for z in includes):
+            return False
+        return not any(inside(z) for z in excludes)
+    except Exception:
+        return True
+
+
 class MotionDetector:
     SAMPLE_INTERVAL = 1 / 6  # analyse ~6 frames/s regardless of camera fps
     COMPARE_AGO = 0.4  # "before" frame is this many seconds older than "after"
@@ -122,6 +143,11 @@ class MotionDetector:
 
     def __init__(self, sensitivity: int = 50, zones: list | None = None):
         self.trigger_pct = sensitivity_to_pct(sensitivity)
+        # How long background-model presence alone may hold an event. Lowered
+        # while AI is working (set_presence_hold): AI then says whether someone
+        # is still there, and the background model's "ghost" where something
+        # just left (a car driving off) must not chain into the next visit.
+        self.presence_hold_max = self.PRESENCE_HOLD_MAX
         self._zones = zones
         self._size: tuple[int, int] | None = None
         self._zone_mask: np.ndarray | None = None
@@ -150,6 +176,16 @@ class MotionDetector:
         no pixel change - used when AI still sees a person standing still.
         Safe to call from another thread: a single float assignment."""
         self._external_hold_until = max(self._external_hold_until, until)
+
+    def revive(self, now: float, until: float) -> None:
+        """Re-open an event that just ended because pixels went quiet while AI
+        can still see a person (standing still). No `started` sample is
+        emitted - the caller already treats it as the same event - and the
+        normal quiet/hold logic ends it again later."""
+        self.active = True
+        self._last_change_at = now
+        self._last_presence_only_start = None
+        self.hold(until)
 
     def force_stop(self) -> bool:
         """End any active event (stream dropped). Returns whether one was active."""
@@ -276,7 +312,7 @@ class MotionDetector:
             if still_present and quiet_for > self.END_QUIET_SECONDS:
                 if self._last_presence_only_start is None:
                     self._last_presence_only_start = now
-                still_present = now - self._last_presence_only_start < self.PRESENCE_HOLD_MAX
+                still_present = now - self._last_presence_only_start < self.presence_hold_max
             held = now < self._external_hold_until
             if quiet_for > self.END_QUIET_SECONDS and not still_present and not held:
                 self.active = False

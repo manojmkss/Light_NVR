@@ -6,6 +6,100 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-20
+
+The home-security release: one visit is one event (even when someone waits at
+the gate for five minutes), arm modes with alert rules, visits followed across
+cameras, faces you choose to have recognised, a local AI service that uses your
+GPU when you have one, tamper and package alerts, and search.
+
+### Added - arm modes & notifications
+- **Home / Away / Night / Disarmed**, switched from the sidebar, Home Assistant
+  (new alarm panel entity) or a weekly schedule (Settings → Modes). Modes change
+  who is alerted about what, never what is recorded.
+- **Alert rules**: per mode, camera, kind of event, object, zone and person -
+  notify, **urgent** (repeats until "I've seen it") or quiet; optional webhook
+  (e.g. a siren via Home Assistant). Suggested rules are added switched off, and
+  "What would happen?" previews the rules on recent events. With no rules on,
+  alerts behave exactly as before.
+- Push notifications now show the snapshot, open the event page when tapped,
+  and urgent ones stay on screen with an "I've seen it" button. Alerts include
+  a link to the event when you set the NVR's outside address (Settings → Alerts).
+
+### Added - visits across cameras
+- **Visits**: give each camera an area (Gate, Driveway, Porch...) and link areas
+  with a walking time. A visit gets one alert (plus one if it reaches a private
+  area like the back yard) and one summary of the whole route. New Visits page.
+
+### Added - zones, packages, tamper, search
+- **Named zones** with loitering alerts ("Person loitering in 'Doorstep' (1m)")
+  and **lines** with crossing alerts, drawn in the zone editor.
+- **Package left / taken** at the door (bags/boxes the detector can see).
+- **Tamper alerts**: camera covered, blacked out, blurred or turned away -
+  urgent in every mode. Gradual nightfall is not tampering.
+- **Search** in plain words: "person in red shirt yesterday", "car driveway",
+  "Ramesh", "package today" - by object, clothing colour, name, camera, area and
+  time. New Search page.
+
+### Added - faces (opt-in, local only)
+- **People**: enrol someone from photos or from a captured face ("Who is
+  this?"); alerts then say "Ramesh (milkman) arrived at 'Gate'", and unknown
+  faces are flagged. Conservative matching (two agreeing sightings, a margin
+  over look-alikes); "possibly Ramesh" never counts as recognised. Watch-list
+  people are always urgent; recognised household members can make Home-mode
+  alerts quieter, never Away or Night ones. Delete a person or "forget all
+  faces" at any time; unnamed faces expire after 7 days. With a cloud vision
+  model, faces are blurred before any picture leaves the house.
+
+### Added - local AI service (LightNVR Vision)
+- The ai-worker is rewritten on ONNX Runtime (no PyTorch) with images for CPU,
+  Intel GPU (OpenVINO) and NVIDIA (CUDA): `ghcr.io/manojmkss/light_nvr-ai-worker`.
+- **`./scripts/enable-ai.sh`** detects the hardware, starts the right image next
+  to the NVR (isolated from recording, with its own CPU/RAM limit) and proves it
+  with a real benchmark - a GPU that isn't actually usable (common in VMs) falls
+  back to CPU. Then pick "This NVR's AI service" in Settings → AI.
+- **Measure this hardware** (Settings → AI) benchmarks the AI and says, per
+  feature, what your hardware can sustain for your number of cameras.
+- Inference is shared fairly between cameras (priorities, newest frame wins,
+  stale frames dropped) instead of one global queue; live AI stats.
+- YOLO26 models are supported (`fetch-ai-models.sh yolo26n`); the model
+  script takes `--volume` for a GPU PC.
+
+### Added - one visit, one event
+- **People keep an event open while they're there, even standing still** - up
+  to 15 minutes. If pixel motion goes quiet but the AI can still see the
+  person, the event carries on instead of ending and starting a new one. The
+  summary says how long they waited ("person #1 stood still ~4m 50s").
+- **Parked vehicles.** A vehicle that stops for 20s is marked parked: it no
+  longer keeps events open or triggers alerts, and it's remembered between
+  events, so the car in the driveway isn't "seen" again whenever someone walks
+  past. The timeline notes when it parks, starts moving, or leaves.
+- **"Another person arrived" alert** when a second person shows up 20s or more
+  into an event that already alerted - the motion cooldown no longer hides a
+  second visitor.
+- Long waits that cross the 10-minute clip limit say "Clip: ... (2 parts)".
+
+### Changed
+- **AI respects motion zones.** People (by where their feet are) and vehicles
+  outside the watched area - the street, a neighbour's porch - are ignored:
+  they don't alert, count or keep events open.
+- Movement is judged relative to the object's size, so fidgeting near the
+  camera isn't "walking" and a distant walker isn't "standing still".
+- A vehicle the model calls "car" one moment and "truck" the next is one
+  vehicle.
+- While everyone in view is standing still, the AI checks every 2s instead of
+  every 0.5s, to save CPU during long waits.
+- The AI hold no longer lapses when inference is briefly slow.
+- Tracking follows people through partial occlusion (weak detections extend
+  known tracks) and predicts fast walkers' positions.
+
+### Fixed
+- A spot where something was standing when the camera started (or a car that
+  drove off) could keep "motion" alive for two minutes and merge separate
+  visits; with AI working, the AI now decides whether someone is still there.
+- Motion clip times could drift from the footage under heavy CPU load.
+- The version shown in the sidebar was always "1.0.0".
+
 ## [0.3.1] - 2026-10-20
 
 Same application code as 0.3.0, released so `./scripts/update-linux.sh`
@@ -240,7 +334,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/manojmkss/Light_NVR/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/manojmkss/Light_NVR/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/manojmkss/Light_NVR/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/manojmkss/Light_NVR/compare/v0.2.4...v0.2.5

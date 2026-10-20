@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { ModeSwitcher } from "./ModeSwitcher";
 import { NavLink, useLocation } from "react-router-dom";
 import { getSystemStatus } from "../api/system";
 import type { SystemStatus } from "../api/types";
@@ -6,13 +7,17 @@ import { useAuth } from "../context/AuthContext";
 import { usePolling } from "../hooks/usePolling";
 import { formatUptime } from "./SystemStatsCard";
 
-const APP_VERSION = "1.0.0";
+// Bumped with every release (see CHANGELOG.md).
+const APP_VERSION = "0.4.0";
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", icon: "▦" },
   { to: "/live", label: "Live View", icon: "▶" },
   { to: "/playback", label: "Playback & Export", icon: "⏱" },
   { to: "/cameras", label: "Cameras", icon: "▣" },
+  { to: "/visits", label: "Visits", icon: "◷" },
+  { to: "/people", label: "People", icon: "☺" },
+  { to: "/search", label: "Search", icon: "⌕" },
   { to: "/recordings", label: "Recording Files", icon: "▤" },
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];
@@ -93,6 +98,9 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
 
         <div className="sidebar-footer">
+          <div style={{ marginBottom: 10 }}>
+            <ModeSwitcher />
+          </div>
           <div>{user?.username}</div>
           <div style={{ marginBottom: 10, textTransform: "capitalize" }}>{user?.role}</div>
           <button className="btn btn-sm" onClick={logout} style={{ width: "100%" }}>
@@ -105,6 +113,7 @@ export function Layout({ children }: { children: ReactNode }) {
       <div className="main-content">
         <div className="topbar">
           <strong>{title}</strong>
+          <ModeSwitcher />
           <button className="btn btn-sm" onClick={logout}>
             Sign out
           </button>

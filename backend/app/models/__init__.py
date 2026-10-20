@@ -14,6 +14,9 @@ from app.models.kiosk_view import KioskView, KioskViewCamera
 from app.models.discovery_settings import DiscoverySettings
 from app.models.ai_settings import AISettings
 from app.models.detection import Detection
+from app.models.security import AlertRule, ModeSchedule, SecurityState
+from app.models.incident import AreaLink, Incident
+from app.models.person import FaceSample, Person
 
 __all__ = [
     "User",

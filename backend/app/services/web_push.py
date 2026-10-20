@@ -59,7 +59,9 @@ async def get_vapid_public_key() -> str | None:
         return record.vapid_public_key if record else None
 
 
-async def send_push_to_subscription(subscription: PushSubscription, title: str, body: str) -> tuple[bool, str]:
+async def send_push_to_subscription(
+    subscription: PushSubscription, title: str, body: str, extra: dict | None = None
+) -> tuple[bool, str]:
     async with AsyncSessionLocal() as db:
         record = await db.get(SystemSecret, 1)
     if not record or not record.vapid_private_key:
@@ -73,7 +75,8 @@ async def send_push_to_subscription(subscription: PushSubscription, title: str, 
     def _send():
         webpush(
             subscription_info=subscription_info,
-            data=json.dumps({"title": title, "body": body}),
+            # extra: url (deep link), image (signed snapshot), tag, event_id, urgent
+            data=json.dumps({"title": title, "body": body, **(extra or {})}),
             vapid_private_key=record.vapid_private_key,
             vapid_claims={"sub": VAPID_CLAIM_SUB},
         )
@@ -89,13 +92,13 @@ async def send_push_to_subscription(subscription: PushSubscription, title: str, 
         return False, f"expired:{status_code}" if status_code in (404, 410) else str(exc)
 
 
-async def send_push_to_all(title: str, body: str) -> None:
+async def send_push_to_all(title: str, body: str, extra: dict | None = None) -> None:
     async with AsyncSessionLocal() as db:
         subscriptions = (await db.execute(select(PushSubscription))).scalars().all()
 
     expired_ids = []
     for sub in subscriptions:
-        success, detail = await send_push_to_subscription(sub, title, body)
+        success, detail = await send_push_to_subscription(sub, title, body, extra)
         if not success:
             logger.warning("Push delivery failed for subscription %d: %s", sub.id, detail)
             if detail.startswith("expired:"):

@@ -6,8 +6,14 @@ from app.schemas.common import UtcDatetime
 
 
 class MotionZone(BaseModel):
-    kind: Literal["include", "exclude"] = "exclude"
+    # include/exclude shape where motion is watched; "zone" is a named area for
+    # AI rules (entered / loitering); "line" is a 2-point tripwire.
+    kind: Literal["include", "exclude", "zone", "line"] = "exclude"
     points: list[list[float]]  # [[x, y], ...] with x/y normalized to 0-1
+    name: str | None = None
+    loiter_seconds: int | None = Field(default=None, ge=0, le=3600)
+    direction: Literal["both", "forward", "backward"] | None = None
+    objects: list[str] | None = None  # e.g. ["person"]; empty = any
 
 
 def _check_rtsp_scheme(v: str | None) -> str | None:
@@ -45,6 +51,7 @@ class CameraCreate(BaseModel):
     motion_sensitivity: int = 50
     pre_roll_seconds: PreRoll = 5
     post_roll_seconds: PostRoll = 10
+    area: str | None = Field(default=None, max_length=64)
     retention_days: int | None = None  # overrides the global retention setting when set
     is_favorite: bool = False
     hardware_id: str | None = None  # ONVIF serial, for self-healing relocation
@@ -65,6 +72,7 @@ class CameraUpdate(BaseModel):
     motion_zones: list[MotionZone] | None = None
     pre_roll_seconds: PreRoll | None = None
     post_roll_seconds: PostRoll | None = None
+    area: str | None = Field(default=None, max_length=64)
     retention_days: int | None = None
     enabled: bool | None = None
     is_favorite: bool | None = None
@@ -85,6 +93,7 @@ class CameraOut(BaseModel):
     motion_zones: list[MotionZone] | None = None
     pre_roll_seconds: int = 5
     post_roll_seconds: int = 10
+    area: str | None = None
     retention_days: int | None
     is_favorite: bool
     enabled: bool
