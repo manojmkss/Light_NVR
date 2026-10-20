@@ -77,7 +77,8 @@ async def mjpeg_stream_response(camera: Camera, quality: str) -> StreamingRespon
 
 
 def snapshot_response(camera_id: int) -> Response:
-    frame = frame_bus.get_latest(camera_id)
+    # Full-resolution still when the stream is live; the live-view JPEG otherwise.
+    frame = frame_bus.get_fresh_jpeg(camera_id, max_age=3.0) or frame_bus.get_latest(camera_id)
     if frame is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No frame available yet")
     return Response(content=frame, media_type="image/jpeg")

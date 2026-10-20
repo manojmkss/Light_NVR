@@ -1908,6 +1908,7 @@ tr:last-child td {
 }
 .panel-head h3 { margin: 0; font-size: 15px; }
 .panel-head .muted { color: var(--text-dim); font-weight: 400; }
+.field .muted { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
 .panel-head a { color: var(--accent); font-size: 13px; text-decoration: none; }
 .panel-head a:hover { text-decoration: underline; }
 .panel-empty { color: var(--text-dim); font-size: 13px; padding: 12px 0; }

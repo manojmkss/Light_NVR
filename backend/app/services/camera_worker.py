@@ -154,7 +154,9 @@ class CameraWorker:
         and this is byte-for-byte the old behaviour - that fallback is the
         whole safety story for making AI optional.
         """
-        jpeg = frame_bus.get_latest(self.camera_id)
+        # Native-resolution, just-captured frame - not the downscaled live-view
+        # JPEG, and never a frame left over from before a disconnect.
+        jpeg = await asyncio.to_thread(frame_bus.get_fresh_jpeg, self.camera_id)
         snapshot_path = await asyncio.to_thread(_write_event_snapshot, self.camera_id, jpeg) if jpeg else None
 
         try:

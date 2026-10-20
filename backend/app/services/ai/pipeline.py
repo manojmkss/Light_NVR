@@ -87,9 +87,9 @@ class AIPipeline:
         if settings is None or not settings.enabled or not settings.detection_enabled:
             return None
 
-        jpeg = frame_bus.get_latest(camera_id)
+        jpeg = await asyncio.to_thread(frame_bus.get_fresh_jpeg, camera_id)
         if not jpeg:
-            return None  # nothing decoded yet (camera just came up)
+            return None  # no live frame (camera just came up, or the stream dropped)
 
         try:
             backend = await self._backend_for(settings)

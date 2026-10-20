@@ -2,6 +2,12 @@ import { useState } from "react";
 import type { CameraCreatePayload, Codec, RecordingMode } from "../api/types";
 import { testConnection } from "../api/cameras";
 
+// Mirrors backend motion_detector.sensitivity_to_pct: 1 -> 3%, 50 -> ~0.7%, 100 -> 0.15%.
+function triggerPercent(sensitivity: number): string {
+  const pct = 3.0 * Math.pow(0.05, (sensitivity - 1) / 99);
+  return pct >= 1 ? pct.toFixed(1) : pct.toFixed(2);
+}
+
 interface Props {
   initial: CameraCreatePayload;
   submitLabel: string;
@@ -136,13 +142,17 @@ export function CameraDetailsForm({ initial, submitLabel, submitting, serverErro
         <input
           type="checkbox"
           id="motion_enabled"
-          checked={Boolean(form.motion_enabled)}
+          checked={Boolean(form.motion_enabled) || form.recording_mode === "motion"}
+          disabled={form.recording_mode === "motion"}
           onChange={(e) => update("motion_enabled", e.target.checked)}
         />
-        <label htmlFor="motion_enabled">Detect motion (for alerts/tagging)</label>
+        <label htmlFor="motion_enabled">
+          Detect motion (for alerts/tagging)
+          {form.recording_mode === "motion" && <span className="muted"> - always on in motion-triggered mode</span>}
+        </label>
       </div>
 
-      {form.motion_enabled && (
+      {(form.motion_enabled || form.recording_mode === "motion") && (
         <div className="field">
           <label>Motion sensitivity ({form.motion_sensitivity ?? 50})</label>
           <input
@@ -152,6 +162,10 @@ export function CameraDetailsForm({ initial, submitLabel, submitting, serverErro
             value={form.motion_sensitivity ?? 50}
             onChange={(e) => update("motion_sensitivity", Number(e.target.value))}
           />
+          <div className="muted">
+            Triggers when about {triggerPercent(form.motion_sensitivity ?? 50)}% of the scene (or of your motion
+            zones) changes for at least half a second. Higher = smaller movements count.
+          </div>
         </div>
       )}
 
