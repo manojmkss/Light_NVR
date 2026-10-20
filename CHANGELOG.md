@@ -6,6 +6,55 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-20
+
+Motion is rebuilt end to end: detection that actually compares frames,
+recordings that start before the motion, and AI that watches the whole event
+instead of glancing at one frame - followed by a summary of what happened.
+
+### Added
+- **Continuous AI monitoring during motion.** While motion lasts, the newest
+  full-resolution frame is checked every 500ms (Settings → AI → Advanced).
+  Checks are skipped, never queued, if the machine can't keep up, so alerts
+  never fall behind. Detections are tracked across frames, so one person
+  walking across is one person, not six.
+- **One alert per event, with boxes.** Sent on the first confirmed person,
+  vehicle or animal, with labelled boxes drawn on the full-resolution frame.
+- **End-of-event summary.** When things go quiet: start/end time, duration,
+  what was seen ("2 people, 1 car"), most at once, an appear/leave timeline,
+  the clip's time range and the clearest picture - plus, with a vision model
+  configured, a sentence describing it. Works without AI too (duration and how
+  much moved). Toggle under Settings → AI.
+- **Pre-roll for motion recordings.** A rolling buffer keeps the last few
+  seconds on disk, so every clip starts before the motion (default 5s) and
+  ends after it (default 10s). Both are per-camera settings.
+- AI keeps an event open while someone stands still in view (but not for a
+  car parked for the night).
+
+### Changed
+- **Motion detection compares frames.** Each frame is checked against the
+  frames from ~0.4s and ~0.8s earlier, the change must persist for about half
+  a second, and the sensitivity slider now states what share of the scene has
+  to change. Whole-scene changes - lights, the IR switch, auto-exposure - are
+  ignored instead of triggering.
+- Live view keeps each camera's real aspect ratio (4:3 substreams were squashed
+  to 16:9) at higher quality.
+- Motion recording thumbnails show the moment motion was detected.
+- The vision-model description now goes into the end-of-event summary rather
+  than delaying the first alert.
+
+### Fixed
+- AI and alert pictures were a small, recompressed, sometimes stale live-view
+  frame - often one left over from before the camera dropped.
+- Motion clips lost their first seconds to the RTSP connect and keyframe wait
+  (the first event after boot also waited on a 10s audio probe), had start
+  times that didn't match the footage, and could stop recording entirely after
+  a 10-minute event or an ffmpeg crash.
+- Slow-moving or briefly stationary people faded into the background and ended
+  the event; a single noisy frame could start one.
+- Camera workers now stop in parallel, so open clips and summaries are saved
+  within Docker's stop timeout.
+
 ## [0.2.5] - 2026-08-04
 
 Playback and export are rebuilt around a single player, and a run of issues
@@ -182,7 +231,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/manojmkss/Light_NVR/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/manojmkss/Light_NVR/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/manojmkss/Light_NVR/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/manojmkss/Light_NVR/compare/v0.2.2...v0.2.3
