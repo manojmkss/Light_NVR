@@ -180,15 +180,20 @@ class MotionDetector:
             mask = cv2.bitwise_and(mask, self._zone_mask)
         return 100.0 * np.count_nonzero(mask) / self._zone_px
 
-    def _reference(self, now: float) -> np.ndarray | None:
-        """The newest stored frame that is at least COMPARE_AGO old."""
+    def _reference(self, now: float, ago: float) -> np.ndarray | None:
+        """The newest stored frame that is at least `ago` seconds old."""
         ref = None
         for t, g in self._past:
-            if now - t >= self.COMPARE_AGO:
+            if now - t >= ago:
                 ref = g
             else:
                 break
         return ref
+
+    def _changed_vs(self, gray: np.ndarray, ref: np.ndarray) -> np.ndarray:
+        diff = cv2.absdiff(gray, ref)
+        _, changed = cv2.threshold(diff, self.DIFF_THRESHOLD, 255, cv2.THRESH_BINARY)
+        return changed
 
     def process(self, frame_bgr: np.ndarray, now: float) -> MotionSample | None:
         """Feed every decoded frame; returns a sample only for the frames
@@ -212,17 +217,24 @@ class MotionDetector:
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, self._kernel_open)
         presence_pct = self._masked_pct(fg)
 
-        # Before/after comparison.
-        ref = self._reference(now)
+        # Before/after comparison - three-frame differencing: a pixel counts as
+        # changed only if the current frame differs from BOTH the frame ~0.4s
+        # ago and the one ~0.8s ago. With a single reference, one glitched
+        # frame registers twice more after the fact (once it becomes the
+        # "before" frame that clean frames are compared against); requiring
+        # both comparisons means change is only ever attributed to the present.
+        ref1 = self._reference(now, self.COMPARE_AGO)
+        ref2 = self._reference(now, self.COMPARE_AGO * 2)
         self._past.append((now, gray))
         while self._past and now - self._past[0][0] > self.COMPARE_AGO * 3:
             self._past.popleft()
 
         change_pct = 0.0
         bbox = None
-        if ref is not None:
-            diff = cv2.absdiff(gray, ref)
-            _, changed = cv2.threshold(diff, self.DIFF_THRESHOLD, 255, cv2.THRESH_BINARY)
+        if ref1 is not None:
+            changed = self._changed_vs(gray, ref1)
+            if ref2 is not None and ref2 is not ref1:
+                changed = cv2.bitwise_and(changed, self._changed_vs(gray, ref2))
             changed = cv2.morphologyEx(changed, cv2.MORPH_OPEN, self._kernel_open)
             change_pct = self._masked_pct(changed)
             if change_pct > 0:
