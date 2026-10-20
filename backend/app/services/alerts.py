@@ -14,6 +14,7 @@ from app.services.whatsapp import send_whatsapp_image, send_whatsapp_message
 logger = logging.getLogger(__name__)
 
 _DEFAULT_COOLDOWN_SECONDS = 1800
+_SUMMARY_COOLDOWN_SECONDS = 60
 _last_alert_at: dict[tuple[str, int | None], datetime] = {}
 
 
@@ -28,6 +29,13 @@ async def maybe_send_alert(event: Event) -> None:
         if not alert_settings.motion_alerts_enabled:
             return
         cooldown = alert_settings.motion_alert_cooldown_seconds
+    elif event.type == "motion_summary":
+        # One per motion event, sent when it ends - deliberately not under the
+        # motion cooldown (that's what keeps the start alerts quiet), just a
+        # short floor so a flapping scene can't produce a stream of them.
+        if not alert_settings.motion_alerts_enabled:
+            return
+        cooldown = _SUMMARY_COOLDOWN_SECONDS
     elif event.type == "camera_offline":
         if not alert_settings.offline_alerts_enabled:
             return
@@ -49,7 +57,7 @@ async def maybe_send_alert(event: Event) -> None:
         return
     _last_alert_at[key] = now
 
-    subject = f"LightNVR alert: {event.type.replace('_', ' ')}"
+    subject = "LightNVR: motion event summary" if event.type == "motion_summary" else f"LightNVR alert: {event.type.replace('_', ' ')}"
     # None once the file's confirmed missing, so every channel below skips
     # straight to its text-only path instead of each re-checking the disk.
     snapshot = event.snapshot_path if event.snapshot_path and os.path.exists(event.snapshot_path) else None

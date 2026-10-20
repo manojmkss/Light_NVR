@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from sqlalchemy import select
@@ -37,8 +38,15 @@ class CameraSupervisor:
             await worker.stop()
 
     async def shutdown(self) -> None:
-        for camera_id in list(self._workers.keys()):
-            await self.remove_camera(camera_id)
+        # In parallel: each worker may spend a few seconds saving an open
+        # motion clip and its summary, and a container stop only allows ~10s
+        # in total before everything is killed.
+        results = await asyncio.gather(
+            *(self.remove_camera(cid) for cid in list(self._workers.keys())), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error("Camera worker failed to stop cleanly: %r", result)
 
     def get_active_camera_ids(self) -> list[int]:
         return list(self._workers.keys())

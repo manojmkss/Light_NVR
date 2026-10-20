@@ -166,6 +166,9 @@ export function AISettingsTab() {
         detection_confidence: s.detection_confidence,
         detection_classes: s.detection_classes,
         alert_on_objects_only: s.alert_on_objects_only,
+        monitor_interval_ms: s.monitor_interval_ms,
+        event_summary_enabled: s.event_summary_enabled,
+        event_summary_vlm: s.event_summary_vlm,
         detection_retention_days: s.detection_retention_days,
         vlm_enabled: s.vlm_enabled,
         vlm_provider: s.vlm_provider,
@@ -229,8 +232,31 @@ export function AISettingsTab() {
             <strong>Use AI</strong>
             <div style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 2 }}>
               Motion alone can't tell a person from a swaying tree or passing headlights — which is why
-              motion alerts get ignored. AI checks each motion event for real objects, so an alert means
-              something was actually there. Off by default; nothing runs while it's off.
+              motion alerts get ignored. While motion lasts, AI checks the camera picture every half
+              second for real objects, so an alert means something was actually there. Off by default;
+              nothing runs while it's off.
+            </div>
+          </span>
+        </label>
+      </div>
+
+      {/* ── End-of-event summary (works with or without AI) ─────────── */}
+      <div className="card">
+        <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={s.event_summary_enabled}
+            onChange={(e) => up("event_summary_enabled", e.target.checked)}
+            style={{ marginTop: 4 }}
+          />
+          <span>
+            <strong>Send a summary when each motion event ends</strong>
+            <div style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 2 }}>
+              One message after things go quiet: when it started and ended, how long it lasted, what was
+              seen (for example "2 people, 1 car") with a timeline, and the clip's time range — with the
+              clearest picture attached. Without AI it reports the duration and how much moved. Uses the
+              same channels as motion alerts (Settings → Alerts). With "Only alert me when one of these
+              is seen" on, events where AI saw nothing are not summarised.
             </div>
           </span>
         </label>
@@ -371,6 +397,22 @@ export function AISettingsTab() {
                   </select>
                 </div>
                 <div className="field">
+                  <label>Check the picture every (milliseconds)</label>
+                  <input
+                    type="number"
+                    min={250}
+                    max={5000}
+                    step={50}
+                    value={s.monitor_interval_ms}
+                    onChange={(e) => up("monitor_interval_ms", Math.min(5000, Math.max(250, Number(e.target.value) || 500)))}
+                    style={{ maxWidth: 120 }}
+                  />
+                  <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                    Only while motion is happening. 500 is a good default. If the computer can't keep up,
+                    checks are skipped rather than queued, so alerts never fall behind.
+                  </p>
+                </div>
+                <div className="field">
                   <label>How sure it must be: {s.detection_confidence}%</label>
                   <input
                     type="range"
@@ -401,7 +443,7 @@ export function AISettingsTab() {
           {/* ── Tier 3: descriptions ─────────────────────────────────── */}
           <Section
             title="Describe what's happening (optional)"
-            blurb='Instead of "Motion on Front Door", get "A delivery person left a package at the front door". Needs a vision model — Ollama on your own PC is free and keeps everything at home.'
+            blurb='Adds a sentence like "A delivery person left a package at the front door" to the end-of-event summary, written from the clearest picture of the event. Needs a vision model — Ollama on your own PC is free and keeps everything at home.'
             on={s.vlm_enabled}
             onToggle={(v) => up("vlm_enabled", v)}
           >

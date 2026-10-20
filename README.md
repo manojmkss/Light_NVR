@@ -238,10 +238,12 @@ and descriptions explain the few events that survive.
 
 Set per-camera under Cameras → Edit:
 - **Continuous** — records back-to-back 5-minute segments, stream-copied (no re-encode) from the main stream.
-- **Motion-triggered** — only records while motion is detected (plus a short post-roll).
+- **Motion-triggered** — a rolling buffer keeps the last few seconds of the main stream on disk, so each clip starts *before* the motion (pre-roll, default 5s) and runs until motion has been quiet for the post-roll (default 10s). Motion again inside the post-roll continues the same clip; very long events are split into 10-minute clips. Both are set per camera.
 - **Off** — no recording; useful with motion detection enabled for alert-only monitoring.
 
-Motion detection (`motion_enabled`) is independent of recording mode — you can run continuous recording *and* get motion alerts/event tagging at the same time. Detection runs on the substream when configured, to keep CPU usage low.
+Motion detection (`motion_enabled`) is independent of recording mode — you can run continuous recording *and* get motion alerts/event tagging at the same time. Detection runs on the substream when configured, to keep CPU usage low. It compares each frame with the frames from ~0.4s and ~0.8s earlier (so it reacts to real movement, not to one glitched frame), needs the change to last about half a second, ignores whole-scene changes such as lights or the IR switch, and uses a background model to keep the event open while someone stands still.
+
+With AI on, the newest frame is checked every 500ms while motion lasts (configurable). The first confirmed person/vehicle/animal sends one alert with boxes drawn on the full-resolution frame, and when the event ends a **summary** follows: start/end time, duration, what was seen (counts, most at once, appear/leave timeline), the clip's time range, and — with a vision model configured — a sentence describing the clearest frame. Summaries also work without AI (duration and how much moved) and can be turned off under Settings → AI.
 
 ## Storage management
 

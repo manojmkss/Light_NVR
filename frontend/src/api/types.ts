@@ -134,7 +134,14 @@ export interface Recording {
   size_bytes: number | null;
 }
 
-export type EventType = "motion" | "camera_offline" | "camera_online" | "low_storage" | "camera_error" | "system";
+export type EventType =
+  | "motion"
+  | "motion_summary"
+  | "camera_offline"
+  | "camera_online"
+  | "low_storage"
+  | "camera_error"
+  | "system";
 
 export interface NvrEvent {
   id: number;
@@ -375,6 +382,9 @@ export interface AISettings {
   detection_confidence: number;
   detection_classes: string[];
   alert_on_objects_only: boolean;
+  monitor_interval_ms: number;
+  event_summary_enabled: boolean;
+  event_summary_vlm: boolean;
 
   search_enabled: boolean;
   embedding_model: string;

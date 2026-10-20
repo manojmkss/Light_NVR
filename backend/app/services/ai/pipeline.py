@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.db.session import AsyncSessionLocal
@@ -9,31 +8,8 @@ from app.models.ai_settings import AISettings
 from app.models.detection import Detection
 from app.services.ai.backends import InferenceBackend, build_backend
 from app.services.ai.types import DetectedObject
-from app.services.frame_bus import frame_bus
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class AnalysisResult:
-    objects: list[DetectedObject] = field(default_factory=list)
-    # True when objects-only mode is on and nothing of interest was in frame -
-    # the caller should stay silent instead of alerting.
-    suppressed: bool = False
-    message: str = ""
-    description: str = ""  # Tier 3 sentence, when a VLM is configured
-    detection_ids: list[int] = field(default_factory=list)
-
-
-def _summarise(objects: list[DetectedObject], camera_name: str) -> str:
-    """'Person detected on Front Door' beats 'Motion detected on Front Door',
-    and 'Person + car' beats either. Counts, because '3 people' is a
-    materially different event from '1 person'."""
-    counts: dict[str, int] = {}
-    for obj in objects:
-        counts[obj.label] = counts.get(obj.label, 0) + 1
-    parts = [(f"{n} {label}s" if n > 1 else label.capitalize()) for label, n in sorted(counts.items())]
-    return f"{' + '.join(parts)} detected on '{camera_name}'"
 
 
 class AIPipeline:
@@ -80,62 +56,52 @@ class AIPipeline:
     def _wanted(self, settings: AISettings) -> set[str]:
         return {c.strip().lower() for c in settings.detection_classes.split(",") if c.strip()}
 
-    async def analyze_motion(self, camera_id: int, camera_name: str) -> AnalysisResult | None:
-        """Returns None when AI is off or unusable - caller then behaves exactly
-        as it did before AI existed."""
-        settings = await self._load_settings()
-        if settings is None or not settings.enabled or not settings.detection_enabled:
+    async def settings(self) -> AISettings | None:
+        """Detached copy of the AI settings, or None if the row is missing."""
+        return await self._load_settings()
+
+    async def detect_frame(self, settings: AISettings, jpeg: bytes) -> list[DetectedObject] | None:
+        """Objects of interest in one frame (class filter applied), or None
+        when detection is off or failed - the caller then carries on as plain
+        motion. Used by the per-event monitoring loop."""
+        if not settings.enabled or not settings.detection_enabled:
             return None
-
-        jpeg = await asyncio.to_thread(frame_bus.get_fresh_jpeg, camera_id)
-        if not jpeg:
-            return None  # no live frame (camera just came up, or the stream dropped)
-
         try:
             backend = await self._backend_for(settings)
             objects = await backend.detect(jpeg, settings.detection_confidence / 100.0)
         except Exception as exc:
-            # Warn, don't raise: a broken AI config must not silence motion.
-            logger.warning("AI: detection failed on camera %s (%s) - falling back to plain motion", camera_id, exc)
+            logger.warning("AI: detection failed (%s) - treating as plain motion", exc)
             return None
-
         wanted = self._wanted(settings)
-        if wanted:
-            objects = [o for o in objects if o.label.lower() in wanted]
+        return [o for o in objects if not wanted or o.label.lower() in wanted]
 
-        if not objects and settings.alert_on_objects_only:
-            # The whole point of Tier 1: motion with no object of interest is
-            # a tree/shadow/rain/insect, so say nothing.
-            return AnalysisResult(objects=[], suppressed=True)
-        if not objects:
-            return AnalysisResult(objects=[], message="")
+    async def store_detections(
+        self,
+        camera_id: int,
+        objects: list[DetectedObject],
+        jpeg: bytes,
+        description: str = "",
+        event_id: int | None = None,
+        recording_id: int | None = None,
+        seen_at: datetime | None = None,
+    ) -> list[int]:
+        return await self._store(camera_id, objects, jpeg, description, event_id, recording_id, seen_at)
 
-        # Tier 3: one sentence describing the scene. Only reached for frames
-        # that already passed the object filter, which is what keeps this
-        # affordable - a handful of calls a day instead of one per twitch of a
-        # tree. Never fatal: a description is a nice-to-have on top of a
-        # detection that already stands on its own.
-        description = ""
-        if settings.vlm_enabled:
-            try:
-                from app.services.ai.vlm import describe_frame
-
-                description = await describe_frame(
-                    settings, jpeg, [o.label for o in objects], camera_name
-                )
-            except Exception as exc:
-                logger.warning("AI: VLM description failed for camera %s (%s)", camera_id, exc)
-
-        detection_ids = await self._store(camera_id, objects, jpeg, description)
-
-        message = description or _summarise(objects, camera_name)
-        return AnalysisResult(objects=objects, message=message, description=description, detection_ids=detection_ids)
+    def write_snapshot(self, camera_id: int, jpeg: bytes) -> str | None:
+        return self._write_snapshot(camera_id, jpeg)
 
     async def _store(
-        self, camera_id: int, objects: list[DetectedObject], jpeg: bytes, description: str = ""
+        self,
+        camera_id: int,
+        objects: list[DetectedObject],
+        jpeg: bytes,
+        description: str = "",
+        event_id: int | None = None,
+        recording_id: int | None = None,
+        seen_at: datetime | None = None,
     ) -> list[int]:
         snapshot_path = await asyncio.to_thread(self._write_snapshot, camera_id, jpeg)
-        now = datetime.now(timezone.utc)
+        now = seen_at or datetime.now(timezone.utc)
         try:
             async with AsyncSessionLocal() as db:
                 rows = [
@@ -151,6 +117,8 @@ class AIPipeline:
                         # it shares the same one.
                         description=description or None,
                         snapshot_path=snapshot_path,
+                        event_id=event_id,
+                        recording_id=recording_id,
                         created_at=now,
                     )
                     for obj in objects

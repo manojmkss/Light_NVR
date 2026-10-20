@@ -64,6 +64,7 @@ function dayLabel(iso: string, fmtDate: (v: string) => string): string {
 
 const EVENT_META: Record<string, { icon: ReactNode; cls: string }> = {
   motion: { icon: <IconRun />, cls: "ev-motion" },
+  motion_summary: { icon: <IconInfo />, cls: "ev-motion" },
   camera_offline: { icon: <IconCameraOff />, cls: "ev-offline" },
   camera_online: { icon: <IconCamera />, cls: "ev-online" },
   low_storage: { icon: <IconDisk />, cls: "ev-warn" },
@@ -427,7 +428,7 @@ export function DashboardPage() {
                     <span className={`ev-icon ${meta.cls}`}>{meta.icon}</span>
                   )}
                   <div className="ev-body">
-                    <div className="ev-msg">{ev.message}</div>
+                    <div className="ev-msg" title={ev.message}>{ev.message}</div>
                     <div className="ev-loc">{camName(ev.camera_id)}</div>
                   </div>
                   <div className="ev-time">

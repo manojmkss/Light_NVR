@@ -1,18 +1,35 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
+import cv2
+
 from app.models.camera import Camera
+from app.services.ai.digest import _display_tz
 from app.services.ai.pipeline import ai_pipeline
+from app.services.ai.types import DetectedObject
 from app.services.events import emit_event
 from app.services.ffmpeg_recorder import ContinuousRecorder, MotionRecorder
 from app.services.frame_bus import frame_bus
+from app.services.motion_event import MotionEventSession
 from app.services.motion_state import motion_state_registry
 from app.services.status_tracker import mark_offline
 from app.services.stream_viewer import StreamViewer
 
 logger = logging.getLogger(__name__)
+
+
+def _encode_jpeg(frame, quality: int = 90) -> bytes | None:
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    return buf.tobytes() if ok else None
+
+
+async def _describe(settings, jpeg: bytes, labels: list[str], camera_name: str, prompt: str) -> str:
+    from app.services.ai.vlm import describe_frame
+
+    return await describe_frame(settings, jpeg, labels, camera_name, prompt=prompt)
 
 
 def _write_event_snapshot(camera_id: int, jpeg: bytes) -> str | None:
@@ -72,6 +89,13 @@ class CameraWorker:
         self._motion_recorder: MotionRecorder | None = None
         self._stream_viewer: StreamViewer | None = None
         self._stopping = False
+        # The motion event being watched by AI, and the post-roll timer that
+        # ends it (cancelled if motion returns).
+        self._session: MotionEventSession | None = None
+        self._session_grace: asyncio.Task | None = None
+        # Recently saved motion clips, so an event's summary can link its clip.
+        self._clips: list[tuple[object, float, float]] = []
+        self._clips_changed = asyncio.Condition()
 
     async def start(self) -> None:
         if self.recording_mode == "continuous":
@@ -85,6 +109,7 @@ class CameraWorker:
                 sub_url=self._playback_sub_url,
                 pre_roll_seconds=self.pre_roll_seconds,
                 post_roll_seconds=self.post_roll_seconds,
+                on_clip_saved=self._on_clip_saved,
             )
             # The rolling buffer runs all the time, so a clip can start before
             # the motion that triggered it.
@@ -105,8 +130,21 @@ class CameraWorker:
         self._stopping = True
         if self._stream_viewer:
             await self._stream_viewer.stop()
+        if self._session_grace is not None:
+            self._session_grace.cancel()
+            self._session_grace = None
         if self._motion_recorder:
             await self._motion_recorder.stop()
+        # An event still open (or in its post-roll) gets its summary now. The
+        # clip was just saved by the recorder's stop above.
+        session, self._session = self._session, None
+        if session is not None:
+            try:
+                await asyncio.wait_for(self._finalize_session(session, clip_timeout=2), timeout=15)
+            except asyncio.TimeoutError:
+                logger.warning("Timed out finalising motion event for camera %s on stop", self.camera_id)
+        if self._announce_tasks:
+            await asyncio.wait(list(self._announce_tasks), timeout=10)
         if self._continuous_recorder:
             await self._continuous_recorder.stop()
         for task in self._tasks:
@@ -145,49 +183,137 @@ class CameraWorker:
 
     async def _handle_motion_start(self) -> None:
         motion_state_registry.set_motion(self.camera_id, True)
-        # Recording starts first and never waits on AI: inference takes tens to
-        # hundreds of milliseconds, and that is footage you would lose off the
-        # front of the clip. The event/alert is what AI gets to filter, below.
+        # Recording first and never waits on AI: the buffer makes this instant,
+        # and the clip already reaches back pre_roll seconds.
         if self._motion_recorder:
             await self._motion_recorder.on_motion_start()
 
-        # Fire-and-forget so a slow/hung inference can't stall the decode
-        # thread's callback and back the motion pipeline up behind it.
-        task = asyncio.create_task(self._announce_motion())
-        self._announce_tasks.add(task)
-        task.add_done_callback(self._announce_tasks.discard)
-
-    async def _announce_motion(self) -> None:
-        """Emit the motion event, optionally filtered/enriched by the AI layer.
-
-        When AI is off, unconfigured, or failing, `analyze_motion` returns None
-        and this is byte-for-byte the old behaviour - that fallback is the
-        whole safety story for making AI optional.
-        """
-        # Native-resolution, just-captured frame - not the downscaled live-view
-        # JPEG, and never a frame left over from before a disconnect.
-        jpeg = await asyncio.to_thread(frame_bus.get_fresh_jpeg, self.camera_id)
-        snapshot_path = await asyncio.to_thread(_write_event_snapshot, self.camera_id, jpeg) if jpeg else None
+        if self._session_grace is not None:
+            # Motion came back within the post-roll: same event continues.
+            self._session_grace.cancel()
+            self._session_grace = None
+        if self._session is not None:
+            self._session.mark_motion_resume()
+            return
 
         try:
-            result = await ai_pipeline.analyze_motion(self.camera_id, self.name)
+            settings = await ai_pipeline.settings()
         except Exception:
-            logger.exception("AI analysis crashed for camera %s - emitting plain motion event", self.camera_id)
-            result = None
-
-        if result is None:
-            await emit_event(self.camera_id, "motion", f"Motion detected on '{self.name}'", snapshot_path=snapshot_path)
-            return
-        if result.suppressed:
-            return  # objects-only mode: nothing of interest was in frame
-        await emit_event(
+            logger.exception("Could not load AI settings for camera %s - plain motion event", self.camera_id)
+            settings = None
+        tz = timezone.utc
+        try:
+            tz = await _display_tz()
+        except Exception:
+            pass
+        viewer = self._stream_viewer
+        self._session = MotionEventSession(
             self.camera_id,
-            "motion",
-            result.message or f"Motion detected on '{self.name}'",
-            snapshot_path=snapshot_path,
+            self.name,
+            settings,
+            motion_active=lambda: bool(viewer and viewer.motion_active),
+            hold_motion=lambda seconds: viewer.hold_motion(seconds) if viewer else None,
+            motion_level=lambda: (viewer.last_sample.change_pct if viewer and viewer.last_sample else 0.0),
+            get_frame=frame_bus.get_fresh,
+            detect=ai_pipeline.detect_frame,
+            emit=self._emit_with_snapshot,
+            describe=_describe,
+            tz=tz,
         )
+        self._session.start()
+        if not (viewer and viewer.motion_active):
+            # Motion already ended while settings were loading - its stop
+            # callback found no session, so end this one the same way.
+            await self._handle_motion_stop()
 
     async def _handle_motion_stop(self) -> None:
         motion_state_registry.set_motion(self.camera_id, False)
         if self._motion_recorder:
             await self._motion_recorder.on_motion_stop()
+        if self._session is not None:
+            self._session.mark_motion_end()
+            if self._session_grace is not None:
+                self._session_grace.cancel()
+            # Same window the recorder keeps the clip open for, so one event =
+            # one clip = one summary.
+            self._session_grace = asyncio.create_task(self._end_session_after(self.post_roll_seconds))
+
+    async def _end_session_after(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        session, self._session, self._session_grace = self._session, None, None
+        if session is not None:
+            self._track(asyncio.create_task(self._finalize_session(session)))
+
+    def _track(self, task: asyncio.Task) -> None:
+        self._announce_tasks.add(task)
+        task.add_done_callback(self._announce_tasks.discard)
+
+    async def _emit_with_snapshot(self, camera_id: int, event_type: str, message: str, jpeg: bytes | None) -> int | None:
+        snapshot_path = await asyncio.to_thread(_write_event_snapshot, camera_id, jpeg) if jpeg else None
+        event = await emit_event(camera_id, event_type, message, snapshot_path=snapshot_path)
+        return event.id
+
+    async def _on_clip_saved(self, recording, clip_start: float, clip_end: float) -> None:
+        async with self._clips_changed:
+            self._clips.append((recording, clip_start, clip_end))
+            del self._clips[:-10]
+            self._clips_changed.notify_all()
+
+    async def _clip_for(self, session: MotionEventSession, timeout: float) -> tuple[object | None, tuple[float, float] | None]:
+        """The motion clip(s) covering this event - saved a moment after the
+        post-roll, once the buffer segment containing the end has closed."""
+        end = session.ended_wall or time.time()
+        deadline = time.time() + timeout
+
+        def overlapping():
+            return [c for c in self._clips if c[2] > session.started_wall and c[1] < end]
+
+        async with self._clips_changed:
+            while not any(c[2] >= end - 1 for c in overlapping()):
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(self._clips_changed.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+            clips = overlapping()
+        if not clips:
+            return None, None
+        return clips[0][0], (min(c[1] for c in clips), max(c[2] for c in clips))
+
+    async def _finalize_session(self, session: MotionEventSession, clip_timeout: float = 45) -> None:
+        try:
+            await session.stop_monitoring()
+            recording, clip = (None, None)
+            if self._motion_recorder is not None:
+                recording, clip = await self._clip_for(session, timeout=clip_timeout)
+
+            event_id = session.alert_event_id
+            s = session.settings
+            if s is None or getattr(s, "event_summary_enabled", True) is not False:
+                summary = await session.build_summary(clip)
+                if summary is not None:
+                    event_id = await self._emit_with_snapshot(
+                        self.camera_id, "motion_summary", summary.message, summary.snapshot
+                    ) or event_id
+
+            # One detection row per tracked object (not per frame), with its
+            # clearest frame - linked to the event and the clip.
+            recording_id = getattr(recording, "id", None)
+            for t in session.tracker.confirmed():
+                if t.best_frame is None:
+                    continue
+                jpeg = await asyncio.to_thread(_encode_jpeg, t.best_frame)
+                if not jpeg:
+                    continue
+                await ai_pipeline.store_detections(
+                    self.camera_id,
+                    [DetectedObject(t.label, t.best_conf, *t.best_box)],
+                    jpeg,
+                    event_id=event_id,
+                    recording_id=recording_id,
+                    seen_at=datetime.fromtimestamp(t.best_at, timezone.utc),
+                )
+        except Exception:
+            logger.exception("Could not finalise motion event for camera %s", self.camera_id)

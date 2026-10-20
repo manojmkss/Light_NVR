@@ -48,11 +48,14 @@ async def list_ollama_models(url: str) -> list[str]:
         return [m["name"] for m in resp.json().get("models", [])]
 
 
-async def describe_frame(settings, jpeg: bytes, labels: list[str], camera_name: str) -> str:
+async def describe_frame(
+    settings, jpeg: bytes, labels: list[str], camera_name: str, prompt: str | None = None
+) -> str:
     """One sentence for one frame, via whichever provider is configured.
     Raises on misconfiguration/unreachability - callers decide whether that's
-    a logged warning (pipeline) or a surfaced error (the Test button)."""
-    prompt = _PROMPT.format(camera=camera_name, labels=", ".join(labels) or "none")
+    a logged warning (pipeline) or a surfaced error (the Test button).
+    `prompt` overrides the default one-line-alert prompt (event summaries)."""
+    prompt = prompt or _PROMPT.format(camera=camera_name, labels=", ".join(labels) or "none")
     b64 = base64.b64encode(jpeg).decode()
 
     provider = settings.vlm_provider

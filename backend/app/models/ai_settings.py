@@ -44,6 +44,16 @@ class AISettings(Base):
     # the classes above raises no alert. This is what kills the tree/shadow/
     # rain false positives that make motion-only alerting untrustworthy.
     alert_on_objects_only: Mapped[bool] = mapped_column(Boolean, default=True)
+    # While motion is active, how often the newest frame is run through
+    # detection. Ticks are skipped (never queued) when inference is slower.
+    monitor_interval_ms: Mapped[int] = mapped_column(Integer, default=500)
+
+    # ── Event summaries ─────────────────────────────────────────────────────
+    # One message when a motion event ends: duration, what was seen, timeline,
+    # clip. Works without AI too (then just duration + motion level).
+    event_summary_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Add a VLM description of the clearest frame (only when Tier 3 is set up).
+    event_summary_vlm: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # ── Tier 2: semantic search ─────────────────────────────────────────────
     search_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

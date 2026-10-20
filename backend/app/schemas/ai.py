@@ -31,6 +31,9 @@ class AISettingsOut(BaseModel):
     detection_confidence: int
     detection_classes: list[str]
     alert_on_objects_only: bool
+    monitor_interval_ms: int = 500
+    event_summary_enabled: bool = True
+    event_summary_vlm: bool = True
 
     search_enabled: bool
     embedding_model: str
@@ -61,6 +64,10 @@ class AISettingsUpdate(BaseModel):
     detection_confidence: Annotated[int, Field(ge=1, le=99)] | None = None
     detection_classes: list[str] | None = None
     alert_on_objects_only: bool | None = None
+    # 250ms floor: faster buys nothing at camera substream rates and doubles CPU.
+    monitor_interval_ms: Annotated[int, Field(ge=250, le=5000)] | None = None
+    event_summary_enabled: bool | None = None
+    event_summary_vlm: bool | None = None
 
     search_enabled: bool | None = None
     embedding_model: str | None = None
