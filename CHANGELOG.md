@@ -6,6 +6,15 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-20
+
+Same application code as 0.3.0, released so `./scripts/update-linux.sh`
+pulls prebuilt images (it builds from source when the newest commit isn't a
+release tag).
+
+### Fixed
+- CI: the backend test job no longer fails when every test passes.
+
 ## [0.3.0] - 2026-10-20
 
 Motion is rebuilt end to end: detection that actually compares frames,
@@ -231,7 +240,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/manojmkss/Light_NVR/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/manojmkss/Light_NVR/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/manojmkss/Light_NVR/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/manojmkss/Light_NVR/compare/v0.2.3...v0.2.4
