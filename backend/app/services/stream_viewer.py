@@ -182,8 +182,17 @@ class StreamViewer:
         try:
             while not self._stop_event.is_set():
                 with cond:
-                    if slot["seq"] == seen_seq and slot["alive"]:
-                        cond.wait(timeout=self.NO_FRAME_TIMEOUT)
+                    # Short slices so a stop request is noticed promptly even
+                    # when the stream has gone silent.
+                    waited = 0.0
+                    while (
+                        slot["seq"] == seen_seq and slot["alive"]
+                        and waited < self.NO_FRAME_TIMEOUT and not self._stop_event.is_set()
+                    ):
+                        cond.wait(timeout=0.5)
+                        waited += 0.5
+                    if self._stop_event.is_set():
+                        break
                     if slot["seq"] == seen_seq:
                         if slot["alive"]:
                             logger.warning(

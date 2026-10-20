@@ -139,6 +139,9 @@ class CameraWorker:
         # clip was just saved by the recorder's stop above.
         session, self._session = self._session, None
         if session is not None:
+            # No vision-model call on the way down: it can take tens of seconds
+            # and a container stop allows ~10s in total.
+            session.skip_description = True
             try:
                 await asyncio.wait_for(self._finalize_session(session, clip_timeout=2), timeout=15)
             except asyncio.TimeoutError:
@@ -266,7 +269,10 @@ class CameraWorker:
         deadline = time.time() + timeout
 
         def overlapping():
-            return [c for c in self._clips if c[2] > session.started_wall and c[1] < end]
+            # At least 1s of real overlap: the previous event's clip can end up
+            # to one buffer segment after this event started, and must not be
+            # mistaken for this one's.
+            return [c for c in self._clips if min(c[2], end) - max(c[1], session.started_wall) >= 1.0]
 
         async with self._clips_changed:
             while not any(c[2] >= end - 1 for c in overlapping()):

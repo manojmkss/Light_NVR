@@ -276,6 +276,7 @@ class MotionEventSession:
         self.ticks = 0
         self._last_frame: tuple[np.ndarray, float] | None = None
         self._task: asyncio.Task | None = None
+        self.skip_description = False  # set on shutdown: no slow VLM call
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -428,13 +429,15 @@ class MotionEventSession:
             snapshot = await asyncio.to_thread(_jpeg, self._last_frame[0])
 
         message = "\n".join(lines)
-        if len(message) > 1000:  # Telegram photo captions stop at 1024
-            message = message[:997].rsplit("\n", 1)[0] + "\n..."
+        # Telegram/WhatsApp photo captions stop at 1024 characters, and the
+        # alert subject line is prepended to this.
+        if len(message) > 950:
+            message = message[:947].rsplit("\n", 1)[0] + "\n..."
         return EventSummary(message, snapshot, seen)
 
     async def _vlm_description(self, best: Track, seen: dict[str, int], end: float) -> str:
         s = self.settings
-        if not (self._describe and s and s.vlm_enabled and getattr(s, "event_summary_vlm", True)):
+        if self.skip_description or not (self._describe and s and s.vlm_enabled and getattr(s, "event_summary_vlm", True)):
             return ""
         jpeg = await asyncio.to_thread(_jpeg, best.best_frame)
         if not jpeg:
