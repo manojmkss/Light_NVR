@@ -54,6 +54,11 @@ from app.db.session import check_integrity, init_db
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Armed first, so a hang anywhere in startup (a NAS mount, a DB lock) is
+    # also turned into a restart.
+    from app.core.watchdog import watchdog
+
+    watchdog.start(asyncio.get_running_loop())
     await init_db()
 
     if not await check_integrity():
@@ -153,6 +158,9 @@ async def lifespan(app: FastAPI):
     await tailscale_manager.shutdown()
     await cloudflare_manager.shutdown()
     await supervisor.shutdown()
+    from app.services.events import flush_deliveries
+
+    await flush_deliveries()
     await storage_manager.shutdown()
 
     from app.services.hq_stream import hq_stream_manager
@@ -160,7 +168,7 @@ async def lifespan(app: FastAPI):
     await hq_stream_manager.shutdown()
 
 
-app = FastAPI(title="LightNVR API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="LightNVR API", version="0.4.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

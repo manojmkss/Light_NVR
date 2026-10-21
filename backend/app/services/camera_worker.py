@@ -12,7 +12,7 @@ from app.services.ai.pipeline import ai_pipeline
 from app.services.ai.scheduler import scheduler
 from app.services.ai.types import DetectedObject
 from app.services.events import emit_event
-from app.services.ffmpeg_recorder import ContinuousRecorder, MotionRecorder
+from app.services.ffmpeg_recorder import SEGMENT_SECONDS, ContinuousRecorder, MotionRecorder
 from app.services.frame_bus import frame_bus
 from app.services.faces import face_service, faces_enabled
 from app.services.incidents import incident_manager
@@ -147,15 +147,59 @@ class CameraWorker:
         )
         await self._stream_viewer.start()
 
+    # ── health (used by the supervisor's self-healing loop) ─────────────────
+
+    VIEWER_STUCK_SECONDS = 300.0  # no progress at all from the decode thread
+    BUFFER_STALL_SECONDS = 180.0  # motion buffer ffmpeg producing nothing
+
+    def health(self) -> tuple[bool, str]:
+        """(healthy, reason). Only reports conditions that a restart of this
+        worker can fix - a camera that is simply unreachable is "offline",
+        handled by the viewer's own reconnect loop, not a fault."""
+        now = time.monotonic()
+        v = self._stream_viewer
+        if v is not None:
+            if not v.thread_alive:
+                return False, "live-stream thread stopped"
+            if now - v.last_activity > self.VIEWER_STUCK_SECONDS:
+                return False, f"live stream stuck for {int(now - v.last_activity)}s"
+        for t in self._tasks:
+            if t.done() and not self._stopping:
+                return False, "recording task ended unexpectedly"
+        rec = self._continuous_recorder
+        if rec is not None and v is not None and now - v.last_frame_at < 60:
+            # Camera is delivering pictures, so recording should be producing
+            # segments too: a full segment + generous slack without one = stalled.
+            since = now - (rec.last_segment_at or rec.started_at)
+            if since > SEGMENT_SECONDS * 2 + 120:
+                return False, f"no recording saved for {int(since // 60)} min while the camera is online"
+        mr = self._motion_recorder
+        if mr is not None and v is not None and now - v.last_frame_at < 60:
+            buf = mr.buffer
+            since = now - (buf.last_segment_at or buf.started_at)
+            if since > self.BUFFER_STALL_SECONDS:
+                return False, f"recording buffer idle for {int(since)}s while the camera is online"
+        return True, "ok"
+
     async def stop(self) -> None:
+        """Every step is isolated and time-limited: one stuck part (a hung
+        ffmpeg, a slow DB) must never stop the rest from shutting down, or a
+        restart of this camera from completing."""
         self._stopping = True
+
+        async def step(name, coro, timeout):
+            try:
+                await asyncio.wait_for(coro, timeout=timeout)
+            except Exception as exc:
+                logger.warning("Camera %s: stopping %s failed (%s)", self.camera_id, name, exc or type(exc).__name__)
+
         if self._stream_viewer:
-            await self._stream_viewer.stop()
+            await step("live stream", self._stream_viewer.stop(), 10)
         if self._session_grace is not None:
             self._session_grace.cancel()
             self._session_grace = None
         if self._motion_recorder:
-            await self._motion_recorder.stop()
+            await step("motion recorder", self._motion_recorder.stop(), 20)
         # An event still open (or in its post-roll) gets its summary now. The
         # clip was just saved by the recorder's stop above.
         session, self._session = self._session, None
@@ -170,10 +214,11 @@ class CameraWorker:
         if self._announce_tasks:
             await asyncio.wait(list(self._announce_tasks), timeout=10)
         if self._continuous_recorder:
-            await self._continuous_recorder.stop()
+            await step("continuous recorder", self._continuous_recorder.stop(), 20)
         for task in self._tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        if self._tasks:
+            await asyncio.wait(self._tasks, timeout=5)
 
     async def _run_continuous_supervised(self) -> None:
         """ContinuousRecorder.run() already guards every iteration internally,

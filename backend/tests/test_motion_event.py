@@ -264,7 +264,10 @@ def test_not_objects_only_falls_back_to_motion_alert_after_grace(monkeypatch):
 def test_ai_failure_still_alerts_plain_motion():
     h = Harness(lambda t: [], settings(), fail=True)
     _s, summary = run_session(h, 0.5)
-    assert [e[1] for e in h.emitted] == ["Motion detected on 'Front Door'"]
+    # Flagged so the user (and the fail-safe rule matching) know it wasn't checked.
+    assert [e[1] for e in h.emitted] == [
+        "Motion detected on 'Front Door' (AI unavailable - not checked for people)"
+    ]
     assert summary is not None and "Peak motion" in summary.message
 
 

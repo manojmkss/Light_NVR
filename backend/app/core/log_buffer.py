@@ -14,8 +14,24 @@ _BUFFER: deque[str] = deque(maxlen=500)
 _CRED_RE = re.compile(r"(rtsps?://)[^/@\s:]+:[^/@\s]+@")
 
 
+# Login tokens travel as ?token= on <img>/<video> URLs (they can't send a
+# header); never let one land in a log.
+_TOKEN_RE = re.compile(r"([?&](?:token|sig)=)[^&\s\"']+")
+
+
 def scrub_credentials(text: str) -> str:
-    return _CRED_RE.sub(r"\1***:***@", text)
+    return _TOKEN_RE.sub(r"\1***", _CRED_RE.sub(r"\1***:***@", text))
+
+
+class _AccessLogScrubber(logging.Filter):
+    """uvicorn's access log passes the request path as a format arg."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(scrub_credentials(a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.msg, str):
+            record.msg = scrub_credentials(record.msg)
+        return True
 
 
 class _BufferHandler(logging.Handler):
@@ -39,6 +55,7 @@ def install_log_buffer() -> None:
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     )
     logging.getLogger().addHandler(handler)
+    logging.getLogger("uvicorn.access").addFilter(_AccessLogScrubber())
 
 
 def get_recent_logs(limit: int = 200) -> list[str]:

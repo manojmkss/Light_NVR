@@ -70,6 +70,7 @@ class InferenceScheduler:
         self._latency = 0.0  # EWMA of run time, seconds
         self.stats: dict[int, CameraStats] = {}
         self._active_cameras: dict[int, float] = {}
+        self._last_fail_log: dict[int, float] = {}
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -189,7 +190,13 @@ class InferenceScheduler:
                     req.future.set_result(result)
             except Exception as exc:
                 st.failed += 1
-                logger.warning("AI: inference failed for camera %s (%s)", req.camera_id, exc)
+                # Rate-limited: a missing model fails every tick on every
+                # camera, and that must not flood the log.
+                now = time.monotonic()
+                if now - self._last_fail_log.get(req.camera_id, -1e9) > 60:
+                    self._last_fail_log[req.camera_id] = now
+                    logger.warning("AI: inference failed for camera %s (%s)%s", req.camera_id, exc,
+                                   f" - {st.failed} failures so far" if st.failed > 1 else "")
                 if not req.future.done():
                     req.future.set_result(None)
             finally:

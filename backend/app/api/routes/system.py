@@ -45,6 +45,12 @@ from app.services.storage_manager import storage_manager
 from app.services.telegram import send_telegram_message
 from app.services.whatsapp import send_whatsapp_message
 
+def request_app_version() -> str:
+    from app.main import app
+
+    return app.version
+
+
 router = APIRouter(prefix="/api/system", tags=["system"])
 
 _start_time = time.monotonic()
@@ -94,6 +100,12 @@ async def list_events(
     stmt = stmt.offset(offset).limit(min(limit, 200))
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+@router.get("/health")
+async def camera_health(_: User = Depends(get_current_user)):
+    """Per-camera liveness as seen by the self-healing supervisor."""
+    return supervisor.health()
 
 
 @router.get("/events/{event_id}", response_model=EventOut)
@@ -338,7 +350,7 @@ async def download_diagnostics(db: AsyncSession = Depends(get_db), _: User = Dep
 
     bundle = {
         "generated_at": dt.now(tz.utc).isoformat(),
-        "app_version": "0.1.0",
+        "app_version": request_app_version(),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "uptime_seconds": round(time.monotonic() - _start_time),
@@ -349,6 +361,7 @@ async def download_diagnostics(db: AsyncSession = Depends(get_db), _: User = Dep
             "ntp_server": settings_row.ntp_server if settings_row else "",
         },
         "active_workers": len(supervisor.get_active_camera_ids()),
+        "camera_health": supervisor.health(),
         "cameras": cameras,
         "recent_events": events,
         "recent_logs": get_recent_logs(300),

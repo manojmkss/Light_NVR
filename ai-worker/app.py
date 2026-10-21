@@ -20,9 +20,11 @@ API (all coordinates normalised 0..1 against the frame):
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
+import threading
 import time
 
 import cv2
@@ -50,9 +52,42 @@ _faces = None
 _latency: dict[str, float] = {}
 _lock = asyncio.Lock()
 
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+# A single inference taking longer than this means the runtime/driver is hung
+# (a GPU reset, a deadlock): exit so Docker's restart policy brings a fresh
+# worker, instead of every later request queueing behind it forever.
+HUNG_INFERENCE_SECONDS = float(os.environ.get("AI_WORKER_HUNG_SECONDS", "120"))
+_inflight: dict[int, float] = {}
+_inflight_lock = threading.Lock()
+
+
+def _watchdog() -> None:
+    while True:
+        time.sleep(10)
+        with _inflight_lock:
+            oldest = min(_inflight.values(), default=None)
+        if oldest is not None and time.monotonic() - oldest > HUNG_INFERENCE_SECONDS:
+            logger.critical("Inference stuck for over %ss - restarting the worker", int(HUNG_INFERENCE_SECONDS))
+            os._exit(75)
+
+
+threading.Thread(target=_watchdog, name="watchdog", daemon=True).start()
+
+
+def _tracked(fn, *args):
+    """Run a blocking model call, registered with the hang watchdog."""
+    key = threading.get_ident()
+    with _inflight_lock:
+        _inflight[key] = time.monotonic()
+    try:
+        return fn(*args)
+    finally:
+        with _inflight_lock:
+            _inflight.pop(key, None)
+
 
 def require_key(x_api_key: str | None = Header(default=None)) -> None:
-    if API_KEY and x_api_key != API_KEY:
+    if API_KEY and not hmac.compare_digest((x_api_key or "").encode(), API_KEY.encode()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing X-API-Key")
 
 
@@ -95,7 +130,9 @@ def _slots() -> int:
 
 
 async def _decode(image: UploadFile) -> np.ndarray:
-    raw = await image.read()
+    raw = await image.read(MAX_IMAGE_BYTES + 1)
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image too large")
     if not raw:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty image")
     img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
@@ -136,7 +173,7 @@ async def detect(image: UploadFile = File(...), min_confidence: float = Form(def
     img = await _decode(image)
     name = model or DEFAULT_MODEL
     try:
-        dets, took = await run_in_threadpool(_run_detect, img, name, min_confidence)
+        dets, took = await run_in_threadpool(_tracked, _run_detect, img, name, min_confidence)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return {"detections": dets, "took_ms": int(took * 1000), "device": device_label(_provider()), "model": name}
@@ -154,7 +191,7 @@ async def faces(image: UploadFile = File(...), boxes: str = Form(default=""), mi
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Bad boxes: {exc}") from exc
-    found = await run_in_threadpool(engine.find, img, person_boxes, min_face)
+    found = await run_in_threadpool(_tracked, engine.find, img, person_boxes, min_face)
     return {"faces": [f.to_dict() for f in found]}
 
 

@@ -53,6 +53,13 @@ async def get_current_user_flexible(
     return await _resolve_user(token, db)
 
 
+def require_admin_flexible(user: User = Depends(get_current_user_flexible)) -> User:
+    """Admin-only, for <img> URLs that carry the token as ?token=."""
+    if user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
+    return user
+
+
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")

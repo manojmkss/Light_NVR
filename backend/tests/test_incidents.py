@@ -147,3 +147,14 @@ def test_reaching_a_private_area_alerts_again():
 
     same, alert_b = run(go())
     assert same and alert_b
+
+
+def test_visit_whose_camera_never_reported_its_end_is_closed_eventually():
+    async def go():
+        m, clock, _ = manager()
+        a, ma, _ = await m.join(1, "Gate", None)  # never leaves (worker killed mid-event)
+        clock.t += inc_mod.MAX_INCIDENT + inc_mod.IDLE_CLOSE + 1
+        return await m.sweep(), m.open
+
+    closed, still_open = run(go())
+    assert len(closed) == 1 and still_open == []

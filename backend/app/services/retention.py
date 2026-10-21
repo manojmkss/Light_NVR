@@ -39,13 +39,23 @@ EVENT_RETENTION_DAYS = 90
 PLAYBACK_COPY_KEEP_MINUTES = 60
 
 
-async def delete_recording_files(recording: Recording) -> None:
-    for path in (recording.file_path, recording.thumbnail_path, recording.playback_path):
+def _remove_files_sync(paths: list[str]) -> None:
+    for path in paths:
         if path and os.path.exists(path):
             try:
                 os.remove(path)
             except OSError:
                 logger.warning("Could not remove file %s", path)
+
+
+async def delete_recording_files(recording: Recording) -> None:
+    # In a thread with a time limit: recordings live on a NAS, and a hung
+    # mount would otherwise freeze the whole event loop on os.remove().
+    paths = [recording.file_path, recording.thumbnail_path, recording.playback_path]
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_remove_files_sync, paths), timeout=60)
+    except asyncio.TimeoutError:
+        logger.error("Deleting %s timed out - storage unresponsive", recording.file_path)
 
 
 def _recording_window_end(recording: Recording) -> datetime:
@@ -156,13 +166,12 @@ async def _prune_stale_playback_copies() -> None:
         stale = result.scalars().all()
         if not stale:
             return
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_remove_files_sync, [r.playback_path for r in stale]), timeout=120)
+        except asyncio.TimeoutError:
+            logger.error("Pruning playback copies timed out - storage unresponsive")
+            return
         for rec in stale:
-            path = rec.playback_path
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    logger.warning("Could not remove stale playback copy %s", path)
             rec.playback_path = None
         await db.commit()
         logger.info(

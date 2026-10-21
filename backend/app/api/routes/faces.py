@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user_flexible, require_admin
+from app.core.deps import require_admin, require_admin_flexible
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.ai_settings import AISettings
 from app.models.detection import Detection
@@ -29,6 +29,7 @@ from app.services.faces import face_service, threshold_for
 router = APIRouter(prefix="/api/faces", tags=["faces"])
 
 CATEGORIES = ("household", "staff", "visitor", "watchlist")
+MAX_PHOTO_BYTES = 15 * 1024 * 1024
 
 
 class PersonIn(BaseModel):
@@ -201,7 +202,8 @@ async def list_samples(person_id: int | None = None, unassigned: bool = False, l
 
 
 @router.get("/samples/{sample_id}/crop.jpg")
-async def sample_crop(sample_id: int, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user_flexible)):
+async def sample_crop(sample_id: int, db: AsyncSession = Depends(get_db), _: User = Depends(require_admin_flexible)):
+    # Admin-only like the rest of face data: viewers never see face crops.
     r = await db.get(FaceSample, sample_id)
     if r is None or not r.crop_path or not os.path.exists(r.crop_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No crop")
@@ -244,7 +246,10 @@ async def upload_photos(person_id: int, files: list[UploadFile] = File(...), db:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
     results = []
     for f in files[:10]:
-        raw = await f.read()
+        raw = await f.read(MAX_PHOTO_BYTES + 1)
+        if len(raw) > MAX_PHOTO_BYTES:
+            results.append({"file": f.filename, "ok": False, "reason": "file larger than 15 MB"})
+            continue
         img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR) if raw else None
         if img is None:
             results.append({"file": f.filename, "ok": False, "reason": "not an image"})

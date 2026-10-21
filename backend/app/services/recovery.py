@@ -24,19 +24,27 @@ async def cleanup_orphaned_files(recordings_root: str) -> None:
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(Recording.file_path, Recording.thumbnail_path).where(Recording.storage_tier == "cache")
+            select(Recording.file_path, Recording.thumbnail_path, Recording.playback_path)
+            .where(Recording.storage_tier == "cache")
         )
         rows = result.all()
 
     known_paths: set[str] = set()
-    for file_path, thumbnail_path in rows:
+    for file_path, thumbnail_path, playback_path in rows:
         known_paths.add(file_path)
         if thumbnail_path:
             known_paths.add(thumbnail_path)
+        if playback_path:
+            # The H.264 playback copy (.sub.mp4) of an H.265 recording.
+            known_paths.add(playback_path)
 
     removed = 0
     removed_bytes = 0
     for camera_dir in os.listdir(recordings_root):
+        # Only per-camera recording folders ("1", "2"...). The cache also holds
+        # faces/, events/, detections/ etc. - never recordings, never orphans.
+        if not camera_dir.isdigit():
+            continue
         full_dir = os.path.join(recordings_root, camera_dir)
         if not os.path.isdir(full_dir):
             continue

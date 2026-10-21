@@ -23,5 +23,12 @@ async def generate_thumbnail(video_path: str, at_seconds: float = 0.5) -> str | 
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
     )
-    await proc.wait()
+    try:
+        # Bounded: a corrupt file can make ffmpeg spin, and saving the
+        # recording (and freeing its buffer segments) waits on this.
+        await asyncio.wait_for(proc.wait(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return None
     return thumb_path if os.path.exists(thumb_path) else None

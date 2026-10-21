@@ -53,8 +53,15 @@ def matches(rule, event_type: str, camera_id: int | None, mode: str, payload: di
         return False
     if rule.kinds and event_type not in rule.kinds:
         return False
-    if not _match_list(rule.objects, payload.get("objects")):
-        return False
+    # Fail safe: when the AI couldn't check this event, "is it a person?" is
+    # unknown, not "no" - a rule like "Away: people are urgent" must still fire.
+    # (Only towards alerting: a quiet rule never silences an unchecked event.)
+    if rule.objects:
+        if payload.get("ai_failed"):
+            if rule.action == "silent":
+                return False
+        elif not _match_list(rule.objects, payload.get("objects")):
+            return False
     if not _match_list(rule.zones, payload.get("zones")):
         return False
     if rule.identities:

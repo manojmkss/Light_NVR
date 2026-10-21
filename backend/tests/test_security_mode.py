@@ -138,3 +138,12 @@ def test_presets_are_well_formed_and_household_preset_is_filtered():
         assert len(p) == 6
     household = [p for p in PRESETS if "household" in p[0]]
     assert household and household[0][5] == ["household"]
+
+
+def test_rules_fail_safe_when_ai_could_not_check():
+    rules = [rule(modes=["away"], objects=["person"], action="notify_high")]
+    assert decide_with(rules, "motion", 1, "away", {"objects": []}).action == "notify"
+    assert decide_with(rules, "motion", 1, "away", {"objects": [], "ai_failed": True}).action == "notify_high"
+
+    quiet = [rule(modes=["home"], objects=["car"], action="silent")]
+    assert decide_with(quiet, "motion", 1, "home", {"objects": [], "ai_failed": True}).action == "notify"

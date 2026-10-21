@@ -1,5 +1,13 @@
+import asyncio
+import logging
+
 from app.db.session import AsyncSessionLocal
 from app.models.event import Event
+
+logger = logging.getLogger(__name__)
+
+# Alert deliveries in flight (strong references; asyncio only keeps weak ones).
+_deliveries: set[asyncio.Task] = set()
 
 
 async def emit_event(
@@ -12,9 +20,11 @@ async def emit_event(
     incident_id: int | None = None,
     notify: bool = True,
 ) -> Event:
-    """Record an event and (unless notify=False) run it through alerting.
-    notify=False is for events that are part of a visit another camera
-    already alerted about: stored and shown, but not sent again."""
+    """Record an event and (unless notify=False) send its alerts.
+
+    Delivery runs in the background: a slow mail server or a Telegram outage
+    must never hold up the caller - often a camera's AI loop or recorder,
+    which would otherwise stop watching while an email times out."""
     async with AsyncSessionLocal() as db:
         event = Event(
             camera_id=camera_id, type=event_type, message=message, snapshot_path=snapshot_path,
@@ -25,7 +35,24 @@ async def emit_event(
         await db.refresh(event)
 
     if notify:
-        from app.services.alerts import maybe_send_alert
-
-        await maybe_send_alert(event)
+        task = asyncio.create_task(_deliver(event))
+        _deliveries.add(task)
+        task.add_done_callback(_deliveries.discard)
     return event
+
+
+async def _deliver(event: Event) -> None:
+    from app.services.alerts import maybe_send_alert
+
+    try:
+        await asyncio.wait_for(maybe_send_alert(event), timeout=180)
+    except asyncio.TimeoutError:
+        logger.warning("Alert delivery for event %s timed out", event.id)
+    except Exception:
+        logger.exception("Alert delivery for event %s failed", event.id)
+
+
+async def flush_deliveries(timeout: float = 10.0) -> None:
+    """On shutdown: give in-flight alerts a moment to go out."""
+    if _deliveries:
+        await asyncio.wait(list(_deliveries), timeout=timeout)

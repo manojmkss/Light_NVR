@@ -126,4 +126,4 @@ async def _write_and_restore(contents: bytes) -> None:
 
 @router.post("/optimize", response_model=OptimizeResult)
 async def trigger_optimize(_: User = Depends(require_admin)):
-    return await optimize_database()
+    return await optimize_database(force=True)  # the user asked for it explicitly

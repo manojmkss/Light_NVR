@@ -67,6 +67,11 @@ class StreamViewer:
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        # Last sign of life from the decode thread (a frame, or a reconnect
+        # attempt) - the supervisor restarts a viewer whose thread died or
+        # stopped making progress.
+        self.last_activity = time.monotonic()
+        self.last_frame_at = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
@@ -100,6 +105,10 @@ class StreamViewer:
             self._detector.revive(now, now + seconds)
 
     @property
+    def thread_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    @property
     def motion_active(self) -> bool:
         return bool(self._detector and self._detector.active)
 
@@ -114,8 +123,10 @@ class StreamViewer:
         # degrades to a reconnect retry instead.
         backoff = 2
         while not self._stop_event.is_set():
+            self.last_activity = time.monotonic()
             try:
                 cap = cv2.VideoCapture(self.stream_url)
+                self.last_activity = time.monotonic()
                 if not cap.isOpened():
                     logger.warning("Could not open stream for camera %s", self.camera_id)
                     cap.release()
@@ -126,7 +137,7 @@ class StreamViewer:
                         "Could not connect to the live stream - camera unreachable, or the "
                         "stream URL/credentials are wrong (try Re-detect)",
                     ))
-                    time.sleep(backoff)
+                    self._stop_event.wait(backoff)
                     backoff = min(backoff * 2, 60)
                     continue
 
@@ -140,11 +151,11 @@ class StreamViewer:
                     self._schedule(self.on_motion_stop())
                 if not self._stop_event.is_set():
                     self._schedule(mark_offline(self.camera_id, "Live stream dropped - reconnecting"))
-                    time.sleep(backoff)
+                    self._stop_event.wait(backoff)
             except Exception:
                 logger.exception("Unexpected error in stream viewer for camera %s", self.camera_id)
                 self._schedule(mark_offline(self.camera_id))
-                time.sleep(backoff)
+                self._stop_event.wait(backoff)
                 backoff = min(backoff * 2, 60)
 
     def _decode_loop(self, cap: "cv2.VideoCapture") -> None:
@@ -222,6 +233,7 @@ class StreamViewer:
                     self._schedule(mark_online(self.camera_id))
 
                 frame_bus.set_raw(self.camera_id, frame, captured_at)
+                self.last_activity = self.last_frame_at = time.monotonic()
 
                 if self._detector is not None:
                     sample = self._detector.process(frame, captured_at)

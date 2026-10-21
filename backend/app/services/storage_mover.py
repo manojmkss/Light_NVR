@@ -15,53 +15,63 @@ CHECK_INTERVAL_SECONDS = 10
 BATCH_SIZE = 20
 
 
-async def _copy_pair(video_src: str, dest_dir: str) -> str | None:
+def _copy_verified_sync(src: str, dest_dir: str) -> str | None:
+    """Copy one file into dest_dir and verify its size. Runs in a thread:
+    every call here touches the (possibly network) destination, and a hung
+    NAS mount blocks filesystem calls indefinitely - on the event loop that
+    would freeze recording, live view and the web UI together."""
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, os.path.basename(src))
+    try:
+        shutil.copy2(src, dest)
+        if os.path.getsize(dest) != os.path.getsize(src):
+            logger.warning("Size mismatch copying %s -> %s, discarding partial copy", src, dest)
+            _silent_remove(dest)
+            return None
+    except OSError as exc:
+        logger.warning("Failed to copy %s -> %s: %s", src, dest, exc)
+        _silent_remove(dest)
+        return None
+    return dest
+
+
+async def _copy_with_timeout(src: str, dest_dir: str) -> str | None:
+    try:
+        size = os.path.getsize(src)
+    except OSError:
+        return None
+    # Generous: even a slow NAS moves 2 MB/s. Past this the destination is
+    # treated as hung; the (unkillable) thread is abandoned and the cache
+    # original stays - nothing is deleted until a copy is verified.
+    timeout = 120 + size / (2 * 1024 * 1024)
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_copy_verified_sync, src, dest_dir), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.error("Copy of %s to %s timed out after %ds - storage unresponsive", src, dest_dir, int(timeout))
+        return None
+
+
+async def _copy_pair(video_src: str, dest_dir: str) -> tuple[str, str | None] | None:
     """Copies video + sibling thumbnail (same basename, .jpg) to dest_dir.
     Copy-then-verify, never move-in-place - the caller only deletes the cache
     originals after this succeeds, so a crash mid-copy can't lose the only
     copy of a recording.
     """
-    os.makedirs(dest_dir, exist_ok=True)
-    dest_video = os.path.join(dest_dir, os.path.basename(video_src))
-
-    try:
-        await asyncio.to_thread(shutil.copy2, video_src, dest_video)
-    except OSError as exc:
-        logger.warning("Failed to copy %s -> %s: %s", video_src, dest_video, exc)
-        _silent_remove(dest_video)
+    dest_video = await _copy_with_timeout(video_src, dest_dir)
+    if dest_video is None:
         return None
-
-    if os.path.getsize(dest_video) != os.path.getsize(video_src):
-        logger.warning("Size mismatch copying %s -> %s, discarding partial copy", video_src, dest_video)
-        _silent_remove(dest_video)
-        return None
-
+    dest_thumb = None
     thumb_src = os.path.splitext(video_src)[0] + ".jpg"
     if os.path.exists(thumb_src):
-        dest_thumb = os.path.splitext(dest_video)[0] + ".jpg"
-        try:
-            await asyncio.to_thread(shutil.copy2, thumb_src, dest_thumb)
-        except OSError:
-            pass  # thumbnail is non-critical; the recording itself is already safe
-
-    return dest_video
+        dest_thumb = await _copy_with_timeout(thumb_src, dest_dir)  # non-critical
+    return dest_video, dest_thumb
 
 
 async def _copy_single(src: str, dest_dir: str) -> str | None:
     """Copy one extra sibling file (e.g. the H.264 playback copy) to dest_dir,
     verifying size. Non-critical: a failure just means that convenience file
     doesn't make the move, never the recording itself."""
-    os.makedirs(dest_dir, exist_ok=True)
-    dest = os.path.join(dest_dir, os.path.basename(src))
-    try:
-        await asyncio.to_thread(shutil.copy2, src, dest)
-    except OSError:
-        _silent_remove(dest)
-        return None
-    if os.path.getsize(dest) != os.path.getsize(src):
-        _silent_remove(dest)
-        return None
-    return dest
+    return await _copy_with_timeout(src, dest_dir)
 
 
 def _silent_remove(path: str) -> None:
@@ -95,12 +105,11 @@ async def _migrate_one(recording_id: int) -> None:
         return  # neither destination reachable right now; retry next pass
 
     dest_dir = f"{base_dir}/{camera_id}"
-    new_video_path = await _copy_pair(video_src, dest_dir)
-    if new_video_path is None:
+    copied = await _copy_pair(video_src, dest_dir)
+    if copied is None:
         return  # copy failed; retry next pass
-
-    new_thumb_path = os.path.splitext(new_video_path)[0] + ".jpg"
-    if not (thumb_src and os.path.exists(new_thumb_path)):
+    new_video_path, new_thumb_path = copied
+    if not thumb_src:
         new_thumb_path = None
 
     # Best-effort move of the H.264 playback copy alongside its recording; if it
@@ -112,12 +121,14 @@ async def _migrate_one(recording_id: int) -> None:
     async with AsyncSessionLocal() as db:
         recording = await db.get(Recording, recording_id)
         if recording is None:
-            # Deleted while we were copying it - clean up the copies we made.
-            _silent_remove(new_video_path)
-            if new_thumb_path:
-                _silent_remove(new_thumb_path)
-            if new_playback_path:
-                _silent_remove(new_playback_path)
+            # Deleted while we were copying it - clean up the copies we made
+            # (in a thread: these are on the destination storage).
+            for path in (new_video_path, new_thumb_path, new_playback_path):
+                if path:
+                    try:
+                        await asyncio.wait_for(asyncio.to_thread(_silent_remove, path), timeout=30)
+                    except asyncio.TimeoutError:
+                        pass
             return
         recording.file_path = new_video_path
         recording.thumbnail_path = new_thumb_path

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 from app.db.session import AsyncSessionLocal
@@ -30,6 +31,8 @@ class AIPipeline:
         self._backend: InferenceBackend | None = None
         self._config_key: tuple | None = None
         self._lock = asyncio.Lock()
+        self._fail_since: float | None = None
+        self._outage_reported = False
 
     @staticmethod
     def _key(s: AISettings) -> tuple:
@@ -89,10 +92,47 @@ class AIPipeline:
             return await backend.detect_frame(frame, floor)
 
         objects = await scheduler.submit(camera_id, priority, run)
-        if objects is None or objects is SKIPPED:
+        if objects is SKIPPED:
             return objects
+        await self._track_health(objects is not None, settings)
+        if objects is None:
+            return None
         wanted = self._wanted(settings)
         return [o for o in objects if not wanted or o.label.lower() in wanted]
+
+    OUTAGE_AFTER = 120.0  # failing this long, continuously, = tell the user
+
+    async def _track_health(self, ok: bool, settings) -> None:
+        """One event when AI detection stops working (alerts then fall back to
+        plain motion, and rules treat events as possibly a person), and one
+        when it's back - not one per failed check."""
+        now = time.monotonic()
+        if ok:
+            self._fail_since = None
+            if self._outage_reported:
+                self._outage_reported = False
+                await self._notify_outage("AI object detection is working again.")
+            return
+        if self._fail_since is None:
+            self._fail_since = now
+        elif not self._outage_reported and now - self._fail_since > self.OUTAGE_AFTER:
+            self._outage_reported = True
+            where = (f"the AI service at {settings.remote_url}" if settings.backend == "remote"
+                     else "the AI model on this NVR")
+            await self._notify_outage(
+                f"AI object detection has not been working for {int(self.OUTAGE_AFTER // 60)} minutes ({where}). "
+                "Motion is still recorded and alerted, but not checked for people/vehicles - "
+                "check Settings -> AI -> 'Check it works'."
+            )
+
+    @staticmethod
+    async def _notify_outage(message: str) -> None:
+        try:
+            from app.services.events import emit_event
+
+            await emit_event(None, "system", message)
+        except Exception:
+            logger.exception("Could not record AI health change")
 
     async def store_detections(
         self,

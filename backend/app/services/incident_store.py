@@ -112,6 +112,20 @@ async def incident_loop() -> None:
     incident_manager._persist = persist
     incident_manager._emit = emit_incident
     try:
+        # Open visits live in memory; any still "open" in the database were
+        # cut off by a restart. Close them so they don't show as in progress.
+        from sqlalchemy import update
+
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(Incident).where(Incident.status == "open").values(
+                    status="closed", summary="Visit interrupted by a restart of the NVR."
+                )
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("Could not close visits interrupted by a restart")
+    try:
         await reload_links()
     except Exception:
         logger.exception("Could not load area links")

@@ -237,6 +237,10 @@ class ContinuousRecorder:
         # In-flight segment finalizations (remux-to-seekable + DB register),
         # run in the background so the next segment starts with no gap.
         self._finalize_tasks: set[asyncio.Task] = set()
+        # When the last segment finished with footage (monotonic), for the
+        # supervisor's "recording stalled" check.
+        self.started_at = time.monotonic()
+        self.last_segment_at = 0.0
 
     async def _resolve_audio_mode(self) -> str:
         if self._audio_mode is None:
@@ -344,6 +348,7 @@ class ContinuousRecorder:
             return backoff
 
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            self.last_segment_at = time.monotonic()
             await mark_online(self.camera_id)
             # Remux-to-seekable + register runs in the background: a synchronous
             # remux here would insert a multi-second gap into continuous

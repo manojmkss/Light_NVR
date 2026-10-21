@@ -15,6 +15,7 @@ services:
         BASE_IMAGE: ${AI_WORKER_BASE_IMAGE:-python:3.11-slim}
     container_name: lightnvr-ai-worker
     restart: unless-stopped
+    init: true
     cpus: ${AI_CPUS:-2}
     mem_limit: ${AI_MEM_LIMIT:-1536m}
     environment:

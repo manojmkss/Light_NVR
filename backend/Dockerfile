@@ -38,4 +38,7 @@ RUN mkdir -p /data /storage/cache /mnt/primary /mnt/backup /certs/acme-webroot /
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --timeout-graceful-shutdown: on stop, open live-view (MJPEG) connections never
+# finish by themselves; without a cap uvicorn waits on them until Docker kills
+# the process, and the shutdown that saves open clips never runs.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]

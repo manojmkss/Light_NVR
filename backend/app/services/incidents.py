@@ -221,9 +221,17 @@ class IncidentManager:
         now = self._clock()
         closed = []
         for inc in list(self.open):
-            if inc.active:
+            overdue = now - inc.started > MAX_INCIDENT + IDLE_CLOSE
+            if inc.active and not overdue:
                 continue
-            if now - inc.last_end < IDLE_CLOSE and now - inc.started < MAX_INCIDENT:
+            if overdue:
+                # A member that never reported its end (its camera worker was
+                # restarted mid-event): close it here rather than keep the
+                # visit - and its memory - open forever.
+                for m in inc.members:
+                    if m.ended is None:
+                        m.ended = now
+            elif now - inc.last_end < IDLE_CLOSE and now - inc.started < MAX_INCIDENT:
                 continue
             self.open.remove(inc)
             closed.append(inc)

@@ -179,3 +179,23 @@ def test_stop_cleans_buffer_dir(camera_source, cache):
 
     directory = asyncio.run(scenario())
     assert not os.path.exists(directory)
+
+
+def test_stalled_ffmpeg_is_killed_and_restarted(tmp_path, cache, monkeypatch):
+    """An input that keeps ffmpeg alive but never delivers video (a FIFO with
+    no writer) must not leave the buffer silently empty forever."""
+    fifo = tmp_path / "silent.ts"
+    os.mkfifo(fifo)
+    monkeypatch.setattr(segment_buffer.SegmentBuffer, "STALL_SECONDS", 1.5)
+
+    async def scenario():
+        buf = segment_buffer.SegmentBuffer(1, str(fifo), None)
+        task = asyncio.create_task(buf.run())
+        await asyncio.sleep(6)
+        runs = buf._run_no
+        await buf.stop()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return runs
+
+    assert asyncio.run(scenario()) >= 2  # killed after the stall, then retried

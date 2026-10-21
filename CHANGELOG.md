@@ -6,6 +6,49 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-21
+
+Stability and security: the NVR now heals itself when something hangs, not
+only when something crashes.
+
+### Added
+- **Freeze watchdog.** If the server stops responding for 90s (for example a
+  hung network-storage call), it logs where it was stuck and restarts itself;
+  Docker brings it straight back. It also restarts cleanly before running out
+  of memory, instead of being killed at random by the system.
+- **Self-healing cameras.** Every 30s each camera is checked: live-stream
+  thread alive and making progress, recordings and the motion buffer producing
+  while the camera is delivering pictures. A stuck camera is restarted on its
+  own (with increasing delays if it keeps failing) and you get an event saying
+  why. Per-camera health at `GET /api/system/health` and in diagnostics.
+- The motion recording buffer restarts ffmpeg when it stays connected but
+  stops sending video.
+- The AI worker restarts itself if an inference hangs (GPU/driver lock-up).
+
+### Changed
+- Alerts are sent in the background: a slow mail server or Telegram outage no
+  longer holds up a camera's AI or recording.
+- Copies to and deletes on network storage run off the main thread with time
+  limits, so an unresponsive NAS can't freeze the system.
+- On stop, open motion clips and summaries get time to save (45s grace;
+  live-view connections no longer hold the shutdown back), and an init process
+  reaps stray ffmpeg processes.
+- One camera failing to start no longer stops the others (or the NVR) from
+  starting; camera edits can't race each other into two workers.
+- Database maintenance waits 10 minutes after boot and only runs the
+  write-blocking VACUUM when there's real space to reclaim; the write-ahead
+  log is checkpointed daily.
+- AI monitoring survives a failing check instead of stopping for the rest of
+  the event; repeated AI failures are logged once a minute, not every check.
+- Thumbnail generation has a time limit; visits whose camera never reported an
+  end are closed after their 1-hour cap.
+
+### Security
+- Login tokens in URLs (`?token=`) and signed links are masked in all logs,
+  including Docker's access log.
+- Face crops are admin-only; face photo uploads (15 MB) and AI worker images
+  (20 MB) are size-limited; the AI worker compares its API key in constant time.
+
 ## [0.4.0] - 2026-10-20
 
 The home-security release: one visit is one event (even when someone waits at
@@ -334,7 +377,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/manojmkss/Light_NVR/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/manojmkss/Light_NVR/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/manojmkss/Light_NVR/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/manojmkss/Light_NVR/compare/v0.2.5...v0.3.0

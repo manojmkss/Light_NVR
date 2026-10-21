@@ -639,6 +639,7 @@ class MotionEventSession:
         self._last_frame: tuple[np.ndarray, float] | None = None
         self._task: asyncio.Task | None = None
         self.skip_description = False  # set on shutdown: no slow VLM call
+        self._tick_errors = 0
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -714,7 +715,8 @@ class MotionEventSession:
                     # standing still) ends the moment someone starts moving.
                     await asyncio.sleep(min(next_at - now, self.interval))
                     now = time.monotonic()
-                    if slowed and now < next_at and self._motion_active()                             and self._next_interval() < self.STILL_INTERVAL:
+                    if (slowed and now < next_at and self._motion_active()
+                            and self._next_interval() < self.STILL_INTERVAL):
                         next_at = now
                         break
                 interval = self._next_interval()
@@ -727,7 +729,18 @@ class MotionEventSession:
                 active = self._motion_active()
                 if not active and (not self.ai_on or self.ended_wall is None):
                     continue
-                await self._tick(in_grace=not active)
+                try:
+                    await self._tick(in_grace=not active)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # One bad tick (a corrupt frame, a transient bug) must not
+                    # end AI monitoring for the rest of the event.
+                    self._tick_errors += 1
+                    if self._tick_errors <= 3 or self._tick_errors % 100 == 0:
+                        logger.exception("Motion event tick failed for camera %s (%d so far)",
+                                         self.camera_id, self._tick_errors)
+                    await asyncio.sleep(1.0)
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -758,7 +771,7 @@ class MotionEventSession:
             self.ai_failed = True
             self._presence_hold(self.PRESENCE_HOLD_WITHOUT_AI)
             if not self.alerted and not in_grace:
-                await self._plain_alert()
+                await self._plain_alert(ai_failed=True)
             return
         if not self.ai_worked:
             self._presence_hold(self.PRESENCE_HOLD_WITH_AI)
@@ -884,10 +897,16 @@ class MotionEventSession:
         what = " + ".join(plural(lbl, n) if n > 1 else lbl.capitalize() for lbl, n in sorted(totals.items()))
         await self._send_alert(f"{what} detected on '{self.camera_name}'", snap, self._payload(visible))
 
-    async def _plain_alert(self) -> None:
+    async def _plain_alert(self, ai_failed: bool = False) -> None:
         item = self._get_frame(self.camera_id)
         snap = await asyncio.to_thread(_jpeg, item[0]) if item else None
-        await self._send_alert(f"Motion detected on '{self.camera_name}'", snap)
+        # ai_failed: the AI *should* have looked but couldn't - alert rules
+        # then treat "which object?" as unknown rather than "nothing".
+        payload = {"objects": [], "ai_failed": True} if ai_failed else None
+        message = f"Motion detected on '{self.camera_name}'"
+        if ai_failed:
+            message += " (AI unavailable - not checked for people)"
+        await self._send_alert(message, snap, payload)
 
     async def _send_alert(self, message: str, snapshot: bytes | None, payload: dict | None = None) -> None:
         self.alerted = True

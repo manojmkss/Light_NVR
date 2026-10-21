@@ -12,7 +12,13 @@ logger = logging.getLogger(__name__)
 OPTIMIZE_INTERVAL_SECONDS = 86400  # daily - this app's DB is small enough that more frequent runs add nothing
 
 
-async def optimize_database() -> OptimizeResult:
+async def _worth_vacuuming(conn) -> bool:
+    free = (await conn.exec_driver_sql("PRAGMA freelist_count")).scalar() or 0
+    total = (await conn.exec_driver_sql("PRAGMA page_count")).scalar() or 1
+    return free / total > 0.2
+
+
+async def optimize_database(force: bool = False) -> OptimizeResult:
     """VACUUM reclaims space left behind by retention's regular deletes (this
     app's workload is unusual for SQLite in that it deletes rows constantly,
     so free pages would otherwise accumulate indefinitely); PRAGMA optimize
@@ -23,7 +29,13 @@ async def optimize_database() -> OptimizeResult:
     try:
         async with engine.connect() as conn:
             await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await conn.exec_driver_sql("VACUUM")
+            if force or await _worth_vacuuming(conn):
+                # VACUUM locks out every writer for its whole run (recordings
+                # and events then wait on busy_timeout), so it only runs when
+                # there's real space to give back.
+                await conn.exec_driver_sql("VACUUM")
+            # Always cheap: keep the WAL file from growing without bound.
+            await conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
             await conn.exec_driver_sql("PRAGMA optimize")
     except Exception as exc:
         logger.exception("Database optimization failed")
@@ -40,6 +52,8 @@ async def optimize_database() -> OptimizeResult:
 
 
 async def db_maintenance_loop() -> None:
+    # Not at boot: cameras are starting and writing then.
+    await asyncio.sleep(600)
     while True:
         try:
             await optimize_database()

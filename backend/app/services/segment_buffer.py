@@ -80,6 +80,8 @@ class SegmentBuffer:
 
     SEGMENT_SECONDS = 2
     PRUNE_MARGIN = 10.0
+    # No segment for this long = stalled (allows for very long camera GOPs).
+    STALL_SECONDS = 60.0
 
     def __init__(
         self,
@@ -106,6 +108,8 @@ class SegmentBuffer:
         self._new_segment = asyncio.Condition()
         self._run_no = 0
         self.running = False  # ffmpeg is up and producing segments
+        self.last_segment_at = 0.0  # monotonic; 0 = none yet
+        self.started_at = time.monotonic()
 
     # ── queries ──────────────────────────────────────────────────────────────
 
@@ -210,9 +214,19 @@ class SegmentBuffer:
         floor = self._segments[-1].end if self._segments else 0.0  # previous run's end
         try:
             while True:
-                line = await self._proc.stdout.readline()
+                try:
+                    line = await asyncio.wait_for(self._proc.stdout.readline(), timeout=self.STALL_SECONDS)
+                except asyncio.TimeoutError:
+                    # ffmpeg alive but producing nothing (a camera that keeps
+                    # the TCP session open without sending video): kill it so
+                    # the loop reconnects, rather than buffering nothing forever.
+                    logger.warning("Segment buffer (%s) for camera %s stalled for %ss - restarting ffmpeg",
+                                   self.name, self.camera_id, int(self.STALL_SECONDS))
+                    self._proc.kill()
+                    break
                 if not line:
                     break
+                self.last_segment_at = time.monotonic()
                 arrived = time.time()
                 parsed = self._parse_line(line)
                 if parsed is None:
