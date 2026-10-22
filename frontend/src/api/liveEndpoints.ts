@@ -1,4 +1,4 @@
-import { buildMediaUrl } from "./client";
+import { apiFetch, buildMediaUrl } from "./client";
 import { getLiveSegment, liveSegmentVideoUrl } from "./cameras";
 import { listRecordings } from "./recordings";
 import type { CameraStatus, LiveSegmentInfo, RecordingMode } from "./types";
@@ -14,6 +14,30 @@ export interface CameraTileEndpoints {
   listRecordings(cameraId: number, limit: number): Promise<TileRecording[]>;
   getLiveSegment(cameraId: number): Promise<LiveSegmentInfo>;
   liveSegmentVideoUrl(cameraId: number): string;
+  /** "What plays at this moment?" - answered by the NVR (times in unix seconds). */
+  resolvePlayback(cameraId: number, atSeconds: number): Promise<PlaybackAnswer>;
+  /** Which parts of the window have footage, plus the NVR's clock. */
+  timeline(cameraId: number, startSeconds: number): Promise<TimelineAnswer>;
+  snapshotVideoUrl(cameraId: number, snapshotId: string): string;
+}
+
+export interface PlaybackAnswer {
+  server_now: number;
+  at: number;
+  found: boolean;
+  kind?: "recording" | "segment";
+  recording_id?: number;
+  codec?: string | null;
+  snapshot?: string;
+  origin?: number; // wall time of the file's first frame
+  end?: number; // wall time of its last frame
+  growing?: boolean; // the segment is still being recorded
+  next_at?: number | null; // when footage resumes, if not found
+}
+
+export interface TimelineAnswer {
+  server_now: number;
+  spans: [number, number][];
 }
 
 // Narrower than the full Camera/Recording shapes - exactly what CameraTile
@@ -45,4 +69,7 @@ export const authenticatedEndpoints: CameraTileEndpoints = {
   listRecordings: (cameraId, limit) => listRecordings({ camera_id: cameraId, limit }),
   getLiveSegment: (cameraId) => getLiveSegment(cameraId),
   liveSegmentVideoUrl: (cameraId) => liveSegmentVideoUrl(cameraId),
+  resolvePlayback: (cameraId, at) => apiFetch<PlaybackAnswer>(`/cameras/${cameraId}/playback?at=${at}`),
+  timeline: (cameraId, start) => apiFetch<TimelineAnswer>(`/cameras/${cameraId}/timeline?start=${start}`),
+  snapshotVideoUrl: (cameraId, snap) => buildMediaUrl(`/cameras/${cameraId}/playback/snap/${snap}.mp4`),
 };

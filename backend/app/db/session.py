@@ -42,12 +42,13 @@ async def get_db():
 
 async def init_db():
     import app.models  # noqa: F401 ensure models are registered
-    from app.db.schema_sync import ensure_indexes, sync_missing_columns
+    from app.db.schema_sync import ensure_indexes, migrate_data, sync_missing_columns
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await sync_missing_columns(conn)
         await ensure_indexes(conn)
+        await migrate_data(conn)
 
 
 async def check_integrity() -> bool:

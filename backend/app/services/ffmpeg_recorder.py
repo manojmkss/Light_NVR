@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.services.active_segment import active_segment_registry
 from app.services.clip_exporter import export_clip
@@ -155,6 +155,38 @@ async def _probe_video_codec(path: str) -> str | None:
     except Exception:
         return None
     return out.decode(errors="ignore").strip() or None
+
+
+async def probe_duration(path: str) -> float | None:
+    """Seconds of media in a file (works on a still-growing fragmented MP4:
+    it reports what has been written so far), or None."""
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        value = float(out.decode(errors="ignore").strip())
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def footage_start(wall_start: datetime, wall_end: datetime, duration: float | None) -> datetime:
+    """When a segment's first frame was really captured.
+
+    `wall_start` is taken before ffmpeg even connects to the camera, so it runs
+    early by the RTSP connect + first-keyframe wait (1-3s, sometimes much more)
+    and every seek into the segment landed that much late. ffmpeg stops right
+    after the last packet, so anchoring on the end with the file's real
+    duration is accurate; anything implausible keeps the wall-clock start.
+    """
+    if duration is None:
+        return wall_start
+    anchored = wall_end - timedelta(seconds=duration)
+    if wall_start - timedelta(seconds=5) <= anchored <= wall_end:
+        return max(anchored, wall_start)
+    return wall_start
 
 
 async def _probe_audio_codec(rtsp_url: str) -> str | None:
@@ -349,6 +381,8 @@ class ContinuousRecorder:
 
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             self.last_segment_at = time.monotonic()
+            # Still playable (from the registry) while it's being finalized.
+            active_segment_registry.close(self.camera_id, output_path, ended_at)
             await mark_online(self.camera_id)
             # Remux-to-seekable + register runs in the background: a synchronous
             # remux here would insert a multi-second gap into continuous
@@ -359,6 +393,7 @@ class ContinuousRecorder:
             task.add_done_callback(self._finalize_tasks.discard)
             return 2
 
+        active_segment_registry.clear(self.camera_id)
         stderr_tail = stderr.decode(errors="ignore")[-300:].strip()
         logger.warning("Continuous recording failed for camera %s: %s", self.camera_id, stderr_tail)
         # The ffmpeg error tail is the most specific "why" we ever get
@@ -375,11 +410,14 @@ class ContinuousRecorder:
         try:
             await _remux_to_seekable(path)
             playback_path = await _finalize_playback_copy(sub_path)
+            started_at = footage_start(started_at, ended_at, await probe_duration(path))
             await register_recording(
                 self.camera_id, path, "continuous", started_at, ended_at, playback_path=playback_path
             )
         except Exception:
             logger.exception("Failed to finalize/register segment %s for camera %s", path, self.camera_id)
+        finally:
+            active_segment_registry.finalized(self.camera_id, path)
 
     async def stop(self) -> None:
         self._stop.set()

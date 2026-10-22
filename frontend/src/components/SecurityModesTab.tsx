@@ -180,9 +180,9 @@ export function SecurityModesTab() {
               <div>
                 Who (needs face recognition){" "}
                 <Chips
-                  all={["known", "unknown", "household", "staff", "visitor", "watchlist"]}
+                  all={["known", "unknown", "household", "familiar", "stranger", "watchlist"]}
                   value={r.identities}
-                  label={(w) => ({ known: "Anyone recognised", unknown: "Unknown face", household: "Household", staff: "Regulars", visitor: "Visitors", watchlist: "Watch list" } as Record<string, string>)[w] ?? w}
+                  label={(w) => ({ known: "Anyone trusted (family/familiar)", unknown: "Unknown face or stranger", household: "Family", familiar: "Familiar", staff: "Familiar", visitor: "Familiar", stranger: "Stranger", watchlist: "Suspicious" } as Record<string, string>)[w] ?? w}
                   onChange={(v) => editRule(r, { identities: v })}
                 />
               </div>

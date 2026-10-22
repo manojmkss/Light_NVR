@@ -1,5 +1,5 @@
 import { apiFetch } from "./client";
-import type { CameraTileEndpoints, TileRecording } from "./liveEndpoints";
+import type { CameraTileEndpoints, PlaybackAnswer, TileRecording, TimelineAnswer } from "./liveEndpoints";
 import type { KioskPublicView, KioskView, LiveSegmentInfo, StreamStat } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -69,5 +69,8 @@ export function createKioskEndpoints(token: string): CameraTileEndpoints {
       publicJson<TileRecording[]>(`${base}/cameras/${cameraId}/recordings?limit=${limit}`),
     getLiveSegment: (cameraId) => publicJson<LiveSegmentInfo>(`${base}/cameras/${cameraId}/live-segment`),
     liveSegmentVideoUrl: (cameraId) => `${base}/cameras/${cameraId}/live-segment/video`,
+    resolvePlayback: (cameraId, at) => publicJson<PlaybackAnswer>(`${base}/cameras/${cameraId}/playback?at=${at}`),
+    timeline: (cameraId, start) => publicJson<TimelineAnswer>(`${base}/cameras/${cameraId}/timeline?start=${start}`),
+    snapshotVideoUrl: (cameraId, snap) => `${base}/cameras/${cameraId}/playback/snap/${snap}.mp4`,
   };
 }

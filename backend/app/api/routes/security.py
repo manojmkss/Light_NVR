@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -294,11 +295,47 @@ async def delete_area_link(link_id: int, db: AsyncSession = Depends(get_db), _: 
     await reload_links()
 
 
-@router.get("/incidents", response_model=list[IncidentOut])
-async def list_incidents(limit: int = Query(50, le=200), offset: int = 0, db: AsyncSession = Depends(get_db),
-                         _: User = Depends(get_current_user)):
-    stmt = select(Incident).order_by(Incident.started_at.desc()).offset(offset).limit(limit)
-    return (await db.execute(stmt)).scalars().all()
+class IncidentWithEvents(IncidentOut):
+    events: list[dict] = []
+
+
+@router.get("/incidents", response_model=list[IncidentWithEvents])
+async def list_incidents(
+    limit: int = Query(50, le=500),
+    offset: int = 0,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    include_events: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Visits, newest first. `start`/`end` bound when they began;
+    `include_events` adds each visit's events (oldest first) in one round trip,
+    for the Visits page's day summary."""
+    from app.schemas.system import EventOut
+
+    stmt = select(Incident).order_by(Incident.started_at.desc())
+    if start is not None:
+        stmt = stmt.where(Incident.started_at >= _naive_utc(start))
+    if end is not None:
+        stmt = stmt.where(Incident.started_at < _naive_utc(end))
+    rows = (await db.execute(stmt.offset(offset).limit(limit))).scalars().all()
+    out = [IncidentWithEvents.model_validate(r) for r in rows]
+    if include_events and rows:
+        events = (await db.execute(
+            select(Event).where(Event.incident_id.in_([r.id for r in rows])).order_by(Event.created_at)
+        )).scalars().all()
+        by_incident: dict[int, list[dict]] = {}
+        for e in events:
+            by_incident.setdefault(e.incident_id, []).append(EventOut.model_validate(e).model_dump(mode="json"))
+        for item in out:
+            item.events = by_incident.get(item.id, [])
+    return out
+
+
+def _naive_utc(dt: datetime) -> datetime:
+    # DB datetimes are naive UTC.
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
 
 
 @router.get("/incidents/{incident_id}")

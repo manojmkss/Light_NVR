@@ -14,7 +14,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_admin, require_admin_flexible
@@ -24,18 +24,24 @@ from app.models.detection import Detection
 from app.models.person import FaceSample, Person
 from app.models.user import User
 from app.schemas.common import UtcDatetime
-from app.services.faces import face_service, threshold_for
+from app.services.faces import face_service, group_faces, recognition_strength, threshold_for
 
 router = APIRouter(prefix="/api/faces", tags=["faces"])
 
-CATEGORIES = ("household", "staff", "visitor", "watchlist")
+# Trust levels (UI: Family / Familiar / Stranger / Suspicious).
+CATEGORIES = ("household", "familiar", "stranger", "watchlist")
+LEGACY_CATEGORIES = {"staff": "familiar", "visitor": "familiar"}
+NOTIFY = ("always", "away", "never")
+# Strangers and suspicious people may stay unnamed: "Stranger #3".
+AUTO_NAME = {"stranger": "Stranger", "watchlist": "Suspicious person"}
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 
 
 class PersonIn(BaseModel):
-    name: str = Field(min_length=1, max_length=128)
-    note: str | None = Field(None, max_length=256)
-    category: str = "visitor"
+    name: str = Field("", max_length=128)
+    note: str | None = Field(None, max_length=256)  # relation: "milkman", "daughter"...
+    category: str = "familiar"
+    notify: str | None = None  # always | away | never; None = derive from arrival_alert (older clients)
     arrival_alert: bool = True
     arrival_cooldown_s: int = Field(1800, ge=0, le=86400)
 
@@ -43,6 +49,10 @@ class PersonIn(BaseModel):
 class PersonOut(PersonIn):
     id: int
     samples: int = 0
+    strength: str = "weak"  # weak | good | strong
+    strength_hint: str = ""
+    cover_sample_id: int | None = None
+    last_seen: UtcDatetime | None = None
     created_at: UtcDatetime
 
 
@@ -67,9 +77,56 @@ async def _require_faces(db: AsyncSession) -> AISettings:
     return s
 
 
-def _check_category(c: str) -> None:
-    if c not in CATEGORIES:
+async def _clean(db: AsyncSession, payload: PersonIn, person_id: int | None = None) -> dict:
+    """Validates a person and fills in what the table leaves implicit."""
+    data = payload.model_dump()
+    data["category"] = LEGACY_CATEGORIES.get(data["category"], data["category"])
+    if data["category"] not in CATEGORIES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"category must be one of {CATEGORIES}")
+    notify = data.get("notify") or ("always" if data["arrival_alert"] else "never")
+    if notify not in NOTIFY:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"notify must be one of {NOTIFY}")
+    if data["category"] == "watchlist":
+        notify = "always"  # suspicious people are always urgent
+    data["notify"], data["arrival_alert"] = notify, notify != "never"
+    data["note"] = (data.get("note") or "").strip() or None
+    name = (data.get("name") or "").strip()
+    if not name:
+        prefix = AUTO_NAME.get(data["category"])
+        if prefix is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Give family and familiar people a name")
+        taken = set((await db.execute(select(Person.name).where(Person.id != (person_id or 0)))).scalars().all())
+        n = 1
+        while f"{prefix} #{n}" in taken:
+            n += 1
+        name = f"{prefix} #{n}"
+    data["name"] = name
+    return data
+
+
+async def _people_out(db: AsyncSession, people: list[Person]) -> list[PersonOut]:
+    ids = [p.id for p in people]
+    rows = (await db.execute(
+        select(FaceSample.id, FaceSample.person_id, FaceSample.quality, FaceSample.created_at, FaceSample.crop_path)
+        .where(FaceSample.person_id.in_(ids)).order_by(FaceSample.created_at)
+    )).all() if ids else []
+    by_person: dict[int, list] = {}
+    for r in rows:
+        by_person.setdefault(r.person_id, []).append(r)
+    out = []
+    for p in people:
+        samples = by_person.get(p.id, [])
+        strength, hint = recognition_strength([r.quality for r in samples])
+        with_crop = [r for r in samples if r.crop_path]
+        cover = max(with_crop, key=lambda r: r.quality).id if with_crop else None
+        captured = [r.created_at for r in samples]
+        out.append(PersonOut(
+            id=p.id, name=p.name, note=p.note, category=LEGACY_CATEGORIES.get(p.category, p.category),
+            notify=p.notify or ("always" if p.arrival_alert else "never"), arrival_alert=p.arrival_alert,
+            arrival_cooldown_s=p.arrival_cooldown_s, samples=len(samples), strength=strength, strength_hint=hint,
+            cover_sample_id=cover, last_seen=max(captured) if captured else None, created_at=p.created_at,
+        ))
+    return out
 
 
 @router.get("/models")
@@ -97,42 +154,43 @@ async def download_face_models(db: AsyncSession = Depends(get_db), _: User = Dep
     return {"models": [m for m in reg.status(MODEL_DIR) if m["name"] in ("yunet", "sface")]}
 
 
+@router.get("/capture-stats")
+async def capture_stats(_: User = Depends(require_admin)):
+    """Today's face-capture outcomes per camera: how often a person was
+    checked and why no usable face came of it (not facing the camera, too
+    small, too blurry/turned). Explains "why isn't it capturing faces?" on
+    the People page."""
+    return {str(k): v for k, v in face_service.capture_stats().items()}
+
+
 @router.get("/people", response_model=list[PersonOut])
 async def list_people(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
     people = (await db.execute(select(Person).order_by(Person.name))).scalars().all()
-    counts = dict((await db.execute(
-        select(FaceSample.person_id, func.count()).where(FaceSample.person_id.is_not(None)).group_by(FaceSample.person_id)
-    )).all())
-    return [PersonOut(id=p.id, name=p.name, note=p.note, category=p.category, arrival_alert=p.arrival_alert,
-                      arrival_cooldown_s=p.arrival_cooldown_s, samples=counts.get(p.id, 0), created_at=p.created_at)
-            for p in people]
+    return await _people_out(db, list(people))
 
 
 @router.post("/people", response_model=PersonOut, status_code=status.HTTP_201_CREATED)
 async def create_person(payload: PersonIn, db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
     await _require_faces(db)
-    _check_category(payload.category)
-    row = Person(**payload.model_dump())
+    row = Person(**await _clean(db, payload))
     db.add(row)
     await db.commit()
     await db.refresh(row)
     await face_service.reload()
-    return PersonOut(**payload.model_dump(), id=row.id, samples=0, created_at=row.created_at)
+    return (await _people_out(db, [row]))[0]
 
 
 @router.put("/people/{person_id}", response_model=PersonOut)
 async def update_person(person_id: int, payload: PersonIn, db: AsyncSession = Depends(get_db),
                         _: User = Depends(require_admin)):
-    _check_category(payload.category)
     row = await db.get(Person, person_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
-    for k, v in payload.model_dump().items():
+    for k, v in (await _clean(db, payload, person_id)).items():
         setattr(row, k, v)
     await db.commit()
     await face_service.reload()
-    n = (await db.execute(select(func.count()).select_from(FaceSample).where(FaceSample.person_id == person_id))).scalar()
-    return PersonOut(**payload.model_dump(), id=row.id, samples=n or 0, created_at=row.created_at)
+    return (await _people_out(db, [row]))[0]
 
 
 async def _purge_samples(db: AsyncSession, where) -> int:
@@ -235,6 +293,86 @@ async def delete_sample(sample_id: int, db: AsyncSession = Depends(get_db), _: U
     await _purge_samples(db, FaceSample.id == sample_id)
     await db.commit()
     await face_service.reload()
+
+
+class FaceGroupOut(BaseModel):
+    sample_ids: list[int]
+    cover_sample_id: int
+    sightings: int
+    first_seen: UtcDatetime
+    last_seen: UtcDatetime
+    seen_at: list[UtcDatetime]  # for "mostly 7-8 am" in the viewer's timezone
+    camera_ids: list[int]
+    suggestion: dict | None = None
+
+
+@router.get("/unknown-groups", response_model=list[FaceGroupOut])
+async def unknown_groups(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """'Who is this?' - unnamed faces, with the same person's sightings grouped."""
+    s = await db.get(AISettings, 1)
+    rows = list((await db.execute(
+        select(FaceSample).where(FaceSample.person_id.is_(None)).order_by(FaceSample.created_at.desc()).limit(400)
+    )).scalars().all())
+    rows.reverse()
+    by_id = {r.id: r for r in rows}
+    thr = threshold_for(s)
+    await face_service._ensure_loaded()
+    out = []
+    for g in group_faces(rows, thr):
+        members = [by_id[i] for i in g.ids]
+        with_crop = [m for m in members if m.crop_path] or members
+        times = sorted(m.created_at for m in members)
+        match = face_service.match(g.centroid, thr)
+        sug = ({"person_id": match.person_id, "name": match.name, "score": round(match.score, 3), "band": match.band}
+               if match.person_id is not None else None)
+        out.append(FaceGroupOut(
+            sample_ids=g.ids, cover_sample_id=max(with_crop, key=lambda r: r.quality).id,
+            sightings=len({m.track_uid or f"s{m.id}" for m in members}), first_seen=times[0], last_seen=times[-1],
+            seen_at=times[-50:], camera_ids=sorted({m.camera_id for m in members if m.camera_id is not None}),
+            suggestion=sug,
+        ))
+    out.sort(key=lambda g: g.last_seen, reverse=True)
+    return out
+
+
+class GroupAssignIn(BaseModel):
+    sample_ids: list[int] = Field(min_length=1, max_length=400)
+    person_id: int | None = None  # an existing person...
+    person: PersonIn | None = None  # ...or a new one created from these faces
+
+
+@router.post("/groups/assign", response_model=PersonOut)
+async def assign_group(payload: GroupAssignIn, db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """Name a group of faces in one go - for an existing or a new person."""
+    await _require_faces(db)
+    if payload.person_id is not None:
+        row = await db.get(Person, payload.person_id)
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
+    elif payload.person is not None:
+        row = Person(**await _clean(db, payload.person))
+        db.add(row)
+        await db.flush()
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose a person or describe a new one")
+    await db.execute(update(FaceSample).where(FaceSample.id.in_(payload.sample_ids), FaceSample.person_id.is_(None))
+                     .values(person_id=row.id))
+    await db.commit()
+    await db.refresh(row)
+    await face_service.reload()
+    return (await _people_out(db, [row]))[0]
+
+
+class SampleIdsIn(BaseModel):
+    sample_ids: list[int] = Field(min_length=1, max_length=400)
+
+
+@router.post("/groups/discard")
+async def discard_group(payload: SampleIdsIn, db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """'Ignore' - delete these unnamed captures now instead of waiting for retention."""
+    n = await _purge_samples(db, FaceSample.id.in_(payload.sample_ids) & FaceSample.person_id.is_(None))
+    await db.commit()
+    return {"deleted": n}
 
 
 @router.post("/people/{person_id}/photos")

@@ -1,9 +1,10 @@
 import asyncio
 import os
 
-from fastapi import HTTPException, status
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi import HTTPException, Request, status
+from fastapi.responses import Response, StreamingResponse
 
+from app.core.http_range import range_file_response
 from app.models.camera import Camera
 from app.schemas.common import serialize_utc
 from app.services.active_segment import active_segment_registry
@@ -91,7 +92,7 @@ def live_segment_info(camera_id: int) -> dict:
     return {"started_at": serialize_utc(seg.started_at)}
 
 
-def live_segment_video_response(camera_id: int) -> FileResponse:
+def live_segment_video_response(request: Request, camera_id: int) -> Response:
     seg = active_segment_registry.get(camera_id)
     if seg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No segment currently recording")
@@ -102,4 +103,15 @@ def live_segment_video_response(camera_id: int) -> FileResponse:
     path = seg.playback_path if seg.playback_path and os.path.exists(seg.playback_path) else seg.file_path
     if not os.path.exists(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No segment currently recording")
-    return FileResponse(path, media_type="video/mp4")
+    return range_file_response(request, path)
+
+
+def playback_snapshot_response(request: Request, camera_id: int, snap_id: str) -> Response:
+    """An immutable, seekable copy of a not-yet-registered segment, made by
+    playback.resolve() - see services/playback.py."""
+    from app.services.playback import snapshots
+
+    snap = snapshots.get(camera_id, snap_id)
+    if snap is None or not os.path.exists(snap.path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playback snapshot expired")
+    return range_file_response(request, snap.path)

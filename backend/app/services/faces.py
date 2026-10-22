@@ -32,11 +32,14 @@ from app.db.session import AsyncSessionLocal
 from app.models.person import FaceSample, Person
 from app.services.ai.types import MODEL_DIR
 from app.vision import models as model_registry
-from app.vision.face import Face, cosine
+from app.vision.face import MIN_FACE_PX, Face, cosine
 
 logger = logging.getLogger(__name__)
 
 MIN_QUALITY = 0.35
+# Faces are searched down to SEARCH_MIN_FACE px so the ones just too small to
+# use can be counted (and explained on the People page) instead of vanishing.
+SEARCH_MIN_FACE = 16
 MARGIN = 0.06
 CLEAR_EXTRA = 0.08  # this far above the threshold, one sighting is enough
 PROBABLE_FLOOR = 0.36
@@ -72,6 +75,7 @@ class FaceService:
         self._people: dict[int, Person] = {}
         self._loaded = False
         self._lock = asyncio.Lock()
+        self._stats: dict[int, dict] = {}
 
     # ── gallery ──────────────────────────────────────────────────────────────
 
@@ -120,16 +124,18 @@ class FaceService:
                                       model_registry.path_for("sface", MODEL_DIR))
         return self._engine
 
-    async def find(self, settings, frame: np.ndarray, boxes: list | None, keep_crops: bool = True) -> list[Face]:
+    async def find(self, settings, frame: np.ndarray, boxes: list | None, keep_crops: bool = True,
+                   min_face: int = MIN_FACE_PX) -> list[Face]:
         if settings is not None and settings.backend == "remote" and settings.remote_url:
             try:
-                return await self._find_remote(settings, frame, boxes)
+                return await self._find_remote(settings, frame, boxes, min_face)
             except Exception as exc:
                 logger.warning("Face search on the AI worker failed (%s) - trying locally", exc)
         engine = await asyncio.to_thread(self._local_engine)
-        return await asyncio.to_thread(engine.find, frame, boxes, 40, keep_crops)
+        return await asyncio.to_thread(engine.find, frame, boxes, min_face, keep_crops)
 
-    async def _find_remote(self, settings, frame: np.ndarray, boxes: list | None) -> list[Face]:
+    async def _find_remote(self, settings, frame: np.ndarray, boxes: list | None,
+                           min_face: int = MIN_FACE_PX) -> list[Face]:
         import httpx
 
         ok, jpeg = await asyncio.to_thread(cv2.imencode, ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
@@ -138,7 +144,7 @@ class FaceService:
             resp = await client.post(
                 f"{settings.remote_url.rstrip('/')}/v2/faces",
                 files={"image": ("frame.jpg", jpeg.tobytes(), "image/jpeg")},
-                data={"boxes": json.dumps(boxes) if boxes else ""},
+                data={"boxes": json.dumps(boxes) if boxes else "", "min_face": str(min_face)},
             )
             resp.raise_for_status()
         out = []
@@ -153,21 +159,55 @@ class FaceService:
             out.append(face)
         return out
 
-    async def recognise(self, settings, frame: np.ndarray, person_boxes: list) -> list[tuple[int, Face, Match]]:
-        """For each person box (index), its best usable face and who it is."""
+    async def recognise(self, settings, frame: np.ndarray, person_boxes: list,
+                        camera_id: int | None = None) -> list[tuple[int, Face, Match]]:
+        """For each person box (index), its best usable face and who it is.
+        Every look is counted per camera with the reason when no face was
+        usable (see capture_stats)."""
         await self._ensure_loaded()
-        faces = await self.find(settings, frame, person_boxes)
+        faces = await self.find(settings, frame, person_boxes, min_face=SEARCH_MIN_FACE)
         thr = threshold_for(settings)
+        H, W = frame.shape[:2]
         out = []
         for i, (bx, by, bw, bh) in enumerate(person_boxes):
             inside = [f for f in faces if bx - bw * 0.2 <= f.x + f.w / 2 <= bx + bw * 1.2
                       and by - bh * 0.1 <= f.y + f.h / 2 <= by + bh * 0.6]
             if not inside:
+                self._count(camera_id, "no_face", W)
                 continue
             f = max(inside, key=lambda x: x.quality)
-            if f.quality < MIN_QUALITY:
+            if min(f.w * W, f.h * H) < MIN_FACE_PX:
+                self._count(camera_id, "too_small", W, min(f.w * W, f.h * H))
                 continue
+            if f.quality < MIN_QUALITY:
+                self._count(camera_id, "low_quality", W, min(f.w * W, f.h * H))
+                continue
+            self._count(camera_id, "usable", W, min(f.w * W, f.h * H))
             out.append((i, f, self.match(f.embedding, thr)))
+        return out
+
+    # ── capture statistics (People page: "why no faces?") ───────────────────
+
+    def _count(self, camera_id: int | None, outcome: str, frame_width: int, face_px: float | None = None) -> None:
+        if camera_id is None:
+            return
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        st = self._stats.get(camera_id)
+        if st is None or st["day"] != day:
+            st = self._stats[camera_id] = {"day": day, "no_face": 0, "too_small": 0, "low_quality": 0,
+                                           "usable": 0, "face_px": [], "frame_width": frame_width}
+        st[outcome] += 1
+        st["frame_width"] = frame_width
+        if face_px is not None:
+            st["face_px"] = (st["face_px"] + [round(face_px)])[-200:]
+
+    def capture_stats(self) -> dict[int, dict]:
+        out = {}
+        for cam, st in self._stats.items():
+            px = sorted(st["face_px"])
+            out[cam] = {k: st[k] for k in ("day", "no_face", "too_small", "low_quality", "usable", "frame_width")}
+            out[cam]["checked"] = st["no_face"] + st["too_small"] + st["low_quality"] + st["usable"]
+            out[cam]["median_face_px"] = px[len(px) // 2] if px else None
         return out
 
     # ── storage ──────────────────────────────────────────────────────────────
@@ -200,6 +240,60 @@ class FaceService:
 
 
 face_service = FaceService()
+
+
+# ── people page helpers ──────────────────────────────────────────────────────
+
+def recognition_strength(qualities: list[float]) -> tuple[str, str]:
+    """How reliably someone will be recognised, in words, from their samples."""
+    n = len(qualities)
+    good = sum(1 for q in qualities if q >= 0.6)
+    if n < 3:
+        return "weak", f"add {3 - n} more photo(s) - front and slightly turned"
+    if n >= 6 and good >= 4:
+        return "strong", ""
+    return "good", "a few more clear sightings will make it stronger"
+
+
+@dataclass
+class FaceGroup:
+    ids: list[int]
+    centroid: np.ndarray
+    tracks: set
+
+
+def group_faces(samples: list, threshold: float) -> list[FaceGroup]:
+    """Groups unnamed face captures that are (very likely) the same person, so
+    "Who is this?" asks once per person instead of once per sighting.
+
+    `samples`: objects with .id, .track_uid and .embedding (float32 bytes),
+    oldest first. Captures from the same track always group together;
+    otherwise a capture joins the group whose average face it matches at the
+    recognition threshold - the same bar as recognising an enrolled person.
+    """
+    groups: list[FaceGroup] = []
+    for s in samples:
+        emb = np.frombuffer(s.embedding, dtype=np.float32)
+        target = None
+        if s.track_uid:
+            target = next((g for g in groups if s.track_uid in g.tracks), None)
+        if target is None:
+            best, best_score = None, threshold
+            for g in groups:
+                score = cosine(emb, g.centroid)
+                if score >= best_score:
+                    best, best_score = g, score
+            target = best
+        if target is None:
+            groups.append(FaceGroup([s.id], emb.copy(), {s.track_uid} if s.track_uid else set()))
+            continue
+        k = len(target.ids)
+        mean = target.centroid * k + emb
+        target.centroid = (mean / (np.linalg.norm(mean) or 1.0)).astype(np.float32)
+        target.ids.append(s.id)
+        if s.track_uid:
+            target.tracks.add(s.track_uid)
+    return groups
 
 
 def _is_private_url(url: str) -> bool:

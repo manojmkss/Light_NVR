@@ -90,6 +90,12 @@ class _HQDecoder:
                 frame = cv2.resize(frame, (MAX_DIMENSION, int(round(h * scale))))
                 h, w = frame.shape[:2]
 
+            # Full-resolution frame for face search (see camera_worker).
+            hq_frame_bus.set_raw(self.camera_id, frame, time.monotonic())
+            # Encoding a 4MP JPEG costs more than decoding it: only when
+            # someone is actually watching this stream.
+            if not hq_frame_bus.has_subscribers(self.camera_id):
+                continue
             ok_enc, jpeg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             if ok_enc:
                 data = jpeg.tobytes()

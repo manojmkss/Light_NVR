@@ -18,10 +18,13 @@ class Person(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
     note: Mapped[str | None] = mapped_column(String(256), nullable=True)  # "milkman", "daughter"...
-    # household | staff | visitor | watchlist - drives alert rules and how
-    # much a recognition is trusted (see notify_policy / faces).
-    category: Mapped[str] = mapped_column(String(16), default="visitor")
-    arrival_alert: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Trust: household ("Family") | familiar | stranger (seen before, not
+    # trusted - treated like an unknown face by alert rules) | watchlist
+    # ("Suspicious" - always urgent). Drives alert rules (see notify_policy).
+    category: Mapped[str] = mapped_column(String(16), default="familiar")
+    # Arrival notification: always | away (only in Away mode) | never.
+    notify: Mapped[str] = mapped_column(String(8), default="always")
+    arrival_alert: Mapped[bool] = mapped_column(Boolean, default=True)  # kept in step with notify (older clients)
     arrival_cooldown_s: Mapped[int] = mapped_column(Integer, default=1800)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 

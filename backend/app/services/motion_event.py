@@ -565,8 +565,11 @@ class MotionEventSession:
     STILL_AFTER = 10.0
     FOLLOW_UP_AFTER = 20.0  # another person arriving this long after the first alert gets its own alert
     STILL_NOTE_MIN = 30.0  # "stood still for ..." in the summary from this long
-    FACE_RETRY = 5.0  # seconds between face attempts on one person
-    FACE_MAX_TRIES = 6
+    # People rarely face the camera for long - someone walking or running about
+    # turns towards it for a moment - so look often, for the whole time
+    # they're in view (face search is cheap: only the top of each person box).
+    FACE_RETRY = 1.5  # seconds between face attempts on one person
+    FACE_MAX_TRIES = 40
     FACE_CLEAR_EXTRA = 0.08
     PRESENCE_HOLD_WITH_AI = 20.0  # background-model hold while AI is answering
     PRESENCE_HOLD_WITHOUT_AI = 120.0

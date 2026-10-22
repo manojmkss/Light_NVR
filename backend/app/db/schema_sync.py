@@ -89,3 +89,11 @@ async def _relax_constraints(conn: AsyncConnection, table) -> None:
     await conn.execute(text(f"INSERT INTO {tmp_name} ({column_names}) SELECT {column_names} FROM {table.name}"))
     await conn.execute(text(f"DROP TABLE {table.name}"))
     await conn.execute(text(f"ALTER TABLE {tmp_name} RENAME TO {table.name}"))
+
+
+async def migrate_data(conn: AsyncConnection) -> None:
+    """One-way value fix-ups for upgraded installs (idempotent)."""
+    # v0.4.2: "Regular" and "Visitor" became one "Familiar" trust level, and
+    # the arrival on/off switch became Yes / Only when Away / No.
+    await conn.execute(text("UPDATE persons SET category = 'familiar' WHERE category IN ('staff', 'visitor')"))
+    await conn.execute(text("UPDATE persons SET notify = 'never' WHERE arrival_alert = 0 AND notify = 'always'"))

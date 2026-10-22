@@ -66,12 +66,22 @@ def matches(rule, event_type: str, camera_id: int | None, mode: str, payload: di
         return False
     if rule.identities:
         ids = payload.get("identities") or []
-        want = set(rule.identities)
-        have = (set(ids) | set(payload.get("categories") or [])
-                | ({"unknown"} if payload.get("unknown_faces") else set()) | ({"known"} if ids else set()))
+        cats = set(payload.get("categories") or [])
+        # Rules written before "Regular"/"Visitor" merged into "Familiar".
+        want = {LEGACY_CATEGORIES.get(w, w) for w in rule.identities}
+        # A recognised stranger is still someone you don't know: "unknown"
+        # rules apply to them, "anyone recognised" rules don't.
+        named = cats - {""}
+        untrusted_only = bool(named) and named <= {"stranger", "watchlist"}
+        have = (set(ids) | cats
+                | ({"unknown"} if payload.get("unknown_faces") or "stranger" in cats else set())
+                | ({"known"} if ids and not untrusted_only else set()))
         if not want & have:
             return False
     return True
+
+
+LEGACY_CATEGORIES = {"staff": "familiar", "visitor": "familiar"}
 
 
 def decide_with(rules: list, event_type: str, camera_id: int | None, mode: str, payload: dict | None) -> Decision:

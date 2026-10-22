@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import time
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, get_current_user_flexible
@@ -10,8 +12,10 @@ from app.services.live_media import (
     live_segment_info,
     live_segment_video_response,
     mjpeg_stream_response,
+    playback_snapshot_response,
     snapshot_response,
 )
+from app.services import playback
 from app.services.motion_state import motion_state_registry
 from app.services.stream_stats import stream_stats
 
@@ -62,8 +66,48 @@ async def get_live_segment(
     return live_segment_info(camera_id)
 
 
+@router.get("/{camera_id}/playback")
+async def resolve_playback(
+    camera_id: int,
+    at: float = Query(..., description="unix seconds"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """What plays at time `at`: a recording or a snapshot of a segment still
+    on its way to becoming one, with the wall time of its first frame so the
+    player can seek exactly - or, when there's no footage, where it resumes."""
+    await _get_camera(camera_id, db)
+    return await playback.resolve(db, camera_id, at)
+
+
+@router.get("/{camera_id}/timeline")
+async def get_timeline(
+    camera_id: int,
+    start: float = Query(...),
+    end: float | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Spans of [start, end] (unix seconds) that have footage, and the NVR's clock."""
+    await _get_camera(camera_id, db)
+    return await playback.timeline(db, camera_id, start, end or time.time())
+
+
+@router.get("/{camera_id}/playback/snap/{snap_id}.mp4")
+async def get_playback_snapshot(
+    request: Request,
+    camera_id: int,
+    snap_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user_flexible),
+):
+    await _get_camera(camera_id, db)
+    return playback_snapshot_response(request, camera_id, snap_id)
+
+
 @router.get("/{camera_id}/live-segment/video")
 async def get_live_segment_video(
+    request: Request,
     camera_id: int,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user_flexible),
@@ -74,7 +118,7 @@ async def get_live_segment_video(
     video even though the underlying file is still being appended to.
     """
     await _get_camera(camera_id, db)
-    return live_segment_video_response(camera_id)
+    return live_segment_video_response(request, camera_id)
 
 
 @router.get("/{camera_id}/snapshot.jpg")

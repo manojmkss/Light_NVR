@@ -14,6 +14,7 @@ from app.services.ai.types import DetectedObject
 from app.services.events import emit_event
 from app.services.ffmpeg_recorder import SEGMENT_SECONDS, ContinuousRecorder, MotionRecorder
 from app.services.frame_bus import frame_bus
+from app.services.hq_stream import hq_frame_bus, hq_stream_manager
 from app.services.faces import face_service, faces_enabled
 from app.services.incidents import incident_manager
 from app.services.motion_detector import point_in_watch_area
@@ -66,6 +67,25 @@ def _write_event_snapshot(camera_id: int, jpeg: bytes) -> str | None:
         return None
 
 
+async def _wants_arrival(person) -> bool:
+    """The person's "Notify on arrival" choice: always | away | never.
+    Suspicious people always notify."""
+    if person.category == "watchlist":
+        return True
+    notify = getattr(person, "notify", None) or ("always" if person.arrival_alert else "never")
+    if notify == "never":
+        return False
+    if notify == "away":
+        from app.services.security_mode import current_mode
+
+        try:
+            return (await current_mode())["mode"] == "away"
+        except Exception:
+            logger.exception("Could not read the security mode - sending the arrival alert")
+            return True
+    return True
+
+
 class CameraWorker:
     """Owns the recording + live-view + motion-detection lifecycle for a
     single camera.
@@ -116,6 +136,8 @@ class CameraWorker:
         # Vehicles standing still on this camera, carried from one event to the
         # next so a parked car isn't "seen" again whenever someone walks past.
         self._parked: list[ParkedObject] = []
+        # Main-stream decode held for face search during the current event.
+        self._hq_for_faces = False
 
     async def start(self) -> None:
         if self.recording_mode == "continuous":
@@ -215,6 +237,7 @@ class CameraWorker:
             await asyncio.wait(list(self._announce_tasks), timeout=10)
         if self._continuous_recorder:
             await step("continuous recorder", self._continuous_recorder.stop(), 20)
+        self._release_face_stream()
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -315,7 +338,7 @@ class CameraWorker:
             presence_hold=lambda seconds: viewer.set_presence_hold(seconds) if viewer else None,
             pace=scheduler.suggested_interval,
             rules=[z for z in (zones or []) if z.get("kind") in ("zone", "line")],
-            recognise=(lambda frame, boxes: face_service.recognise(settings, frame, boxes))
+            recognise=(lambda frame, boxes: self._recognise_faces(settings, frame, boxes))
             if faces_enabled(settings) else None,
             on_identity=lambda track: self._on_identity(holder[0] if holder else None, track),
         )
@@ -399,7 +422,7 @@ class CameraWorker:
         if inc is not None and ident.get("name"):
             new_to_visit = incident_manager.add_identity(inc, ident["name"])
         person = face_service.person(ident.get("id")) if ident.get("id") else None
-        if person is None or not person.arrival_alert or not new_to_visit:
+        if person is None or not new_to_visit or not await _wants_arrival(person):
             return
         now = time.time()
         last = _last_arrival.get(person.id, 0.0)
@@ -407,6 +430,12 @@ class CameraWorker:
             return
         _last_arrival[person.id] = now
         who = f"{person.name} ({person.note})" if person.note else person.name
+        if person.category == "watchlist":
+            message = f"Suspicious person: {who} seen at '{self.name}'"
+        elif person.category == "stranger":
+            message = f"{who} (stranger seen before) is at '{self.name}'"
+        else:
+            message = f"{who} arrived at '{self.name}'"
         frame = frame_bus.get_fresh(self.camera_id)
         jpeg = None
         if frame is not None:
@@ -415,7 +444,7 @@ class CameraWorker:
             jpeg = await asyncio.to_thread(lambda: _jpeg(draw_boxes(frame[0], [(person.name, ident.get("score", 0), track.box)])))
         payload = {"objects": ["person"], "identities": [f"person:{person.id}"], "names": [person.name],
                    "categories": [person.category]}
-        await self._emit_for(session, self.camera_id, "arrival", f"{who} arrived at '{self.name}'", jpeg, payload)
+        await self._emit_for(session, self.camera_id, "arrival", message, jpeg, payload)
 
     async def _emit_for(self, session, camera_id, event_type, message, jpeg, payload=None) -> int | None:
         """Session events, tied to their visit. A camera joining a visit that
@@ -469,7 +498,31 @@ class CameraWorker:
         # A long wait crosses the 10-minute clip limit: several parts, one event.
         return clips[0][0], (min(c[1] for c in clips), max(c[2] for c in clips)), len(clips)
 
+    async def _recognise_faces(self, settings, frame, boxes):
+        """Face search on the camera's main stream when it has one.
+
+        The live picture (the substream: 640x360 to 720p) is what motion and
+        object detection use, but a face across a driveway is 15-30px in it -
+        too small to find - and 2-4x bigger in a 2K/4MP main stream. The main
+        stream is decoded only while a person is in view during an event (it
+        is released when the event ends); the person boxes are fractions of
+        the frame, so they apply to either picture."""
+        if self.rtsp_main_url and self.rtsp_main_url != self.rtsp_sub_url:
+            if not self._hq_for_faces:
+                self._hq_for_faces = True
+                hq_stream_manager.acquire(self.camera_id, self.rtsp_main_url, asyncio.get_running_loop())
+            fresh = hq_frame_bus.get_fresh(self.camera_id, max_age=1.0)
+            if fresh is not None:
+                frame = fresh[0]
+        return await face_service.recognise(settings, frame, boxes, camera_id=self.camera_id)
+
+    def _release_face_stream(self) -> None:
+        if self._hq_for_faces:
+            self._hq_for_faces = False
+            hq_stream_manager.release(self.camera_id)
+
     async def _finalize_session(self, session: MotionEventSession, clip_timeout: float = 45) -> None:
+        self._release_face_stream()
         try:
             await session.stop_monitoring()
             if session.ai_on and session.ai_worked:

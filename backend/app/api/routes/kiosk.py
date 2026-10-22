@@ -24,6 +24,7 @@ from app.schemas.kiosk import (
 from app.services.live_media import (
     live_segment_info,
     live_segment_video_response,
+    playback_snapshot_response,
     mjpeg_stream_response,
     snapshot_response,
 )
@@ -216,9 +217,39 @@ async def get_public_live_segment(token: str, camera_id: int, db: AsyncSession =
 
 
 @public_router.get("/{token}/cameras/{camera_id}/live-segment/video")
-async def get_public_live_segment_video(token: str, camera_id: int, db: AsyncSession = Depends(get_db)):
+async def get_public_live_segment_video(request: Request, token: str, camera_id: int, db: AsyncSession = Depends(get_db)):
     await _require_view_camera(token, camera_id, db)
-    return live_segment_video_response(camera_id)
+    return live_segment_video_response(request, camera_id)
+
+
+def _kiosk_floor() -> float:
+    # Kiosk viewers only ever reach back KIOSK_REWIND_MINUTES.
+    return datetime.now(timezone.utc).timestamp() - KIOSK_REWIND_MINUTES * 60
+
+
+@public_router.get("/{token}/cameras/{camera_id}/playback")
+async def resolve_public_playback(token: str, camera_id: int, at: float, db: AsyncSession = Depends(get_db)):
+    from app.services import playback
+
+    await _require_view_camera(token, camera_id, db)
+    return await playback.resolve(db, camera_id, at, not_before=_kiosk_floor())
+
+
+@public_router.get("/{token}/cameras/{camera_id}/timeline")
+async def get_public_timeline(token: str, camera_id: int, start: float, end: float | None = None,
+                              db: AsyncSession = Depends(get_db)):
+    from app.services import playback
+
+    await _require_view_camera(token, camera_id, db)
+    now = datetime.now(timezone.utc).timestamp()
+    return await playback.timeline(db, camera_id, max(start, _kiosk_floor()), end or now)
+
+
+@public_router.get("/{token}/cameras/{camera_id}/playback/snap/{snap_id}.mp4")
+async def get_public_playback_snapshot(request: Request, token: str, camera_id: int, snap_id: str,
+                                       db: AsyncSession = Depends(get_db)):
+    await _require_view_camera(token, camera_id, db)
+    return playback_snapshot_response(request, camera_id, snap_id)
 
 
 @public_router.get("/{token}/cameras/{camera_id}/recordings", response_model=list[KioskRecordingOut])

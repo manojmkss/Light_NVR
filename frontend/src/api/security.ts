@@ -102,5 +102,11 @@ export const createAreaLink = (l: Omit<AreaLink, "id">) =>
   apiFetch<AreaLink>("/security/areas/links", { method: "POST", body: JSON.stringify(l) });
 export const deleteAreaLink = (id: number) => apiFetch<void>(`/security/areas/links/${id}`, { method: "DELETE" });
 export const listIncidents = (limit = 50) => apiFetch<Incident[]>(`/security/incidents?limit=${limit}`);
+export type IncidentWithEvents = Incident & { events: NvrEvent[] };
+/** Visits that began in [start, end), each with its events - for the day summary. */
+export const listIncidentsWithEvents = (start: Date, end: Date, limit = 500) =>
+  apiFetch<IncidentWithEvents[]>(
+    `/security/incidents?include_events=true&limit=${limit}&start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`,
+  );
 export const getIncident = (id: number) =>
   apiFetch<{ incident: Incident; events: NvrEvent[] }>(`/security/incidents/${id}`);

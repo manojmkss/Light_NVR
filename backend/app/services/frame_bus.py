@@ -43,6 +43,9 @@ class FrameBus:
     def get_latest(self, camera_id: int) -> bytes | None:
         return self._latest.get(camera_id)
 
+    def has_subscribers(self, camera_id: int) -> bool:
+        return bool(self._subscribers.get(camera_id))
+
     # ── native-resolution frames for AI / snapshots ─────────────────────────
 
     def set_raw(self, camera_id: int, frame: np.ndarray, captured_at: float) -> None:

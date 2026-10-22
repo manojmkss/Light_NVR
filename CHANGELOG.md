@@ -6,6 +6,47 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-22
+
+Rewinding live view now always finds the footage; faces are looked for in the
+full-resolution picture; the People and Visits pages are easier to use.
+
+### Fixed
+- **"No recording at this moment" when dragging the live-view slider back.**
+  The tile worked out what to play from a list it refreshed every 30s, and
+  footage disappeared from it for a while after every 5-minute segment
+  closed; the segment being recorded couldn't be seeked at all. The NVR now
+  answers "what plays at this moment?" itself (finished recordings, segments
+  still being finalized, and the one being recorded, served as a seekable
+  copy), the tile keeps playing into the next segment instead of jumping to
+  live, retries instead of giving up, and runs on the NVR's clock. The slider
+  is brighter where there is footage; a real gap says why (camera offline,
+  motion-only recording) and offers "Jump to next footage". Kiosk views too.
+- Recording start times come from the footage itself, so seeking lands on the
+  right second (they were 1-3s early: the camera connect time).
+- Faces are searched in the camera's full-resolution main stream while a
+  person is in view (it was the small live picture, where faces across a yard
+  are too small), and looked for every 1.5s for as long as they're in view
+  instead of 6 tries.
+
+### Added
+- **People page as a table**: photo, name, relation, trust (Family / Familiar /
+  Stranger / Suspicious) and "Notify on arrival" (Yes / Only when Away / No),
+  all edited in place, with recognition strength (weak / good / strong).
+  "Who is this?" groups the same person's sightings, so you name them once;
+  strangers and suspicious people need no name.
+- **Face capture today** on the People page: per camera, how many people were
+  checked, how many faces were usable, and why not (not facing the camera,
+  too small, blurry) with what to do about it.
+- **Visits page summary**: Today / Yesterday / Last 7 days, real activity
+  only (motion-only visits hidden, counted), what was seen, who, which
+  cameras, the busiest hour; every visit shows its summary and its events.
+
+### Changed
+- "Regular" and "Visitor" people became "Familiar" (existing people and alert
+  rules are moved over automatically). A recognised stranger is treated like
+  an unknown face by alert rules.
+
 ## [0.4.1] - 2026-10-21
 
 Stability and security: the NVR now heals itself when something hangs, not
@@ -377,7 +418,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/manojmkss/Light_NVR/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/manojmkss/Light_NVR/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/manojmkss/Light_NVR/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/manojmkss/Light_NVR/compare/v0.3.0...v0.3.1

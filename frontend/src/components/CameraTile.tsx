@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { authenticatedEndpoints, type CameraTileEndpoints, type TileCamera, type TileRecording } from "../api/liveEndpoints";
+import {
+  authenticatedEndpoints,
+  type CameraTileEndpoints,
+  type PlaybackAnswer,
+  type TileCamera,
+  type TileRecording,
+} from "../api/liveEndpoints";
 import { recordingNeedsTranscode } from "../api/recordings";
 import type { StreamStat } from "../api/types";
 import { useSettings } from "../context/SettingsContext";
@@ -10,6 +16,14 @@ import { StatusBadge } from "./StatusBadge";
 // picker and the Recordings page; this is just the quick-scrub window.
 const SCRUB_WINDOW_MS = 60 * 60 * 1000;
 const LIVE_EDGE_MS = 3000; // within 3s of "now" counts as live
+// Playback that catches up to within this of "now" hands over to live (the
+// newest few seconds are still inside ffmpeg's current fragment).
+const CATCH_UP_MS = 8000;
+// A scrub or a finished clip that lands in a gap this short (the second or
+// two between continuous segments) just carries on from the next footage.
+const SMALL_GAP_MS = 15000;
+const RESOLVE_DEBOUNCE_MS = 200;
+const TIMELINE_POLL_MS = 15000;
 
 // Backstop interval for re-requesting a live tile's MJPEG stream. Deliberately
 // long: every reconnect costs a visible hitch in the picture, and the server
@@ -44,12 +58,25 @@ function fmtOffset(deltaMs: number): string {
 function recStartMs(rec: TileRecording): number {
   return new Date(rec.started_at).getTime();
 }
-function recEndMs(rec: TileRecording): number {
-  if (rec.ended_at) return new Date(rec.ended_at).getTime();
-  return recStartMs(rec) + (rec.duration_seconds ?? 0) * 1000;
-}
-function findCovering(recs: TileRecording[], ts: number): TileRecording | null {
-  return recs.find((r) => recStartMs(r) <= ts && ts <= recEndMs(r)) ?? null;
+
+/** Track colour for the scrub bar: brighter where there is footage. */
+function coverageBackground(spans: [number, number][], start: number, end: number): string | undefined {
+  if (!spans.length) return undefined;
+  const gap = "rgba(255, 255, 255, 0.12)";
+  const have = "rgba(255, 255, 255, 0.45)";
+  const pct = (t: number) => `${(((t - start) / (end - start)) * 100).toFixed(2)}%`;
+  const stops: string[] = [];
+  let cursor = start;
+  for (const [a, b] of spans) {
+    const s = Math.max(a, start);
+    const e = Math.min(b, end);
+    if (e <= s) continue;
+    if (s > cursor) stops.push(`${gap} ${pct(cursor)}`, `${gap} ${pct(s)}`);
+    stops.push(`${have} ${pct(s)}`, `${have} ${pct(e)}`);
+    cursor = e;
+  }
+  if (cursor < end) stops.push(`${gap} ${pct(cursor)}`, `${gap} 100%`);
+  return `linear-gradient(to right, ${stops.join(", ")})`;
 }
 
 const FullscreenIcon = () => (
@@ -93,6 +120,18 @@ interface CameraTileProps {
 
 type View = "live" | "paused" | "playback";
 
+/** What the <video> is playing: a file plus the wall time of its first frame. */
+interface Source {
+  url: string;
+  key: string;
+  originMs: number;
+  endMs: number;
+  growing: boolean; // a snapshot of the segment still being recorded
+}
+
+/** Why nothing is playing in playback view. */
+type Gap = { kind: "loading" } | { kind: "none"; nextAt: number | null } | { kind: "error"; message: string };
+
 export function CameraTile({ camera, quality = "sub", stat, endpoints = authenticatedEndpoints }: CameraTileProps) {
   const { fmtTime } = useSettings();
   const tileRef = useRef<HTMLDivElement>(null);
@@ -109,79 +148,63 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
 
   const [view, setView] = useState<View>("live");
   const [playbackTs, setPlaybackTs] = useState<number | null>(null);
-  const [playbackRec, setPlaybackRec] = useState<TileRecording | null>(null);
+  const [source, setSource] = useState<Source | null>(null);
+  const [gap, setGap] = useState<Gap | null>(null);
   const [videoPaused, setVideoPaused] = useState(false);
   const [snapshotSrc, setSnapshotSrc] = useState("");
   const [playbackRes, setPlaybackRes] = useState("");
+  const [spans, setSpans] = useState<[number, number][]>([]);
 
-  const [recentRecs, setRecentRecs] = useState<TileRecording[]>([]);
-  // The segment currently being written for this camera, if any - covers the
-  // gap between "now" and the last finalized recording, which otherwise has
-  // no Recording row yet and would wrongly read as "no recording".
-  const [activeSeg, setActiveSeg] = useState<{ startedAt: number } | null>(null);
   const [showPicker, setShowPicker] = useState(false);
   const [pickerRecs, setPickerRecs] = useState<TileRecording[] | null>(null);
   const [loadingRec, setLoadingRec] = useState(false);
 
-  // Ticking clock drives the moving 30-minute scrub window.
-  const [now, setNow] = useState(Date.now());
+  // The scrub bar runs on the NVR's clock, not this device's: recordings are
+  // timestamped by the NVR, and a drifting VM or PC clock otherwise turns the
+  // newest minutes into "no recording".
+  const clockOffset = useRef(0);
+  const serverNow = () => Date.now() + clockOffset.current;
+  const noteServerClock = (serverSeconds: number) => {
+    clockOffset.current = serverSeconds * 1000 - Date.now();
+  };
+
+  // Ticking clock drives the moving scrub window.
+  const [now, setNow] = useState(serverNow());
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const t = setInterval(() => setNow(serverNow()), 1000);
     return () => clearInterval(t);
   }, []);
   const windowStart = now - SCRUB_WINDOW_MS;
+
+  const sourceRef = useRef<Source | null>(null);
+  sourceRef.current = source;
+  const resolveSeq = useRef(0);
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const videoErrors = useRef(0);
 
   // Live tiles use the substream; a maximised / fullscreen tile upgrades to the
   // main stream for full detail.
   const activeQuality: "sub" | "main" = isFullscreen ? "main" : quality;
 
-  // Keep a small rolling list of recent recordings for the scrubber.
+  // Where footage exists in the window (shaded on the scrub bar).
   useEffect(() => {
     let cancelled = false;
     const load = () =>
       endpoints
-        // Enough to cover the full scrub window even with shorter/mixed clips
-        // (an hour of 5-min continuous segments is 12; this leaves headroom).
-        .listRecordings(camera.id, 24)
-        .then((r) => {
-          if (!cancelled) setRecentRecs(r);
+        .timeline(camera.id, (serverNow() - SCRUB_WINDOW_MS) / 1000)
+        .then((t) => {
+          if (cancelled) return;
+          noteServerClock(t.server_now);
+          setSpans(t.spans.map(([a, b]) => [a * 1000, b * 1000] as [number, number]));
         })
         .catch(() => {});
     load();
-    const t = setInterval(load, 30000);
+    const t = setInterval(load, TIMELINE_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(t);
     };
   }, [camera.id, endpoints]);
-
-  // Whenever scrubbing lands somewhere with no finalized Recording (typically
-  // the last few minutes, still being written), check whether the camera has
-  // a segment actively in progress that covers it - if so we can play that
-  // instead of reporting "no recording" for footage that genuinely exists.
-  useEffect(() => {
-    if (view !== "playback" || playbackRec) {
-      setActiveSeg(null);
-      return;
-    }
-    let cancelled = false;
-    const load = () => {
-      endpoints
-        .getLiveSegment(camera.id)
-        .then((info) => {
-          if (!cancelled) setActiveSeg({ startedAt: new Date(info.started_at).getTime() });
-        })
-        .catch(() => {
-          if (!cancelled) setActiveSeg(null);
-        });
-    };
-    load();
-    const t = setInterval(load, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [view, playbackRec, camera.id, endpoints]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(document.fullscreenElement === tileRef.current);
@@ -195,28 +218,136 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   }, []);
 
   const goLive = useCallback(() => {
+    resolveSeq.current += 1; // drop any answer still on its way
+    if (debounce.current) clearTimeout(debounce.current);
     setView("live");
     setPlaybackTs(null);
-    setPlaybackRec(null);
+    setSource(null);
+    setGap(null);
     setSnapshotSrc("");
   }, []);
 
-  // Move to a point in the last 30 minutes; snapping to the live edge resumes live.
-  const scrubTo = useCallback(
-    (ts: number) => {
-      if (ts >= now - LIVE_EDGE_MS) {
+  /** Seek the element already showing `src` (no reload) to wall time `ts`. */
+  const seekWithin = (src: Source, ts: number) => {
+    const want = Math.max(0, (ts - src.originMs) / 1000);
+    pendingSeek.current = want;
+    const v = videoRef.current;
+    if (v && v.readyState >= 1) {
+      seeking.current = true;
+      try {
+        v.currentTime = want;
+      } catch {
+        /* not ready - onLoadedMetadata applies pendingSeek */
+      }
+      if (v.paused && !videoPaused) v.play().catch(() => {});
+    }
+  };
+
+  /** Ask the NVR what plays at `ts` and start it. `continuing`: called because
+   *  the previous file ended, so small gaps are skipped and the live edge
+   *  hands over to live instead of showing "no footage". */
+  const resolveAt = useCallback(
+    async (ts: number, continuing = false) => {
+      const seq = ++resolveSeq.current;
+      if (!sourceRef.current) setGap({ kind: "loading" });
+      let answer: PlaybackAnswer;
+      try {
+        answer = await endpoints.resolvePlayback(camera.id, ts / 1000);
+      } catch (e) {
+        if (seq !== resolveSeq.current) return;
+        setSource(null);
+        setGap({ kind: "error", message: "Couldn't reach the NVR - retrying…" });
+        setTimeout(() => seq === resolveSeq.current && resolveAt(ts, continuing), 3000);
+        return;
+      }
+      if (seq !== resolveSeq.current) return;
+      noteServerClock(answer.server_now);
+      const nowMs = answer.server_now * 1000;
+
+      if (!answer.found || answer.origin == null || answer.end == null) {
+        const nextAt = answer.next_at != null ? answer.next_at * 1000 : null;
+        if (nextAt != null && nextAt - ts <= SMALL_GAP_MS && nextAt < nowMs - LIVE_EDGE_MS) {
+          setPlaybackTs(nextAt);
+          resolveAt(nextAt + 250, continuing);
+          return;
+        }
+        if (continuing && ts >= nowMs - CATCH_UP_MS * 2) {
+          goLive();
+          return;
+        }
+        setSource(null);
+        setGap({ kind: "none", nextAt });
+        return;
+      }
+
+      const next: Source =
+        answer.kind === "recording"
+          ? {
+              // H.265 recordings need the on-demand H.264 copy on browsers that
+              // can't play HEVC; segment snapshots prefer the H.264 sub already.
+              url: endpoints.recordingVideoUrl(answer.recording_id!, recordingNeedsTranscode({ codec: answer.codec })),
+              key: `rec-${answer.recording_id}`,
+              originMs: answer.origin * 1000,
+              endMs: answer.end * 1000,
+              growing: false,
+            }
+          : {
+              url: endpoints.snapshotVideoUrl(camera.id, answer.snapshot!),
+              key: `snap-${answer.snapshot}`,
+              originMs: answer.origin * 1000,
+              endMs: answer.end * 1000,
+              growing: !!answer.growing,
+            };
+      // Past the end of what's been written so far: start a little before it.
+      const target = Math.min(ts, next.endMs - 1500);
+      if (continuing && next.growing && target >= nowMs - CATCH_UP_MS) {
         goLive();
         return;
       }
-      const rec = findCovering(recentRecs, ts);
-      seeking.current = true;
-      setPlaybackTs(ts);
-      setPlaybackRec(rec);
-      setView("playback");
-      setVideoPaused(false);
+      setGap(null);
+      setPlaybackTs(target);
+      if (sourceRef.current?.key === next.key) {
+        seekWithin(sourceRef.current, target);
+      } else {
+        pendingSeek.current = Math.max(0, (target - next.originMs) / 1000);
+        seeking.current = true;
+        setPlaybackRes("");
+        setSource(next);
+      }
     },
-    [now, recentRecs, goLive],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [camera.id, endpoints, goLive],
   );
+
+  // Move to a point in the window; snapping to the live edge resumes live.
+  const scrubTo = useCallback(
+    (ts: number) => {
+      if (ts >= serverNow() - LIVE_EDGE_MS) {
+        goLive();
+        return;
+      }
+      setView("playback");
+      setPlaybackTs(ts);
+      setVideoPaused(false);
+      videoErrors.current = 0;
+      // Inside what's already loaded: just seek, no round trip.
+      const cur = sourceRef.current;
+      if (cur && ts >= cur.originMs && ts <= cur.endMs - 500) {
+        if (debounce.current) clearTimeout(debounce.current);
+        resolveSeq.current += 1;
+        seekWithin(cur, ts);
+        return;
+      }
+      if (debounce.current) clearTimeout(debounce.current);
+      debounce.current = setTimeout(() => resolveAt(ts), RESOLVE_DEBOUNCE_MS);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [goLive, resolveAt],
+  );
+
+  useEffect(() => () => {
+    if (debounce.current) clearTimeout(debounce.current);
+  }, []);
 
   const togglePlay = useCallback(() => {
     if (view === "live") {
@@ -238,42 +369,32 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
     }
   }, [view, camera.id, endpoints, goLive]);
 
-  // What's actually playable at playbackTs: either a finalized Recording, or
-  // (when no Recording covers it) the segment currently being written, if its
-  // start time reaches back far enough to cover this instant. The latter is
-  // what lets the last few minutes - before that segment closes and becomes a
-  // real Recording row - still play instead of reading as "no recording".
-  const playSource = playbackRec
-    ? {
-        originMs: recStartMs(playbackRec),
-        // H.265 recordings need the on-demand H.264 transcode on browsers that
-        // can't play HEVC (Firefox, many Chrome). Live segments are always H.264
-        // via the live path, so only finalized recordings are checked here.
-        url: endpoints.recordingVideoUrl(playbackRec.id, recordingNeedsTranscode(playbackRec)),
-        key: `rec-${playbackRec.id}`,
-      }
-    : activeSeg && playbackTs != null && playbackTs >= activeSeg.startedAt
-      ? { originMs: activeSeg.startedAt, url: endpoints.liveSegmentVideoUrl(camera.id), key: `seg-${activeSeg.startedAt}` }
-      : null;
-
-  // Seek the playback element when the scrub point moves (tolerant so the
-  // element's own playback doesn't fight the seek).
-  useEffect(() => {
-    if (view !== "playback" || !playSource || playbackTs == null) return;
+  /** The file finished: carry on with whatever comes next. */
+  const onEnded = () => {
+    const s = sourceRef.current;
     const v = videoRef.current;
-    if (!v) return;
-    const want = Math.max(0, (playbackTs - playSource.originMs) / 1000);
-    pendingSeek.current = want;
-    if (v.readyState >= 1 && Math.abs(v.currentTime - want) > 0.5) {
-      seeking.current = true;
-      try {
-        v.currentTime = want;
-      } catch {
-        /* not ready */
-      }
+    if (!s) return;
+    const reached = s.originMs + (v && isFinite(v.duration) ? v.duration * 1000 : s.endMs - s.originMs);
+    // A growing segment's snapshot ends where the recording had got to: ask
+    // again for a fresher one from here. A finished file: the next one.
+    resolveAt(s.growing ? reached : Math.max(reached, s.endMs) + 250, true);
+  };
+
+  /** The file failed to load (moved by the storage mover, expired, ...):
+   *  ask again rather than leave a dead tile; give up after a couple of tries. */
+  const onVideoError = () => {
+    const s = sourceRef.current;
+    if (!s) return;
+    videoErrors.current += 1;
+    const at = playbackTs ?? s.originMs;
+    if (videoErrors.current <= 2) {
+      setSource(null);
+      setTimeout(() => resolveAt(at), 1000);
+    } else {
+      setSource(null);
+      setGap({ kind: "error", message: "This recording couldn't be played." });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playbackTs, playSource?.key, playSource?.originMs, view]);
+  };
 
   const openPicker = useCallback(
     async (e: React.MouseEvent) => {
@@ -338,7 +459,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   // Stream / resolution readout.
   const streamInfo =
     view === "playback"
-      ? `recording${playbackRes ? ` · ${playbackRes}` : ""}`
+      ? `recording${source && playbackRes ? ` · ${playbackRes}` : ""}`
       : stat && stat.width > 0
         ? `${activeQuality === "main" ? "main" : "sub"} · ${stat.width}×${stat.height}`
         : activeQuality === "main"
@@ -348,21 +469,51 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   const sliderValue = playbackTs ?? now;
   const isLive = view === "live";
 
+  const gapMessage = () => {
+    if (!gap || gap.kind === "loading") return <div className="tile-empty">Loading recording…</div>;
+    if (gap.kind === "error") return <div className="tile-empty">{gap.message}</div>;
+    const why =
+      camera.recording_mode === "motion"
+        ? "This camera only records when there's motion."
+        : camera.recording_mode === "off"
+          ? "Recording is turned off for this camera."
+          : "The camera wasn't recording then (offline or restarting).";
+    return (
+      <div className="tile-empty" style={{ flexDirection: "column", gap: 8, textAlign: "center" }}>
+        <div>No footage at this moment.</div>
+        <div style={{ fontSize: 12, opacity: 0.8 }}>{why}</div>
+        {gap.nextAt != null && gap.nextAt < now - LIVE_EDGE_MS && (
+          <button
+            className="tile-ctrl-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPlaybackTs(gap.nextAt!);
+              resolveAt(gap.nextAt! + 250);
+            }}
+          >
+            Jump to next footage ({fmtTime(gap.nextAt)})
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div ref={tileRef} className="camera-tile" onDoubleClick={enterFullscreen}>
       {/* ── Media ── */}
       {offline ? (
         <div className="tile-empty">{camera.name}: offline</div>
-      ) : view === "playback" && playSource ? (
+      ) : view === "playback" && source ? (
         <video
-          key={playSource.key}
+          key={source.key}
           ref={videoRef}
           autoPlay
           className="tile-video"
-          src={playSource.url}
+          src={source.url}
           onLoadedMetadata={() => {
             const v = videoRef.current;
             if (!v) return;
+            videoErrors.current = 0;
             setPlaybackRes(`${v.videoWidth}×${v.videoHeight}`);
             try {
               v.currentTime = pendingSeek.current;
@@ -381,17 +532,20 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
               return;
             }
             if (!v.paused) {
-              setPlaybackTs(playSource.originMs + v.currentTime * 1000);
+              const ts = source.originMs + v.currentTime * 1000;
+              setPlaybackTs(ts);
+              if (ts >= serverNow() - LIVE_EDGE_MS) goLive();
             }
           }}
           onSeeked={() => {
             const v = videoRef.current;
             if (v && Math.abs(v.currentTime - pendingSeek.current) < 0.4) seeking.current = false;
           }}
-          onEnded={goLive}
+          onEnded={onEnded}
+          onError={onVideoError}
         />
       ) : view === "playback" ? (
-        <div className="tile-empty">No recording at this moment</div>
+        gapMessage()
       ) : view === "paused" ? (
         <img src={snapshotSrc} alt={camera.name} className="tile-frozen" />
       ) : (
@@ -439,7 +593,8 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
             max={now}
             step={1000}
             value={sliderValue}
-            title="Scrub the last 30 minutes"
+            style={{ background: coverageBackground(spans, windowStart, now) }}
+            title="Scrub the last 60 minutes (brighter = recorded)"
             onChange={(e) => scrubTo(Number(e.target.value))}
             onClick={(e) => e.stopPropagation()}
           />
@@ -505,12 +660,12 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
                   key={rec.id}
                   className="tile-rec-item"
                   onClick={() => {
-                    seeking.current = true;
-                    setPlaybackRec(rec);
-                    setPlaybackTs(recStartMs(rec));
+                    const ts = recStartMs(rec) + 250;
                     setView("playback");
+                    setPlaybackTs(ts);
                     setVideoPaused(false);
                     setShowPicker(false);
+                    resolveAt(ts);
                   }}
                 >
                   <span>{fmtTime(rec.started_at)}</span>
