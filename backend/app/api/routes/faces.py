@@ -165,6 +165,45 @@ async def download_face_models(db: AsyncSession = Depends(get_db), _: User = Dep
     return {"models": [m for m in reg.status(MODEL_DIR) if m["name"] in ("yunet", "sface")]}
 
 
+@router.get("/readiness")
+async def readiness(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """Everything that must be on for a face to be captured, as a checklist:
+    a face is only looked for when a camera's motion detection starts an
+    event, AI object detection confirms a person in it, and face recognition
+    (with its privacy acknowledgement and models) is on."""
+    from app.models.camera import Camera
+    from app.services.ai.pipeline import ai_pipeline
+    from app.services.ai.types import MODEL_DIR
+    from app.vision import models as reg
+
+    s = await db.get(AISettings, 1)
+    cams = (await db.execute(select(Camera).order_by(Camera.id))).scalars().all()
+    models_ready = all(reg.present(n, MODEL_DIR) for n in ("yunet", "sface")) or bool(
+        s and s.backend == "remote" and s.remote_url
+    )
+    checks = [
+        {"key": "ai", "ok": bool(s and s.enabled), "label": "AI is turned on",
+         "fix": "Settings → AI → turn on AI"},
+        {"key": "detection", "ok": bool(s and s.enabled and s.detection_enabled), "label": "Object detection is on",
+         "fix": "Settings → AI → Object detection"},
+        {"key": "ai_working", "ok": not getattr(ai_pipeline, "_outage_reported", False),
+         "label": "AI detection is working", "fix": "Settings → AI → Test / check the AI worker is running"},
+        {"key": "privacy", "ok": bool(s and s.privacy_ack), "label": "Face recognition privacy acknowledged",
+         "fix": "Settings → AI → Recognition → acknowledge"},
+        {"key": "faces", "ok": bool(s and s.face_enabled), "label": "Face recognition is on",
+         "fix": "Settings → AI → Recognition → turn on face recognition"},
+        {"key": "models", "ok": models_ready, "label": "Face models downloaded",
+         "fix": "People → Download face models"},
+    ]
+    stats = face_service.capture_stats()
+    cameras = [{
+        "id": c.id, "name": c.name, "recording_mode": c.recording_mode,
+        "motion": bool(c.motion_enabled or c.recording_mode == "motion"),
+        "checked_today": stats.get(c.id, {}).get("checked", 0),
+    } for c in cams]
+    return {"ready": all(c["ok"] for c in checks), "checks": checks, "cameras": cameras}
+
+
 @router.get("/capture-stats")
 async def capture_stats(_: User = Depends(require_admin)):
     """Today's face-capture outcomes per camera: how often a person was

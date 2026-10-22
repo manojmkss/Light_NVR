@@ -6,6 +6,16 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-22
+
+### Added
+- **"Faces can't be captured yet" checklist** on the People page whenever
+  something needed is off: AI, object detection, AI working, face
+  recognition and its privacy acknowledgement, face models, and motion
+  detection on each camera (continuous-recording cameras need it turned on
+  separately - faces and visits only come from motion events). Each red item
+  says where to fix it. `GET /api/faces/readiness`.
+
 ## [0.4.3] - 2026-10-22
 
 ### Added
@@ -435,7 +445,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/manojmkss/Light_NVR/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/manojmkss/Light_NVR/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/manojmkss/Light_NVR/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/manojmkss/Light_NVR/compare/v0.4.0...v0.4.1

@@ -7,6 +7,7 @@ import {
   deletePerson,
   discardGroup,
   faceCaptureStats,
+  faceReadiness,
   downloadFaceModels,
   faceModels,
   forgetAllFaces,
@@ -16,6 +17,7 @@ import {
   updatePerson,
   uploadPhotos,
   type FaceCaptureStats,
+  type FaceReadiness,
   type FaceGroup,
   type Person,
   type PersonCategory,
@@ -156,6 +158,7 @@ export function PeoplePage() {
   const [groups, setGroups] = useState<FaceGroup[]>([]);
   const [cameraNames, setCameraNames] = useState<Record<number, string>>({});
   const [capture, setCapture] = useState<Record<string, FaceCaptureStats>>({});
+  const [ready, setReady] = useState<FaceReadiness | null>(null);
   const [models, setModels] = useState<{ name: string; present: boolean; size_mb: number; license: string }[]>([]);
   const [draft, setDraft] = useState<PersonInput>(blank());
   const [playAt, setPlayAt] = useState<PlayAt | null>(null);
@@ -168,6 +171,7 @@ export function PeoplePage() {
     listUnknownGroups().then(setGroups).catch(() => setGroups([]));
     faceModels().then((r) => setModels(r.models)).catch(() => setModels([]));
     faceCaptureStats().then(setCapture).catch(() => setCapture({}));
+    faceReadiness().then(setReady).catch(() => setReady(null));
   };
   useEffect(() => {
     reload();
@@ -249,6 +253,7 @@ export function PeoplePage() {
       {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
       {msg && <div style={{ marginBottom: 10, fontSize: 13 }}>{msg}</div>}
 
+      <Readiness ready={ready} />
       <CaptureHealth stats={capture} cameraNames={cameraNames} />
 
       <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Who is this?</h2>
@@ -511,6 +516,43 @@ function CaptureHealth({ stats, cameraNames }: { stats: Record<string, FaceCaptu
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/** Everything that has to be on before any face can be captured - shown
+ *  whenever something is off, so "it isn't capturing anyone" has an answer. */
+function Readiness({ ready }: { ready: FaceReadiness | null }) {
+  if (!ready) return null;
+  const noMotion = ready.cameras.filter((c) => !c.motion);
+  if (ready.ready && !noMotion.length) return null;
+  return (
+    <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)" }}>
+      <strong>Faces can't be captured yet</strong>
+      <p style={{ fontSize: 13, color: "var(--text-dim)", margin: "4px 0 8px" }}>
+        A face is only looked for when a camera's motion detection starts an event, AI confirms a person in it, and
+        face recognition is on. Fix the red items:
+      </p>
+      <div style={{ display: "grid", gap: 4, fontSize: 13 }}>
+        {ready.checks.map((c) => (
+          <div key={c.key} style={{ display: "flex", gap: 8 }}>
+            <span style={{ color: c.ok ? "var(--success)" : "var(--danger)", width: 16 }}>{c.ok ? "✓" : "✗"}</span>
+            <span style={{ flex: 1 }}>{c.label}</span>
+            {!c.ok && <span style={{ color: "var(--text-dim)" }}>{c.fix}</span>}
+          </div>
+        ))}
+        {ready.cameras.map((c) => (
+          <div key={`cam-${c.id}`} style={{ display: "flex", gap: 8 }}>
+            <span style={{ color: c.motion ? "var(--success)" : "var(--danger)", width: 16 }}>{c.motion ? "✓" : "✗"}</span>
+            <span style={{ flex: 1 }}>Motion detection on '{c.name}'</span>
+            {!c.motion && (
+              <span style={{ color: "var(--text-dim)" }}>
+                Cameras → edit → Motion detection (keeps {c.recording_mode} recording)
+              </span>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

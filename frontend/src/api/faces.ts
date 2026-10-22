@@ -76,6 +76,12 @@ export interface FaceCaptureStats {
   frame_width: number;
   median_face_px: number | null;
 }
+export interface FaceReadiness {
+  ready: boolean;
+  checks: { key: string; ok: boolean; label: string; fix: string }[];
+  cameras: { id: number; name: string; recording_mode: string; motion: boolean; checked_today: number }[];
+}
+export const faceReadiness = () => apiFetch<FaceReadiness>("/faces/readiness");
 export const faceCaptureStats = () => apiFetch<Record<string, FaceCaptureStats>>("/faces/capture-stats");
 export const listUnknownGroups = () => apiFetch<FaceGroup[]>("/faces/unknown-groups");
 export const assignGroup = (sampleIds: number[], target: { person_id: number } | { person: PersonInput }) =>
