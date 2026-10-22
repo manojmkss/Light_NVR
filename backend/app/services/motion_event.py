@@ -196,6 +196,7 @@ class Track:
     possibly: str | None = None  # "probable" name, never treated as recognised
     best_face: object = None  # Face with the highest quality (saved for "Who is this?")
     best_face_score: float | None = None
+    best_face_at: float | None = None  # wall time of the frame the best face is from
     unknown_face: bool = False
 
     def predicted(self, now: float) -> tuple:
@@ -831,9 +832,10 @@ class MotionEventSession:
         for t in due:
             t.face_tries += 1
             t.last_face_try = now
-        self._face_task = asyncio.create_task(self._faces(frame, due))
+        wall = time.time() - max(0.0, time.monotonic() - now)
+        self._face_task = asyncio.create_task(self._faces(frame, due, wall))
 
-    async def _faces(self, frame: np.ndarray, tracks: list) -> None:
+    async def _faces(self, frame: np.ndarray, tracks: list, wall: float | None = None) -> None:
         try:
             results = await self._recognise(frame, [t.box for t in tracks])
         except Exception as exc:
@@ -846,6 +848,7 @@ class MotionEventSession:
             t = tracks[idx]
             if t.best_face is None or face.quality > t.best_face.quality:
                 t.best_face, t.best_face_score = face, match.score
+                t.best_face_at = wall or time.time()
             if match.band == "known":
                 t.face_votes[match.person_id] += 1
                 if t.face_votes[match.person_id] >= 2 or match.score >= thr + self.FACE_CLEAR_EXTRA:

@@ -575,7 +575,8 @@ class CameraWorker:
                         # Every face seen is kept for "Who is this?" (unknown
                         # samples expire after a few days); recognised ones too,
                         # but only the user can add a sighting to a person.
-                        await face_service.save_sample(t.best_face, None, self.camera_id, t.best_face_score, track_uid)
+                        await face_service.save_sample(t.best_face, None, self.camera_id, t.best_face_score, track_uid,
+                                                       seen_at=t.best_face_at)
                     except Exception:
                         logger.exception("Could not save face sample")
                 extra = {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listCameras } from "../api/cameras";
+import { PlaybackPopup } from "../components/PlaybackPopup";
 import {
   assignGroup,
   createPerson,
@@ -106,9 +107,30 @@ function NotifySelect({ value, category, onChange }: { value: PersonNotify; cate
   );
 }
 
-function Face({ sampleId, size = 48 }: { sampleId: number | null; size?: number }) {
+/** What a click on a face opens: that camera, at that moment. */
+type PlayAt = { cameraId: number; at: number; title?: string };
+
+function Face({ sampleId, size = 48, play, onPlay }: {
+  sampleId: number | null;
+  size?: number;
+  play?: PlayAt | null;
+  onPlay?: (p: PlayAt) => void;
+}) {
   const style = { width: size, height: size, objectFit: "cover" as const, borderRadius: 6, background: "var(--bg)", display: "block" };
-  return sampleId ? <img src={sampleCropUrl(sampleId)} alt="" style={style} /> : <div style={style} />;
+  if (!sampleId) return <div style={style} />;
+  const img = <img src={sampleCropUrl(sampleId)} alt="" style={style} />;
+  if (!play || !onPlay) return img;
+  return (
+    <button
+      type="button"
+      title="Play this moment"
+      onClick={() => onPlay(play)}
+      style={{ padding: 0, border: "none", background: "none", cursor: "pointer", position: "relative" }}
+    >
+      {img}
+      <span style={{ position: "absolute", right: 3, bottom: 3, fontSize: 10, background: "rgba(0,0,0,0.6)", color: "#fff", borderRadius: 3, padding: "0 3px" }}>▶</span>
+    </button>
+  );
 }
 
 /** A text cell that saves when you leave it (or press Enter). */
@@ -136,6 +158,7 @@ export function PeoplePage() {
   const [capture, setCapture] = useState<Record<string, FaceCaptureStats>>({});
   const [models, setModels] = useState<{ name: string; present: boolean; size_mb: number; license: string }[]>([]);
   const [draft, setDraft] = useState<PersonInput>(blank());
+  const [playAt, setPlayAt] = useState<PlayAt | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -238,6 +261,7 @@ export function PeoplePage() {
             cameraNames={cameraNames}
             onAssign={(target, done) => run(() => assignGroup(g.sample_ids, target), done)}
             onIgnore={() => run(() => discardGroup(g.sample_ids))}
+            onPlay={setPlayAt}
           />
         ))}
         {!groups.length && (
@@ -264,7 +288,13 @@ export function PeoplePage() {
           <tbody>
             {people.map((p) => (
               <tr key={p.id}>
-                <td style={{ width: 56 }}><Face sampleId={p.cover_sample_id} /></td>
+                <td style={{ width: 56 }}>
+                  <Face
+                    sampleId={p.cover_sample_id}
+                    play={p.cover_camera_id != null && p.cover_seen_at ? { cameraId: p.cover_camera_id, at: new Date(p.cover_seen_at).getTime(), title: p.name } : null}
+                    onPlay={setPlayAt}
+                  />
+                </td>
                 <td>
                   <EditCell value={p.name} placeholder="Name" onSave={(name) => save(p, { name })} />
                   {p.last_seen && <div style={{ fontSize: 11, color: "var(--text-dim)" }}>last seen {when(p.last_seen)}</div>}
@@ -317,10 +347,25 @@ export function PeoplePage() {
 
       <button
         className="btn btn-sm"
-        onClick={() => window.confirm("Delete ALL people and face data? This cannot be undone.") && run(forgetAllFaces)}
+        title="Family members and their photos are kept - delete them one by one if you really want them gone"
+        onClick={() =>
+          window.confirm(
+            "Delete everyone except Family, and all unnamed faces?\n\nFamily members and their photos are kept. This cannot be undone.",
+          ) && run(() => forgetAllFaces(), "Done - Family kept.")
+        }
       >
-        Forget all faces
+        Forget everyone except Family
       </button>
+
+      {playAt && (
+        <PlaybackPopup
+          cameraId={playAt.cameraId}
+          cameraName={cameraNames[playAt.cameraId]}
+          at={playAt.at}
+          title={playAt.title}
+          onClose={() => setPlayAt(null)}
+        />
+      )}
     </div>
   );
 }
@@ -331,26 +376,38 @@ function WhoIsThis({
   cameraNames,
   onAssign,
   onIgnore,
+  onPlay,
 }: {
   group: FaceGroup;
   people: Person[];
   cameraNames: Record<number, string>;
   onAssign: (target: { person_id: number } | { person: PersonInput }, done: string) => void;
   onIgnore: () => void;
+  onPlay: (p: PlayAt) => void;
 }) {
   const [form, setForm] = useState<PersonInput>(blank());
   const sug = group.suggestion;
   const where = group.camera_ids.map((id) => cameraNames[id] ?? `camera ${id}`).join(", ");
   const usual = usualTime(group.seen_at);
   const seen = group.sightings === 1 ? `Seen once, ${when(group.last_seen)}` : `Seen ${group.sightings}× · ${when(group.first_seen)} – ${when(group.last_seen)}`;
-  const thumbs = [group.cover_sample_id, ...group.sample_ids.filter((id) => id !== group.cover_sample_id)].slice(0, 4);
+  // Best faces first; each one plays the moment it was taken.
+  const thumbs = (group.faces.length ? group.faces : group.sample_ids.map((id) => ({ id, camera_id: null, seen_at: null })))
+    .slice(0, 4);
   const quick = (category: PersonCategory, label: string) =>
     onAssign({ person: { ...blank(category), name: "" } }, `Saved as ${label}.`);
 
   return (
     <div className="card" style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
       <div style={{ display: "flex", gap: 4 }}>
-        {thumbs.map((id, i) => <Face key={id} sampleId={id} size={i === 0 ? 96 : 46} />)}
+        {thumbs.map((f, i) => (
+          <Face
+            key={f.id}
+            sampleId={f.id}
+            size={i === 0 ? 96 : 46}
+            play={f.camera_id != null && f.seen_at ? { cameraId: f.camera_id, at: new Date(f.seen_at).getTime() } : null}
+            onPlay={onPlay}
+          />
+        ))}
       </div>
       <div style={{ flex: 1, minWidth: 260 }}>
         <div style={{ fontSize: 13 }}>

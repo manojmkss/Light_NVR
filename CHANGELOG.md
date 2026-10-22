@@ -6,6 +6,23 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-22
+
+### Added
+- **Click a face to watch that moment.** Faces under "Who is this?" and each
+  person's photo open a popup that plays that camera from a few seconds
+  before the face was captured, carrying on into the next recording. On the
+  Visits page, the visit picture and a ▶ next to every event do the same.
+
+### Changed
+- **"Forget all" keeps Family.** The button is now "Forget everyone except
+  Family": Family members and their photos stay; remove one by one with
+  Delete if you really mean it.
+- The "Face capture today" counts on the People page survive a restart or an
+  update, so a miss earlier in the day can still be explained.
+- Each captured face now records when it was on camera (it used the time the
+  event was saved, up to a minute later).
+
 ## [0.4.2] - 2026-10-22
 
 Rewinding live view now always finds the footage; faces are looked for in the
@@ -418,7 +435,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/manojmkss/Light_NVR/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/manojmkss/Light_NVR/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/manojmkss/Light_NVR/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/manojmkss/Light_NVR/compare/v0.3.1...v0.4.0

@@ -23,7 +23,7 @@ from app.models.ai_settings import AISettings
 from app.models.detection import Detection
 from app.models.person import FaceSample, Person
 from app.models.user import User
-from app.schemas.common import UtcDatetime
+from app.schemas.common import UtcDatetime, serialize_utc
 from app.services.faces import face_service, group_faces, recognition_strength, threshold_for
 
 router = APIRouter(prefix="/api/faces", tags=["faces"])
@@ -52,6 +52,8 @@ class PersonOut(PersonIn):
     strength: str = "weak"  # weak | good | strong
     strength_hint: str = ""
     cover_sample_id: int | None = None
+    cover_camera_id: int | None = None  # where / when the cover photo was taken (None for uploads)
+    cover_seen_at: UtcDatetime | None = None
     last_seen: UtcDatetime | None = None
     created_at: UtcDatetime
 
@@ -104,10 +106,17 @@ async def _clean(db: AsyncSession, payload: PersonIn, person_id: int | None = No
     return data
 
 
+def _seen(sample) -> datetime:
+    """When a captured face was on camera. Older samples have no seen_at: the
+    event is saved after its post-roll, ~15s after the last sighting."""
+    return sample.seen_at or (sample.created_at - timedelta(seconds=15))
+
+
 async def _people_out(db: AsyncSession, people: list[Person]) -> list[PersonOut]:
     ids = [p.id for p in people]
     rows = (await db.execute(
-        select(FaceSample.id, FaceSample.person_id, FaceSample.quality, FaceSample.created_at, FaceSample.crop_path)
+        select(FaceSample.id, FaceSample.person_id, FaceSample.quality, FaceSample.created_at, FaceSample.crop_path,
+               FaceSample.camera_id, FaceSample.seen_at)
         .where(FaceSample.person_id.in_(ids)).order_by(FaceSample.created_at)
     )).all() if ids else []
     by_person: dict[int, list] = {}
@@ -118,13 +127,15 @@ async def _people_out(db: AsyncSession, people: list[Person]) -> list[PersonOut]
         samples = by_person.get(p.id, [])
         strength, hint = recognition_strength([r.quality for r in samples])
         with_crop = [r for r in samples if r.crop_path]
-        cover = max(with_crop, key=lambda r: r.quality).id if with_crop else None
-        captured = [r.created_at for r in samples]
+        cover = max(with_crop, key=lambda r: r.quality) if with_crop else None
+        captured = [r.seen_at or r.created_at for r in samples if r.camera_id is not None]
         out.append(PersonOut(
             id=p.id, name=p.name, note=p.note, category=LEGACY_CATEGORIES.get(p.category, p.category),
             notify=p.notify or ("always" if p.arrival_alert else "never"), arrival_alert=p.arrival_alert,
             arrival_cooldown_s=p.arrival_cooldown_s, samples=len(samples), strength=strength, strength_hint=hint,
-            cover_sample_id=cover, last_seen=max(captured) if captured else None, created_at=p.created_at,
+            cover_sample_id=cover.id if cover else None, cover_camera_id=cover.camera_id if cover else None,
+            cover_seen_at=_seen(cover) if cover and cover.camera_id is not None else None,
+            last_seen=max(captured) if captured else None, created_at=p.created_at,
         ))
     return out
 
@@ -223,16 +234,26 @@ async def delete_person(person_id: int, db: AsyncSession = Depends(get_db), user
 
 
 @router.post("/forget-all")
-async def forget_all(db: AsyncSession = Depends(get_db), user: User = Depends(require_admin)):
-    n = await _purge_samples(db, FaceSample.id.is_not(None))
-    await db.execute(update(Detection).values(person_id=None, face_score=None))
-    await db.execute(delete(Person))
+async def forget_all(include_family: bool = False, db: AsyncSession = Depends(get_db),
+                     user: User = Depends(require_admin)):
+    """Deletes every person and face sample - except Family (and their
+    samples) unless `include_family`: wiping the household by accident means
+    enrolling everyone again."""
+    keep = [] if include_family else list((await db.execute(
+        select(Person.id).where(Person.category == "household")
+    )).scalars().all())
+    n = await _purge_samples(db, FaceSample.person_id.is_(None) | FaceSample.person_id.not_in(keep)
+                             if keep else FaceSample.id.is_not(None))
+    gone = update(Detection).values(person_id=None, face_score=None)
+    await db.execute(gone.where(Detection.person_id.not_in(keep)) if keep else gone)
+    await db.execute(delete(Person).where(Person.id.not_in(keep)) if keep else delete(Person))
     await db.commit()
     await face_service.reload()
     from app.services.events import emit_event
 
-    await emit_event(None, "audit", f"All face data ({n} samples) deleted by {user.username}", notify=False)
-    return {"deleted_samples": n}
+    kept = f", kept {len(keep)} Family member(s)" if keep else ""
+    await emit_event(None, "audit", f"Face data deleted by {user.username}: {n} samples{kept}", notify=False)
+    return {"deleted_samples": n, "kept_family": len(keep)}
 
 
 @router.get("/samples", response_model=list[SampleOut])
@@ -303,6 +324,7 @@ class FaceGroupOut(BaseModel):
     last_seen: UtcDatetime
     seen_at: list[UtcDatetime]  # for "mostly 7-8 am" in the viewer's timezone
     camera_ids: list[int]
+    faces: list[dict] = []  # [{"id", "camera_id", "seen_at"}] - click to play that moment
     suggestion: dict | None = None
 
 
@@ -321,7 +343,7 @@ async def unknown_groups(db: AsyncSession = Depends(get_db), _: User = Depends(r
     for g in group_faces(rows, thr):
         members = [by_id[i] for i in g.ids]
         with_crop = [m for m in members if m.crop_path] or members
-        times = sorted(m.created_at for m in members)
+        times = sorted(_seen(m) for m in members)
         match = face_service.match(g.centroid, thr)
         sug = ({"person_id": match.person_id, "name": match.name, "score": round(match.score, 3), "band": match.band}
                if match.person_id is not None else None)
@@ -329,6 +351,8 @@ async def unknown_groups(db: AsyncSession = Depends(get_db), _: User = Depends(r
             sample_ids=g.ids, cover_sample_id=max(with_crop, key=lambda r: r.quality).id,
             sightings=len({m.track_uid or f"s{m.id}" for m in members}), first_seen=times[0], last_seen=times[-1],
             seen_at=times[-50:], camera_ids=sorted({m.camera_id for m in members if m.camera_id is not None}),
+            faces=[{"id": m.id, "camera_id": m.camera_id, "seen_at": serialize_utc(_seen(m))}
+                   for m in sorted(members, key=lambda r: -r.quality)[:8]],
             suggestion=sug,
         ))
     out.sort(key=lambda g: g.last_seen, reverse=True)

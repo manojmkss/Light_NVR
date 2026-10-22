@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { listCameras } from "../api/cameras";
 import { buildMediaUrl } from "../api/client";
 import { listIncidentsWithEvents, type IncidentWithEvents } from "../api/security";
+import { PlaybackPopup } from "../components/PlaybackPopup";
 import { useSettings } from "../context/SettingsContext";
 
 type Period = "today" | "yesterday" | "week";
@@ -51,6 +52,7 @@ export function VisitsPage() {
   const [cameraNames, setCameraNames] = useState<Record<number, string>>({});
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [loaded, setLoaded] = useState(false);
+  const [playAt, setPlayAt] = useState<{ cameraId: number; at: number; title?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -193,7 +195,16 @@ export function VisitsPage() {
             <div key={i.id} className="card">
               <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
                 {i.snapshot_path && (
-                  <img src={buildMediaUrl(`/security/incidents/${i.id}/snapshot.jpg`)} alt="" style={{ width: 140, borderRadius: 6 }} />
+                  <img
+                    src={buildMediaUrl(`/security/incidents/${i.id}/snapshot.jpg`)}
+                    alt=""
+                    title={i.camera_ids?.length ? "Play this visit" : undefined}
+                    style={{ width: 140, borderRadius: 6, cursor: i.camera_ids?.length ? "pointer" : undefined }}
+                    onClick={() =>
+                      i.camera_ids?.length &&
+                      setPlayAt({ cameraId: i.camera_ids[0], at: new Date(i.started_at).getTime(), title: "Visit" })
+                    }
+                  />
                 )}
                 <div style={{ flex: 1, minWidth: 240 }}>
                   <div>
@@ -218,6 +229,18 @@ export function VisitsPage() {
                   {list.map((e) => (
                     <div key={e.id} style={{ display: "flex", gap: 8, fontSize: 13, padding: "2px 0" }}>
                       <span style={{ minWidth: 70, color: "var(--text-dim)" }}>{fmtTime(e.created_at)}</span>
+                      {e.camera_id != null ? (
+                        <button
+                          className="btn btn-sm"
+                          title="Play this moment"
+                          style={{ padding: "0 6px", lineHeight: "18px" }}
+                          onClick={() => setPlayAt({ cameraId: e.camera_id!, at: new Date(e.created_at).getTime() })}
+                        >
+                          ▶
+                        </button>
+                      ) : (
+                        <span style={{ width: 26 }} />
+                      )}
                       <Link to={`/events/${e.id}`} style={{ flex: 1 }}>
                         {e.message.split("\n")[0]}
                       </Link>
@@ -233,6 +256,15 @@ export function VisitsPage() {
             </div>
           );
         })}
+        {playAt && (
+          <PlaybackPopup
+            cameraId={playAt.cameraId}
+            cameraName={cameraNames[playAt.cameraId]}
+            at={playAt.at}
+            title={playAt.title}
+            onClose={() => setPlayAt(null)}
+          />
+        )}
         {loaded && items.length > 0 && !shown.length && (
           <div className="card" style={{ color: "var(--text-dim)", fontSize: 13 }}>
             Only motion-only visits in this period - nothing was recognised. Untick "Real activity only" to see them.

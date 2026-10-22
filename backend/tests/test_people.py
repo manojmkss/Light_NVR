@@ -147,3 +147,55 @@ def test_face_capture_reasons_are_counted_per_camera():
     st = svc.capture_stats()[7]
     assert (st["checked"], st["usable"], st["too_small"], st["low_quality"], st["no_face"]) == (4, 1, 1, 1, 1)
     assert st["frame_width"] == 2000
+
+
+def test_forget_all_keeps_family_unless_asked(tmp_path, monkeypatch):
+    import app.models  # noqa: F401
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.api.routes import faces as route
+    from app.db.session import Base
+    from app.models.person import FaceSample, Person
+    from app.services import events
+
+    async def noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(route.face_service, "reload", noop)
+    monkeypatch.setattr(events, "emit_event", noop)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    user = SimpleNamespace(username="admin")
+
+    async def go():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with maker() as db:
+            db.add_all([Person(id=1, name="Son", category="household"), Person(id=2, name="Milkman", category="familiar")])
+            db.add_all([FaceSample(person_id=1, embedding=b"x"), FaceSample(person_id=2, embedding=b"x"),
+                        FaceSample(person_id=None, embedding=b"x")])
+            await db.commit()
+            r = await route.forget_all(include_family=False, db=db, user=user)
+            people = (await db.execute(select(Person.name))).scalars().all()
+            samples = (await db.execute(select(FaceSample.person_id))).scalars().all()
+            r2 = await route.forget_all(include_family=True, db=db, user=user)
+            left = (await db.execute(select(Person))).scalars().all()
+        await engine.dispose()
+        return r, people, samples, r2, left
+
+    r, people, samples, r2, left = asyncio.run(go())
+    assert r == {"deleted_samples": 2, "kept_family": 1}
+    assert people == ["Son"] and samples == [1]
+    assert r2["kept_family"] == 0 and left == []
+
+
+def test_face_moment_falls_back_for_older_samples():
+    from datetime import timedelta
+
+    from app.api.routes.faces import _seen
+
+    saved = datetime(2026, 1, 1, 10, 0, 30)
+    assert _seen(SimpleNamespace(seen_at=None, created_at=saved)) == saved - timedelta(seconds=15)
+    exact = datetime(2026, 1, 1, 10, 0, 2)
+    assert _seen(SimpleNamespace(seen_at=exact, created_at=saved)) == exact

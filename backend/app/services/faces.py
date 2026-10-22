@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -76,6 +77,8 @@ class FaceService:
         self._loaded = False
         self._lock = asyncio.Lock()
         self._stats: dict[int, dict] = {}
+        self._stats_loaded = False
+        self._stats_saved = 0.0
 
     # ── gallery ──────────────────────────────────────────────────────────────
 
@@ -188,9 +191,40 @@ class FaceService:
 
     # ── capture statistics (People page: "why no faces?") ───────────────────
 
+    def _stats_path(self) -> str:
+        from app.services.storage_manager import storage_manager
+
+        return os.path.join(storage_manager.cache_dir(), "face_capture_stats.json")
+
+    def _load_stats(self) -> None:
+        """Today's counts survive a restart (an update mid-day would otherwise
+        wipe the answer to "why wasn't X captured this morning?")."""
+        if self._stats_loaded:
+            return
+        self._stats_loaded = True
+        try:
+            with open(self._stats_path(), encoding="utf-8") as f:
+                self._stats = {int(k): v for k, v in json.load(f).items()}
+        except (OSError, ValueError):
+            pass
+
+    def _save_stats(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._stats_saved < 20:
+            return
+        self._stats_saved = now
+        try:
+            tmp = self._stats_path() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._stats, f)
+            os.replace(tmp, self._stats_path())
+        except OSError:
+            logger.debug("Could not save face capture stats", exc_info=True)
+
     def _count(self, camera_id: int | None, outcome: str, frame_width: int, face_px: float | None = None) -> None:
         if camera_id is None:
             return
+        self._load_stats()
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         st = self._stats.get(camera_id)
         if st is None or st["day"] != day:
@@ -200,10 +234,15 @@ class FaceService:
         st["frame_width"] = frame_width
         if face_px is not None:
             st["face_px"] = (st["face_px"] + [round(face_px)])[-200:]
+        self._save_stats()
 
     def capture_stats(self) -> dict[int, dict]:
+        self._load_stats()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         out = {}
         for cam, st in self._stats.items():
+            if st.get("day") != today:
+                continue
             px = sorted(st["face_px"])
             out[cam] = {k: st[k] for k in ("day", "no_face", "too_small", "low_quality", "usable", "frame_width")}
             out[cam]["checked"] = st["no_face"] + st["too_small"] + st["low_quality"] + st["usable"]
@@ -225,12 +264,13 @@ class FaceService:
         return path
 
     async def save_sample(self, face: Face, person_id: int | None, camera_id: int | None, score: float | None,
-                          track_uid: str | None, source: str = "capture") -> int:
+                          track_uid: str | None, source: str = "capture", seen_at: float | None = None) -> int:
         path = await asyncio.to_thread(self._write_crop, face.crop)
+        seen = datetime.fromtimestamp(seen_at, timezone.utc).replace(tzinfo=None) if seen_at else None
         async with AsyncSessionLocal() as db:
             row = FaceSample(person_id=person_id, camera_id=camera_id,
                              embedding=np.asarray(face.embedding, dtype=np.float32).tobytes(), crop_path=path,
-                             quality=face.quality, score=score, track_uid=track_uid, source=source)
+                             quality=face.quality, score=score, track_uid=track_uid, source=source, seen_at=seen)
             db.add(row)
             await db.commit()
             await db.refresh(row)

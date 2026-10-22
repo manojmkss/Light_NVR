@@ -16,6 +16,8 @@ export interface Person {
   strength: "weak" | "good" | "strong";
   strength_hint: string;
   cover_sample_id: number | null;
+  cover_camera_id: number | null; // where / when the cover photo was taken (null for uploads)
+  cover_seen_at: string | null;
   last_seen: string | null;
   created_at: string;
 }
@@ -30,6 +32,7 @@ export interface FaceGroup {
   last_seen: string;
   seen_at: string[];
   camera_ids: number[];
+  faces: { id: number; camera_id: number | null; seen_at: string | null }[];
   suggestion: { person_id: number; name: string; score: number; band: string } | null;
 }
 
@@ -49,7 +52,11 @@ export const createPerson = (p: PersonInput) => apiFetch<Person>("/faces/people"
 export const updatePerson = (id: number, p: PersonInput) =>
   apiFetch<Person>(`/faces/people/${id}`, { method: "PUT", body: JSON.stringify(p) });
 export const deletePerson = (id: number) => apiFetch<void>(`/faces/people/${id}`, { method: "DELETE" });
-export const forgetAllFaces = () => apiFetch<{ deleted_samples: number }>("/faces/forget-all", { method: "POST" });
+/** Deletes everyone and every unnamed face - except Family unless includeFamily. */
+export const forgetAllFaces = (includeFamily = false) =>
+  apiFetch<{ deleted_samples: number; kept_family: number }>(`/faces/forget-all?include_family=${includeFamily}`, {
+    method: "POST",
+  });
 export const listSamples = (q: { person_id?: number; unassigned?: boolean; limit?: number }) => {
   const p = new URLSearchParams();
   if (q.person_id !== undefined) p.set("person_id", String(q.person_id));

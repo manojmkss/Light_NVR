@@ -44,4 +44,7 @@ class FaceSample(Base):
     score: Mapped[float | None] = mapped_column(Float, nullable=True)  # best match score when seen
     track_uid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     source: Mapped[str] = mapped_column(String(16), default="capture")  # capture | upload
+    # When the face was on camera (created_at is when the event was saved,
+    # often a minute later) - clicking a face plays this moment.
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
