@@ -38,20 +38,45 @@ from app.vision.face import MIN_FACE_PX, Face, cosine
 logger = logging.getLogger(__name__)
 
 MIN_QUALITY = 0.35
+LEARN_MIN_QUALITY = 0.55  # learning by itself: only sharp, frontal faces
+LEARN_PER_DAY = 5
+LEARN_MAX = 40  # learned sightings kept per person (the oldest are replaced)
 # Faces are searched down to SEARCH_MIN_FACE px so the ones just too small to
 # use can be counted (and explained on the People page) instead of vanishing.
 SEARCH_MIN_FACE = 16
 MARGIN = 0.06
 CLEAR_EXTRA = 0.08  # this far above the threshold, one sighting is enough
-PROBABLE_FLOOR = 0.36
+
+# Per recogniser: the Settings slider (1-99) maps to a cosine threshold of
+# base..base+span, and "possibly X" starts at `probable`. SFace's default
+# (60 -> 0.45) is stricter than its LFW figure (0.363) on purpose: CCTV faces
+# are smaller, blurrier and more often at an angle than benchmark photos.
+# AdaFace scores different people lower (near 0), so its bar sits lower
+# (60 -> 0.38, the usual AdaFace operating point being ~0.4).
+MODEL_PARAMS = {
+    "sface": {"base": 0.30, "span": 0.25, "probable": 0.36},
+    "adaface": {"base": 0.20, "span": 0.30, "probable": 0.26},
+}
+PROBABLE_FLOOR = MODEL_PARAMS["sface"]["probable"]
 
 
-def threshold_for(settings) -> float:
-    """Settings slider 1-99 -> cosine threshold 0.30-0.55 (default 60 ~ 0.45).
-    Stricter than SFace's LFW figure (0.363) on purpose: CCTV faces are
-    smaller, blurrier and more often at an angle than benchmark photos."""
+def active_model(settings) -> str:
+    """The recogniser in use: AdaFace only when chosen *and* downloaded."""
+    chosen = getattr(settings, "face_model", "sface") or "sface"
+    if chosen == "adaface" and model_registry.present("adaface", MODEL_DIR):
+        return "adaface"
+    return "sface"
+
+
+def threshold_for(settings, model: str | None = None) -> float:
+    p = MODEL_PARAMS[model or active_model(settings)]
     v = getattr(settings, "face_threshold", 60) or 60
-    return 0.30 + (max(1, min(99, v)) / 100.0) * 0.25
+    return p["base"] + (max(1, min(99, v)) / 100.0) * p["span"]
+
+
+def sample_vector(sample, model: str) -> np.ndarray | None:
+    raw = sample.embedding_ada if model == "adaface" else sample.embedding
+    return np.frombuffer(raw, dtype=np.float32) if raw else None
 
 
 @dataclass
@@ -72,6 +97,9 @@ def faces_enabled(settings) -> bool:
 class FaceService:
     def __init__(self) -> None:
         self._engine = None
+        self._ada = None
+        self._model = "sface"
+        self.backfill_state = {"running": False, "done": 0, "total": 0}
         self._gallery: list[tuple[int, np.ndarray]] = []
         self._people: dict[int, Person] = {}
         self._loaded = False
@@ -83,13 +111,18 @@ class FaceService:
     # ── gallery ──────────────────────────────────────────────────────────────
 
     async def reload(self) -> None:
+        from app.models.ai_settings import AISettings
+
         async with AsyncSessionLocal() as db:
+            settings = await db.get(AISettings, 1)
             people = (await db.execute(select(Person))).scalars().all()
             samples = (await db.execute(select(FaceSample).where(FaceSample.person_id.is_not(None)))).scalars().all()
             for p in people:
                 db.expunge(p)
+        self._model = active_model(settings)
         self._people = {p.id: p for p in people}
-        self._gallery = [(s.person_id, np.frombuffer(s.embedding, dtype=np.float32)) for s in samples]
+        vectors = [(s.person_id, sample_vector(s, self._model)) for s in samples]
+        self._gallery = [(pid, v) for pid, v in vectors if v is not None]
         self._loaded = True
 
     async def _ensure_loaded(self) -> None:
@@ -108,12 +141,76 @@ class FaceService:
         person = self._people.get(pid)
         if top >= threshold and top - second >= MARGIN and person is not None:
             return Match(pid, person.name, person.note, person.category, top, "known")
-        if top >= PROBABLE_FLOOR and person is not None:
+        if top >= MODEL_PARAMS[self._model]["probable"] and person is not None:
             return Match(pid, person.name, person.note, person.category, top, "probable")
         return Match(None, None, None, None, top, "unknown")
 
+    def closest(self, embedding: np.ndarray) -> tuple[int | None, float]:
+        """The enrolled person this face is most similar to, however weakly -
+        shown on "Who is this?" so a near miss ("41%, 45% needed") is visible
+        and one click teaches the NVR what that person looks like on camera."""
+        best_pid, best = None, -1.0
+        for pid, emb in self._gallery:
+            score = cosine(embedding, emb)
+            if score > best:
+                best_pid, best = pid, score
+        return best_pid, best
+
     def person(self, person_id: int) -> Person | None:
         return self._people.get(person_id)
+
+    # ── learning by itself ───────────────────────────────────────────────────
+
+    async def learnable(self, settings, identity: dict | None, face: Face) -> int | None:
+        """The person to file this camera sighting under automatically, or None
+        to leave it for "Who is this?".
+
+        Phone photos teach the recogniser what someone looks like up close;
+        only camera sightings teach it how they look from *this* camera (from
+        above, smaller, in this light). So confident recognitions are added
+        to the person's photos by themselves and recognition gets better day
+        by day. Guarded against learning the wrong face: the event already
+        recognised them (2 agreeing sightings or 1 clear one), this face on
+        its own is a clear match with a margin over everyone else, it's a
+        sharp, frontal face, only Family and Familiar people, at most
+        LEARN_PER_DAY a day and LEARN_MAX in all (oldest replaced)."""
+        if not identity or not identity.get("id") or face is None or face.embedding is None:
+            return None
+        pid = identity["id"]
+        person = self._people.get(pid)
+        if person is None or person.category not in ("household", "familiar"):
+            return None
+        if face.quality < LEARN_MIN_QUALITY:
+            return None
+        vec = await self.vector(face)
+        if vec is None:
+            return None
+        m = self.match(vec, threshold_for(settings, self._model))
+        if m.band != "known" or m.person_id != pid:
+            return None
+        from sqlalchemy import func
+
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        async with AsyncSessionLocal() as db:
+            today = (await db.execute(
+                select(func.count()).select_from(FaceSample)
+                .where(FaceSample.person_id == pid, FaceSample.source == "auto", FaceSample.created_at >= day_start)
+            )).scalar() or 0
+            if today >= LEARN_PER_DAY:
+                return None
+            learned = (await db.execute(
+                select(FaceSample).where(FaceSample.person_id == pid, FaceSample.source == "auto")
+                .order_by(FaceSample.created_at)
+            )).scalars().all()
+            for old in learned[: max(0, len(learned) - LEARN_MAX + 1)]:
+                if old.crop_path and os.path.exists(old.crop_path):
+                    try:
+                        os.remove(old.crop_path)
+                    except OSError:
+                        pass
+                await db.delete(old)
+            await db.commit()
+        return pid
 
     # ── finding faces ────────────────────────────────────────────────────────
 
@@ -126,6 +223,71 @@ class FaceService:
             self._engine = FaceEngine(model_registry.path_for("yunet", MODEL_DIR),
                                       model_registry.path_for("sface", MODEL_DIR))
         return self._engine
+
+    # ── AdaFace (optional second recogniser) ─────────────────────────────────
+
+    def _ada_engine(self):
+        if self._ada is None:
+            from app.vision.face import AdaFace
+
+            if not model_registry.present("adaface", MODEL_DIR):
+                return None
+            self._ada = AdaFace(model_registry.path_for("adaface", MODEL_DIR), threads=2)
+        return self._ada
+
+    def _ada_vector_sync(self, crop: np.ndarray | None, aligned: bool) -> np.ndarray | None:
+        from app.vision.face import realign
+
+        ada = self._ada_engine()
+        if ada is None or crop is None:
+            return None
+        if not aligned:
+            try:
+                crop = realign(self._local_engine(), crop)
+            except FileNotFoundError:
+                return None
+            if crop is None:
+                return None
+        return ada.embed(crop)
+
+    async def ada_vector(self, face: Face) -> np.ndarray | None:
+        if face.embedding_ada is None:
+            face.embedding_ada = await asyncio.to_thread(self._ada_vector_sync, face.crop, face.aligned)
+        return face.embedding_ada
+
+    async def vector(self, face: Face) -> np.ndarray | None:
+        """The face's embedding for the recogniser in use."""
+        if self._model == "adaface":
+            return await self.ada_vector(face)
+        return np.asarray(face.embedding, dtype=np.float32) if face.embedding is not None else None
+
+    async def backfill_ada(self) -> None:
+        """Give every saved face an AdaFace embedding too (from its saved
+        picture, re-aligned), so the two recognisers can be compared on the
+        user's own faces. Runs in the background after the download."""
+        if self.backfill_state["running"] or self._ada_engine() is None:
+            return
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                select(FaceSample.id, FaceSample.crop_path).where(FaceSample.embedding_ada.is_(None))
+            )).all()
+        self.backfill_state = {"running": True, "done": 0, "total": len(rows)}
+        try:
+            for sid, path in rows:
+                crop = await asyncio.to_thread(cv2.imread, path) if path and os.path.exists(path) else None
+                vec = await asyncio.to_thread(self._ada_vector_sync, crop, False) if crop is not None else None
+                if vec is not None:
+                    async with AsyncSessionLocal() as db:
+                        row = await db.get(FaceSample, sid)
+                        if row is not None:
+                            row.embedding_ada = vec.astype(np.float32).tobytes()
+                            await db.commit()
+                self.backfill_state["done"] += 1
+        except Exception:
+            logger.exception("Preparing AdaFace embeddings failed")
+        finally:
+            self.backfill_state["running"] = False
+        await self.reload()
 
     async def find(self, settings, frame: np.ndarray, boxes: list | None, keep_crops: bool = True,
                    min_face: int = MIN_FACE_PX) -> list[Face]:
@@ -147,7 +309,7 @@ class FaceService:
             resp = await client.post(
                 f"{settings.remote_url.rstrip('/')}/v2/faces",
                 files={"image": ("frame.jpg", jpeg.tobytes(), "image/jpeg")},
-                data={"boxes": json.dumps(boxes) if boxes else "", "min_face": str(min_face)},
+                data={"boxes": json.dumps(boxes) if boxes else "", "min_face": str(min_face), "crops": "true"},
             )
             resp.raise_for_status()
         out = []
@@ -155,10 +317,18 @@ class FaceService:
         for f in resp.json().get("faces", []):
             face = Face(f["x"], f["y"], f["w"], f["h"], f["score"], f["quality"],
                         np.asarray(f["embedding"], dtype=np.float32))
-            x1, y1 = int(face.x * W), int(face.y * H)
-            x2, y2 = int((face.x + face.w) * W), int((face.y + face.h) * H)
-            crop = frame[max(0, y1):y2, max(0, x1):x2]
-            face.crop = cv2.resize(crop, (112, 112)) if crop.size else None
+            if f.get("crop"):
+                # The worker's aligned face (newer workers).
+                import base64
+
+                buf = np.frombuffer(base64.b64decode(f["crop"]), np.uint8)
+                face.crop = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                face.aligned = face.crop is not None
+            if face.crop is None:
+                x1, y1 = int(face.x * W), int(face.y * H)
+                x2, y2 = int((face.x + face.w) * W), int((face.y + face.h) * H)
+                crop = frame[max(0, y1):y2, max(0, x1):x2]
+                face.crop = cv2.resize(crop, (112, 112)) if crop.size else None
             out.append(face)
         return out
 
@@ -169,7 +339,7 @@ class FaceService:
         usable (see capture_stats)."""
         await self._ensure_loaded()
         faces = await self.find(settings, frame, person_boxes, min_face=SEARCH_MIN_FACE)
-        thr = threshold_for(settings)
+        thr = threshold_for(settings, self._model)
         H, W = frame.shape[:2]
         out = []
         for i, (bx, by, bw, bh) in enumerate(person_boxes):
@@ -185,8 +355,12 @@ class FaceService:
             if f.quality < MIN_QUALITY:
                 self._count(camera_id, "low_quality", W, min(f.w * W, f.h * H))
                 continue
+            vec = await self.vector(f)
+            if vec is None:
+                self._count(camera_id, "low_quality", W, min(f.w * W, f.h * H))
+                continue
             self._count(camera_id, "usable", W, min(f.w * W, f.h * H))
-            out.append((i, f, self.match(f.embedding, thr)))
+            out.append((i, f, self.match(vec, thr)))
         return out
 
     # ── capture statistics (People page: "why no faces?") ───────────────────
@@ -267,10 +441,12 @@ class FaceService:
                           track_uid: str | None, source: str = "capture", seen_at: float | None = None) -> int:
         path = await asyncio.to_thread(self._write_crop, face.crop)
         seen = datetime.fromtimestamp(seen_at, timezone.utc).replace(tzinfo=None) if seen_at else None
+        ada = await self.ada_vector(face) if model_registry.present("adaface", MODEL_DIR) else None
         async with AsyncSessionLocal() as db:
             row = FaceSample(person_id=person_id, camera_id=camera_id,
                              embedding=np.asarray(face.embedding, dtype=np.float32).tobytes(), crop_path=path,
-                             quality=face.quality, score=score, track_uid=track_uid, source=source, seen_at=seen)
+                             quality=face.quality, score=score, track_uid=track_uid, source=source, seen_at=seen,
+                             embedding_ada=ada.astype(np.float32).tobytes() if ada is not None else None)
             db.add(row)
             await db.commit()
             await db.refresh(row)
@@ -284,12 +460,27 @@ face_service = FaceService()
 
 # ── people page helpers ──────────────────────────────────────────────────────
 
-def recognition_strength(qualities: list[float]) -> tuple[str, str]:
-    """How reliably someone will be recognised, in words, from their samples."""
+# "Who is this?" groups sightings this far below the recognition threshold:
+# grouping is only a suggestion the user confirms, and the same person seen
+# from different angles across visits rarely scores as high as a match needs.
+GROUP_SLACK = 0.06
+
+
+def recognition_strength(qualities: list[float], sources: list[str] | None = None) -> tuple[str, str]:
+    """How reliably someone will be recognised, in words, from their samples.
+
+    Phone photos alone are weak: a face seen by a CCTV camera (from above,
+    small, softer, different light) looks quite different to the recogniser,
+    so it needs a few sightings from the cameras themselves."""
     n = len(qualities)
     good = sum(1 for q in qualities if q >= 0.6)
+    cameras = sum(1 for s in (sources or []) if s != "upload") if sources is not None else n
     if n < 3:
         return "weak", f"add {3 - n} more photo(s) - front and slightly turned"
+    if cameras == 0:
+        return "weak", "only phone photos - confirm 2-3 of their sightings under Who is this?"
+    if cameras < 3:
+        return "good", f"confirm {3 - cameras} more camera sighting(s) under Who is this?"
     if n >= 6 and good >= 4:
         return "strong", ""
     return "good", "a few more clear sightings will make it stronger"

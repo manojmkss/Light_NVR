@@ -7,6 +7,7 @@ deletes every face sample and person.
 
 import asyncio
 import os
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import cv2
@@ -24,7 +25,16 @@ from app.models.detection import Detection
 from app.models.person import FaceSample, Person
 from app.models.user import User
 from app.schemas.common import UtcDatetime, serialize_utc
-from app.services.faces import face_service, group_faces, recognition_strength, threshold_for
+from app.services.faces import (
+    GROUP_SLACK,
+    MARGIN,
+    active_model,
+    face_service,
+    group_faces,
+    recognition_strength,
+    sample_vector,
+    threshold_for,
+)
 
 router = APIRouter(prefix="/api/faces", tags=["faces"])
 
@@ -52,6 +62,7 @@ class PersonOut(PersonIn):
     strength: str = "weak"  # weak | good | strong
     strength_hint: str = ""
     cover_sample_id: int | None = None
+    learned: int = 0  # camera sightings added by itself (confident recognitions)
     cover_camera_id: int | None = None  # where / when the cover photo was taken (None for uploads)
     cover_seen_at: UtcDatetime | None = None
     last_seen: UtcDatetime | None = None
@@ -116,7 +127,7 @@ async def _people_out(db: AsyncSession, people: list[Person]) -> list[PersonOut]
     ids = [p.id for p in people]
     rows = (await db.execute(
         select(FaceSample.id, FaceSample.person_id, FaceSample.quality, FaceSample.created_at, FaceSample.crop_path,
-               FaceSample.camera_id, FaceSample.seen_at)
+               FaceSample.camera_id, FaceSample.seen_at, FaceSample.source)
         .where(FaceSample.person_id.in_(ids)).order_by(FaceSample.created_at)
     )).all() if ids else []
     by_person: dict[int, list] = {}
@@ -125,7 +136,7 @@ async def _people_out(db: AsyncSession, people: list[Person]) -> list[PersonOut]
     out = []
     for p in people:
         samples = by_person.get(p.id, [])
-        strength, hint = recognition_strength([r.quality for r in samples])
+        strength, hint = recognition_strength([r.quality for r in samples], [r.source for r in samples])
         with_crop = [r for r in samples if r.crop_path]
         cover = max(with_crop, key=lambda r: r.quality) if with_crop else None
         captured = [r.seen_at or r.created_at for r in samples if r.camera_id is not None]
@@ -133,7 +144,8 @@ async def _people_out(db: AsyncSession, people: list[Person]) -> list[PersonOut]
             id=p.id, name=p.name, note=p.note, category=LEGACY_CATEGORIES.get(p.category, p.category),
             notify=p.notify or ("always" if p.arrival_alert else "never"), arrival_alert=p.arrival_alert,
             arrival_cooldown_s=p.arrival_cooldown_s, samples=len(samples), strength=strength, strength_hint=hint,
-            cover_sample_id=cover.id if cover else None, cover_camera_id=cover.camera_id if cover else None,
+            cover_sample_id=cover.id if cover else None, learned=sum(1 for r in samples if r.source == "auto"),
+            cover_camera_id=cover.camera_id if cover else None,
             cover_seen_at=_seen(cover) if cover and cover.camera_id is not None else None,
             last_seen=max(captured) if captured else None, created_at=p.created_at,
         ))
@@ -163,6 +175,128 @@ async def download_face_models(db: AsyncSession = Depends(get_db), _: User = Dep
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Download failed: {exc}") from exc
     face_service._engine = None
     return {"models": [m for m in reg.status(MODEL_DIR) if m["name"] in ("yunet", "sface")]}
+
+
+# ── recogniser: SFace (built in) or AdaFace (optional, compared first) ──────
+
+
+class ModelIn(BaseModel):
+    model: str
+
+
+def _model_status(s: AISettings | None) -> dict:
+    from app.services.ai.types import MODEL_DIR
+    from app.vision import models as reg
+
+    info = reg.MANIFEST["adaface"]
+    return {
+        "active": active_model(s),
+        "chosen": (getattr(s, "face_model", None) or "sface") if s else "sface",
+        "adaface": {"present": reg.present("adaface", MODEL_DIR), "size_mb": info["size_mb"],
+                    "license": info["license"]},
+        "preparing": face_service.backfill_state,
+    }
+
+
+@router.get("/model")
+async def face_model(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    return _model_status(await db.get(AISettings, 1))
+
+
+@router.post("/model/adaface/download")
+async def download_adaface(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """Explicit, admin-triggered download of AdaFace (~92 MB, checksum
+    verified). It doesn't replace anything: every saved face also gets an
+    AdaFace embedding in the background so the two can be compared on the
+    user's own faces before switching."""
+    s = await _require_faces(db)
+    from app.services.ai.types import MODEL_DIR
+    from app.vision import models as reg
+
+    try:
+        for name in ("yunet", "sface", "adaface"):  # alignment needs YuNet + SFace locally
+            await asyncio.to_thread(reg.download, name, MODEL_DIR, 600.0)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Download failed: {exc}") from exc
+    face_service._engine = None
+    asyncio.create_task(face_service.backfill_ada())
+    return _model_status(s)
+
+
+@router.put("/model")
+async def set_face_model(payload: ModelIn, db: AsyncSession = Depends(get_db), user: User = Depends(require_admin)):
+    if payload.model not in ("sface", "adaface"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model must be sface or adaface")
+    s = await _require_faces(db)
+    if payload.model == "adaface" and active_model(SimpleNamespace(face_model="adaface")) != "adaface":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Download AdaFace first")
+    s.face_model = payload.model
+    await db.commit()
+    await face_service.reload()
+    from app.services.events import emit_event
+
+    await emit_event(None, "audit", f"Face recogniser set to {payload.model} by {user.username}", notify=False)
+    return _model_status(s)
+
+
+def compare_models(samples: list, settings) -> dict:
+    """How each recogniser does on the user's own confirmed faces.
+
+    Every confirmed *camera* sighting is taken out in turn and matched against
+    all the other confirmed photos (minus its own walk-past, which would be a
+    trivial match) - exactly the decision made live: recognised correctly,
+    recognised as the wrong person, or missed. Pure function (tested)."""
+    out = {}
+    for model in ("sface", "adaface"):
+        thr = threshold_for(settings, model)
+        labelled = [(x, sample_vector(x, model)) for x in samples if x.person_id is not None]
+        labelled = [(x, v) for x, v in labelled if v is not None]
+        correct = wrong = missed = 0
+        genuine, impostor = [], []
+        for x, v in labelled:
+            if x.source == "upload":
+                continue
+            best: dict[int, float] = {}
+            for y, w in labelled:
+                if y.id == x.id or (x.track_uid and y.track_uid == x.track_uid):
+                    continue
+                best[y.person_id] = max(best.get(y.person_id, -1.0), float(np.dot(v, w)))
+            if not best:
+                continue
+            ranked = sorted(best.items(), key=lambda kv: -kv[1])
+            pid, top = ranked[0]
+            second = ranked[1][1] if len(ranked) > 1 else -1.0
+            if x.person_id in best:
+                genuine.append(best[x.person_id])
+            impostor += [sc for p, sc in best.items() if p != x.person_id]
+            if top >= thr and top - second >= MARGIN:
+                if pid == x.person_id:
+                    correct += 1
+                else:
+                    wrong += 1
+            else:
+                missed += 1
+        tested = correct + wrong + missed
+        out[model] = {
+            "tested": tested, "correct": correct, "wrong": wrong, "missed": missed, "threshold": round(thr, 3),
+            "same_person_avg": round(float(np.mean(genuine)), 3) if genuine else None,
+            "other_people_max": round(float(np.max(impostor)), 3) if impostor else None,
+        }
+    s, a = out["sface"], out["adaface"]
+    if a["tested"] < 5 or s["tested"] < 5:
+        verdict = "not_enough"
+    elif a["wrong"] <= s["wrong"] and a["correct"] >= s["correct"] + max(2, round(0.1 * a["tested"])):
+        verdict = "adaface"
+    else:
+        verdict = "sface"
+    return {"models": out, "verdict": verdict}
+
+
+@router.get("/model/compare")
+async def compare(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    s = await db.get(AISettings, 1)
+    rows = (await db.execute(select(FaceSample).where(FaceSample.person_id.is_not(None)))).scalars().all()
+    return compare_models(list(rows), s or SimpleNamespace(face_threshold=60))
 
 
 @router.get("/readiness")
@@ -311,7 +445,12 @@ async def list_samples(person_id: int | None = None, unassigned: bool = False, l
     for r in rows:
         sug = None
         if r.person_id is None:
-            m = face_service.match(np.frombuffer(r.embedding, dtype=np.float32), thr)
+            vec = sample_vector(r, face_service._model)
+            if vec is None:
+                out.append(SampleOut(id=r.id, person_id=r.person_id, camera_id=r.camera_id, quality=r.quality,
+                                     score=r.score, source=r.source, created_at=r.created_at))
+                continue
+            m = face_service.match(vec, thr)
             if m.person_id is not None:
                 sug = {"person_id": m.person_id, "name": m.name, "score": round(m.score, 3), "band": m.band}
         out.append(SampleOut(id=r.id, person_id=r.person_id, camera_id=r.camera_id, quality=r.quality, score=r.score,
@@ -365,6 +504,10 @@ class FaceGroupOut(BaseModel):
     camera_ids: list[int]
     faces: list[dict] = []  # [{"id", "camera_id", "seen_at"}] - click to play that moment
     suggestion: dict | None = None
+    # The enrolled person it's most like, however weakly, and the score needed
+    # to be recognised - so a near miss is visible and one click fixes it.
+    closest: dict | None = None
+    threshold: float = 0.0
 
 
 @router.get("/unknown-groups", response_model=list[FaceGroupOut])
@@ -379,20 +522,28 @@ async def unknown_groups(db: AsyncSession = Depends(get_db), _: User = Depends(r
     thr = threshold_for(s)
     await face_service._ensure_loaded()
     out = []
-    for g in group_faces(rows, thr):
+    model = face_service._model
+    floor = 0.30 if model == "sface" else 0.20
+    usable = [SimpleNamespace(id=r.id, track_uid=r.track_uid, embedding=r.embedding_ada if model == "adaface" else r.embedding)
+              for r in rows]
+    for g in group_faces([u for u in usable if u.embedding], max(floor, thr - GROUP_SLACK)):
         members = [by_id[i] for i in g.ids]
         with_crop = [m for m in members if m.crop_path] or members
         times = sorted(_seen(m) for m in members)
         match = face_service.match(g.centroid, thr)
         sug = ({"person_id": match.person_id, "name": match.name, "score": round(match.score, 3), "band": match.band}
                if match.person_id is not None else None)
+        near_pid, near = face_service.closest(g.centroid)
+        near_person = face_service.person(near_pid) if near_pid is not None else None
+        closest = ({"person_id": near_pid, "name": near_person.name, "score": round(near, 3)}
+                   if near_person is not None else None)
         out.append(FaceGroupOut(
             sample_ids=g.ids, cover_sample_id=max(with_crop, key=lambda r: r.quality).id,
             sightings=len({m.track_uid or f"s{m.id}" for m in members}), first_seen=times[0], last_seen=times[-1],
             seen_at=times[-50:], camera_ids=sorted({m.camera_id for m in members if m.camera_id is not None}),
             faces=[{"id": m.id, "camera_id": m.camera_id, "seen_at": serialize_utc(_seen(m))}
                    for m in sorted(members, key=lambda r: -r.quality)[:8]],
-            suggestion=sug,
+            suggestion=sug, closest=closest, threshold=round(thr, 3),
         ))
     out.sort(key=lambda g: g.last_seen, reverse=True)
     return out

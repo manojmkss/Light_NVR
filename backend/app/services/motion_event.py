@@ -198,6 +198,11 @@ class Track:
     best_face_score: float | None = None
     best_face_at: float | None = None  # wall time of the frame the best face is from
     unknown_face: bool = False
+    # Re-identification within the event (see ObjectTracker._comeback).
+    sig: tuple | None = None  # (upper-body, lower-body) colour histograms, averaged
+    sig_n: int = 0
+    reid_of: "Track | None" = None  # the earlier track this one is the same as
+    came_back: bool = False  # a later track was found to be this one returning
 
     def predicted(self, now: float) -> tuple:
         """Where the box should be now, given how it was moving - ticks get
@@ -215,6 +220,41 @@ class Track:
     @property
     def policy(self) -> ClassPolicy:
         return policy_of(self.group)
+
+
+# ── appearance signature (re-identification within an event) ───────────────
+
+REID_GROUPS = ("person", "animal")
+REID_WINDOW = 300.0  # a comeback within 5 minutes of leaving is considered
+REID_SIM = 0.8  # how alike the clothing colours must be (histogram correlation)
+
+
+def _identities_differ(a: "Track", b: "Track") -> bool:
+    return bool(a.identity and b.identity and a.identity.get("id") != b.identity.get("id"))
+
+
+def appearance_signature(frame: np.ndarray, box: tuple) -> tuple | None:
+    """Colour make-up of the upper and lower half of a box: what someone is
+    wearing, roughly - enough to tell "the same person came back into view"
+    from "someone else arrived" without a heavyweight re-ID model."""
+    H, W = frame.shape[:2]
+    x, y, w, h = box
+    x1, y1 = max(0, int(x * W)), max(0, int(y * H))
+    x2, y2 = min(W, int((x + w) * W)), min(H, int((y + h) * H))
+    if x2 - x1 < 8 or y2 - y1 < 16:
+        return None
+    crop = cv2.resize(frame[y1:y2, x1:x2], (32, 64), interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    out = []
+    for part in (hsv[6:32], hsv[32:60]):  # skip the very top (head/background) and the feet
+        hist = cv2.calcHist([part], [0, 1], None, [12, 6], [0, 180, 0, 256]).ravel()
+        total = float(hist.sum()) or 1.0
+        out.append((hist / total).astype(np.float32))
+    return tuple(out)
+
+
+def signature_similarity(a: tuple, b: tuple) -> float:
+    return float(np.mean([cv2.compareHist(x, y, cv2.HISTCMP_CORREL) for x, y in zip(a, b)]))
 
 
 class ObjectTracker:
@@ -277,11 +317,51 @@ class ObjectTracker:
         size = max(t.anchor[2], t.anchor[3], 1e-6)
         return math.hypot(bx - ax, by - ay) > self.MOVE_SHIFT * size or _iou(t.anchor, box) < self.MOVE_IOU
 
-    def _announce(self, t: Track, wall: float, text: str) -> None:
+    def _announce(self, t: Track, wall: float, text: str, now: float | None = None) -> None:
         t.announced = True
+        old = self._comeback(t, now) if now is not None else None
+        if old is not None:
+            # The same person walking back into view: same number, counted once.
+            t.id, t.reid_of, old.came_back = old.id, old, True
+            if old.identity and not t.identity:
+                t.identity = old.identity
+            self.timeline.append((wall, f"{t.label} #{t.id} came back"))
+            return
         self._seq[t.label] = self._seq.get(t.label, 0) + 1
         t.id = self._seq[t.label]
         self.timeline.append((wall, text.format(name=f"{t.label} #{t.id}")))
+
+    def _comeback(self, t: Track, now: float) -> Track | None:
+        """An earlier track this new one is the same person (or animal) as:
+        it left the view no more than REID_WINDOW ago, nobody has come back
+        as it already, they weren't both in view at once, recognised faces
+        don't say otherwise, and the clothing colours match closely."""
+        if t.group not in REID_GROUPS or t.sig is None:
+            return None
+        best, best_sim = None, REID_SIM
+        for old in self.tracks:
+            if (old is t or not old.announced or old.group != t.group or old.left_at is None or old.came_back
+                    or old.sig is None or old.left_at > t.first_seen or now - old.left_at > REID_WINDOW):
+                continue
+            if old.identity and t.identity and old.identity.get("id") != t.identity.get("id"):
+                continue
+            sim = signature_similarity(old.sig, t.sig)
+            if sim >= best_sim:
+                best, best_sim = old, sim
+        return best
+
+    def _update_signature(self, t: Track, frame: np.ndarray | None, box: tuple) -> None:
+        # Every look at first, then every other one: cheap, and enough.
+        if frame is None or t.group not in REID_GROUPS or (t.sig_n >= 4 and t.hits % 2):
+            return
+        sig = appearance_signature(frame, box)
+        if sig is None:
+            return
+        if t.sig is None:
+            t.sig = sig
+        else:
+            t.sig = tuple((0.7 * a + 0.3 * b).astype(np.float32) for a, b in zip(t.sig, sig))
+        t.sig_n += 1
 
     def update(self, objects: list[DetectedObject], now: float, wall: float, frame: np.ndarray | None,
                high: float = 0.0) -> list[Track]:
@@ -371,12 +451,13 @@ class ObjectTracker:
                 t.parked = False
                 t.anchor, t.last_moved = box, now
                 if t.in_zone and not t.announced:
-                    self._announce(t, wall, f"parked {t.label} started moving ({{name}})")
+                    self._announce(t, wall, f"parked {t.label} started moving ({{name}})", now)
                     newly.append(t)
             elif self._moved(t, box):
                 t.anchor, t.last_moved = box, now
             t.max_still = max(t.max_still, now - t.last_moved)
 
+            self._update_signature(t, frame, box)
             score = o.confidence * o.w * o.h  # clearest view: confident and close
             if score > t.best_score:
                 t.best_score, t.best_conf, t.best_box = score, o.confidence, box
@@ -395,7 +476,7 @@ class ObjectTracker:
                 elif t.announced:
                     self.timeline.append((wall, f"{t.label} #{t.id} parked"))
             if t.confirmed and t.in_zone and not t.announced and not t.parked and t.group != "package":
-                self._announce(t, wall, "{name} appeared")
+                self._announce(t, wall, "{name} appeared", now)
                 newly.append(t)
 
         # A bag standing still is only "left" once no person overlaps it -
@@ -471,8 +552,12 @@ class ObjectTracker:
         return [t for t in self.tracks if t.announced]
 
     def totals(self) -> dict[str, int]:
+        """Distinct people/objects: someone who left the view and came back is
+        counted once (unless faces recognised later say it's someone else)."""
         out: dict[str, int] = {}
         for t in self.confirmed():
+            if t.reid_of is not None and not _identities_differ(t, t.reid_of):
+                continue
             out[t.label] = out.get(t.label, 0) + 1
         return out
 
@@ -528,8 +613,20 @@ def draw_boxes(frame: np.ndarray, boxes: list[tuple[str, float, tuple]]) -> np.n
     return out
 
 
+MAX_STORED_SIDE = 1920  # stored/alert pictures: plenty of detail, not 4MP files
+
+
+def fit_for_storage(frame: np.ndarray) -> np.ndarray:
+    h, w = frame.shape[:2]
+    side = max(h, w)
+    if side <= MAX_STORED_SIDE:
+        return frame
+    k = MAX_STORED_SIDE / side
+    return cv2.resize(frame, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
+
+
 def _jpeg(frame: np.ndarray, quality: int = 90) -> bytes | None:
-    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    ok, buf = cv2.imencode(".jpg", fit_for_storage(frame), [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return buf.tobytes() if ok else None
 
 
@@ -804,7 +901,7 @@ class MotionEventSession:
             visible = self.tracker.visible_now(captured_mono)
             if not self.alerted:
                 await self._object_alert(frame, visible, captured_mono)
-            elif any(t.group == "person" for t in newly) and \
+            elif any(t.group == "person" and t.reid_of is None for t in newly) and \
                     time.monotonic() - self._alerted_mono >= self.FOLLOW_UP_AFTER:
                 people = len([t for t in visible if t.group == "person"])
                 snap = await asyncio.to_thread(

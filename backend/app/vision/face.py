@@ -25,7 +25,9 @@ class Face:
     score: float
     quality: float  # 0..1: detection score x sharpness x frontalness x size
     embedding: np.ndarray = field(repr=False, default=None)
-    crop: np.ndarray | None = field(repr=False, default=None)  # aligned 112x112 face
+    crop: np.ndarray | None = field(repr=False, default=None)  # 112x112 face
+    aligned: bool = False  # crop is the 5-point aligned face (what recognisers need)
+    embedding_ada: np.ndarray | None = field(repr=False, default=None)  # AdaFace, when used
 
     def to_dict(self) -> dict:
         return {"x": self.x, "y": self.y, "w": self.w, "h": self.h, "score": round(self.score, 3),
@@ -105,8 +107,47 @@ class FaceEngine:
                     out.append(Face(
                         x=(ox + fx) / W, y=(oy + fy) / H, w=fw / W, h=fh / H, score=float(f[14]),
                         quality=quality, embedding=feat, crop=aligned if keep_crops else None,
+                        aligned=keep_crops,
                     ))
         return _dedupe(out)
+
+
+class AdaFace:
+    """AdaFace IR-18 (ONNX): a second face recogniser, built for low-quality
+    faces - small, blurred, badly lit, which is what CCTV gives. Takes the
+    same 5-point aligned 112x112 crop as SFace; BGR scaled to [-1, 1] (its
+    training format, confirmed on real faces); 512-d embedding."""
+
+    def __init__(self, path: str, threads: int | None = None) -> None:
+        from app.vision.engine import make_session
+
+        self.session, self.provider = make_session(path, "cpu", threads)
+        self._input = self.session.get_inputs()[0].name
+        self._lock = threading.Lock()
+
+    def embed(self, aligned_bgr: np.ndarray) -> np.ndarray:
+        x = aligned_bgr
+        if x.shape[:2] != (112, 112):
+            x = cv2.resize(x, (112, 112))
+        x = (x.astype(np.float32) / 255.0 - 0.5) / 0.5
+        x = np.transpose(x, (2, 0, 1))[None]
+        with self._lock:
+            out = self.session.run(None, {self._input: x})[0].ravel().astype(np.float32)
+        n = np.linalg.norm(out)
+        return out / n if n else out
+
+
+def realign(engine: "FaceEngine", crop: np.ndarray) -> np.ndarray | None:
+    """Aligned 112x112 face from a saved face picture (aligned already, or a
+    plain box crop from an older AI worker): find the face again in a 2x copy
+    and align it. None when no face is found."""
+    big = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    with engine._lock:
+        faces = engine._detect_in(big)
+        if not len(faces):
+            return None
+        best = max(faces, key=lambda f: f[14])
+        return engine._rec.alignCrop(big, best)
 
 
 def _iou(a: Face, b: Face) -> float:

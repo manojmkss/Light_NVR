@@ -537,3 +537,83 @@ def test_backpack_on_a_walking_person_is_not_a_package():
         tr.update([person(x), bag(x + 0.02, y=0.35)], now=i * 0.5, wall=i * 0.5, frame=None)
         events += tr.drain_events()
     assert events == []
+
+
+# ── re-identification within an event ───────────────────────────────────────
+
+
+def _scene(boxes_colours):
+    """A frame with people drawn as two-tone boxes (top colour, bottom colour)."""
+    frame = np.full((360, 640, 3), 90, np.uint8)
+    for (x, y, w, h), top, bottom in boxes_colours:
+        x1, y1, x2, y2 = int(x * 640), int(y * 360), int((x + w) * 640), int((y + h) * 360)
+        mid = (y1 + y2) // 2
+        frame[y1:mid, x1:x2] = top
+        frame[mid:y2, x1:x2] = bottom
+    return frame
+
+
+RED, BLUE, GREEN, YELLOW = (40, 40, 220), (200, 60, 30), (40, 180, 40), (30, 220, 230)
+
+
+def _walk(tr, start, x, top, bottom, ticks=3):
+    for i in range(ticks):
+        o = person(x)
+        tr.update([o], now=start + i * 0.5, wall=start + i * 0.5,
+                  frame=_scene([((o.x, o.y, o.w, o.h), top, bottom)]))
+    return start + ticks * 0.5
+
+
+def _away(tr, start, seconds):
+    t = start
+    while t < start + seconds:
+        tr.update([], now=t, wall=t, frame=_scene([]))
+        t += 0.5
+    return t
+
+
+def test_same_person_coming_back_into_view_is_counted_once():
+    tr = ObjectTracker()
+    t = _walk(tr, 0, 0.1, RED, BLUE)
+    t = _away(tr, t, 8)
+    _walk(tr, t, 0.7, RED, BLUE)
+    assert tr.totals() == {"person": 1}
+    texts = [x for _w, x in tr.timeline]
+    assert texts == ["person #1 appeared", "person #1 left", "person #1 came back"]
+
+
+def test_differently_dressed_person_is_someone_else():
+    tr = ObjectTracker()
+    t = _walk(tr, 0, 0.1, RED, BLUE)
+    t = _away(tr, t, 8)
+    _walk(tr, t, 0.7, GREEN, YELLOW)
+    assert tr.totals() == {"person": 2}
+
+
+def test_comeback_only_within_the_window():
+    tr = ObjectTracker()
+    t = _walk(tr, 0, 0.1, RED, BLUE)
+    t = _away(tr, t, 320)  # longer than REID_WINDOW
+    _walk(tr, t, 0.7, RED, BLUE)
+    assert tr.totals() == {"person": 2}
+
+
+def test_two_people_in_view_together_are_never_merged():
+    tr = ObjectTracker()
+    for i in range(4):
+        a, b = person(0.1), person(0.7)
+        tr.update([a, b], now=i * 0.5, wall=i * 0.5,
+                  frame=_scene([((a.x, a.y, a.w, a.h), RED, BLUE), ((b.x, b.y, b.w, b.h), RED, BLUE)]))
+    assert tr.totals() == {"person": 2}
+
+
+def test_recognised_faces_overrule_matching_clothes():
+    tr = ObjectTracker()
+    t = _walk(tr, 0, 0.1, RED, BLUE)
+    tr.tracks[0].identity = {"id": 1, "name": "Manoj"}
+    t = _away(tr, t, 8)
+    _walk(tr, t, 0.7, RED, BLUE)
+    back = [x for x in tr.tracks if x.reid_of is not None][0]
+    assert back.identity == {"id": 1, "name": "Manoj"}  # carried over, no second arrival alert
+    back.identity = {"id": 2, "name": "Son"}  # ...unless faces later say it's someone else
+    assert tr.totals() == {"person": 2}

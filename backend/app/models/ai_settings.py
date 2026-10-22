@@ -82,6 +82,9 @@ class AISettings(Base):
     privacy_ack: Mapped[bool] = mapped_column(Boolean, default=False)
     face_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     face_threshold: Mapped[int] = mapped_column(Integer, default=60)
+    # Which recogniser decides who someone is: sface (built in) | adaface
+    # (optional download, tried on the user's own faces first - People page).
+    face_model: Mapped[str] = mapped_column(String(16), default="sface")
     alpr_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # Faces seen but not (yet) named are kept this long for "Who is this?".
     face_unknown_retention_days: Mapped[int] = mapped_column(Integer, default=7)

@@ -55,19 +55,25 @@ def test_buffer_rotates_contiguous_segments_and_prunes(camera_source, cache, mon
     async def scenario():
         buf = segment_buffer.SegmentBuffer(1, camera_source, None, keep_seconds=2.0)
         task = asyncio.create_task(buf.run())
-        seen: list = []
+        # Latest timing per segment: when a better wall-clock estimate arrives
+        # the buffer re-times its whole run (by up to a segment length on a
+        # slow first line), so an early copy of a segment is stale by design.
+        latest: dict = {}
         try:
             for _ in range(100):
                 await asyncio.sleep(0.1)
                 for s in buf.segments:
-                    if s not in seen:
-                        seen.append(s)
-                if len(seen) >= 5:
+                    latest[s.path] = s
+                if len(latest) >= 5:
                     break
+            # One more look so the newest segments carry the final estimate.
+            for s in buf.segments:
+                latest[s.path] = s
         finally:
             await buf.stop()
             await asyncio.gather(task, return_exceptions=True)
 
+        seen = [latest[p] for p in sorted(latest)]
         assert len(seen) >= 5
         for a, b in zip(seen, seen[1:]):
             assert abs(b.start - a.end) < 0.05  # back-to-back, no gap or overlap

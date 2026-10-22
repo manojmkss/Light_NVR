@@ -61,3 +61,30 @@ def test_fake_frame_detect_shape_handles_empty_output():
     from app.vision.yolo import decode
 
     assert decode(np.zeros((1, 84, 8400), dtype=np.float32), 1.0, 0, 0, 640, 640, 0.5) == []
+
+
+needs_adaface = pytest.mark.skipif(
+    not MODELS or not os.path.exists(os.path.join(MODELS, "models", "adaface_ir_18.onnx")), reason="no AdaFace model"
+)
+
+
+@needs_adaface
+def test_adaface_separates_people_and_realigns_saved_pictures():
+    from app.vision import models as reg
+    from app.vision.face import AdaFace, FaceEngine, realign
+
+    d = os.path.join(MODELS, "models")
+    eng = FaceEngine(reg.path_for("yunet", d), reg.path_for("sface", d))
+    ada = AdaFace(reg.path_for("adaface", d))
+    img = cv2.imread(os.path.join(MODELS, "zidane.jpg"))
+    a, b = sorted(eng.find(img, keep_crops=True), key=lambda f: f.x)[:2]
+    soft = cv2.resize(cv2.resize(img, (img.shape[1] // 3, img.shape[0] // 3)), (img.shape[1], img.shape[0]))
+    a2 = min(eng.find(soft, keep_crops=True), key=lambda f: abs(f.x - a.x))
+    ea, eb, ea2 = ada.embed(a.crop), ada.embed(b.crop), ada.embed(a2.crop)
+    assert float(ea @ ea2) > 0.6  # same person, CCTV-soft copy
+    assert float(ea @ eb) < 0.2  # different people
+    # A plain (unaligned) box cut, like older AI workers saved, is re-aligned.
+    H, W = img.shape[:2]
+    box = img[int(a.y * H):int((a.y + a.h) * H), int(a.x * W):int((a.x + a.w) * W)]
+    again = realign(eng, cv2.resize(box, (112, 112)))
+    assert again is not None and float(ada.embed(again) @ ea) > 0.6

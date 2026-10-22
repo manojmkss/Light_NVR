@@ -199,3 +199,135 @@ def test_face_moment_falls_back_for_older_samples():
     assert _seen(SimpleNamespace(seen_at=None, created_at=saved)) == saved - timedelta(seconds=15)
     exact = datetime(2026, 1, 1, 10, 0, 2)
     assert _seen(SimpleNamespace(seen_at=exact, created_at=saved)) == exact
+
+
+def test_phone_photos_alone_are_weak_and_camera_sightings_fix_it():
+    assert recognition_strength([0.9] * 6, ["upload"] * 6)[0] == "weak"
+    assert recognition_strength([0.9] * 6, ["upload"] * 4 + ["capture", "auto"])[0] == "good"
+    assert recognition_strength([0.9] * 7, ["upload"] * 4 + ["capture", "auto", "auto"])[0] == "strong"
+
+
+def _unit(v):
+    v = np.asarray(v, dtype=np.float32)
+    return v / np.linalg.norm(v)
+
+
+def test_closest_reports_near_misses():
+    from app.services.faces import FaceService
+
+    svc = FaceService()
+    base = _unit(np.random.default_rng(1).normal(size=128))
+    other = _unit(np.random.default_rng(2).normal(size=128))
+    svc._gallery = [(5, base), (6, other)]
+    svc._people = {5: SimpleNamespace(id=5, name="Manoj", note=None, category="household"),
+                   6: SimpleNamespace(id=6, name="X", note=None, category="familiar")}
+    # A camera face ~0.4 similar: below the 0.45 bar, but clearly most like Manoj.
+    face = _unit(base * 0.4 + _unit(np.random.default_rng(3).normal(size=128)) * 0.92)
+    assert svc.match(face, 0.45).band != "known"
+    pid, score = svc.closest(face)
+    assert pid == 5 and 0.3 < score < 0.45
+
+
+def test_learns_confident_camera_sightings_with_limits(tmp_path, monkeypatch):
+    import app.models  # noqa: F401
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.db.session import Base
+    from app.models.person import FaceSample
+    from app.services import faces as fs
+    from app.vision.face import Face
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(fs, "AsyncSessionLocal", maker)
+    monkeypatch.setattr(fs, "LEARN_PER_DAY", 2)
+    svc = fs.FaceService()
+    emb = _unit(np.random.default_rng(1).normal(size=128))
+    svc._gallery, svc._loaded = [(5, emb)], True
+    svc._people = {5: SimpleNamespace(id=5, name="Manoj", note=None, category="household"),
+                   7: SimpleNamespace(id=7, name="Stranger #1", note=None, category="stranger")}
+    settings = SimpleNamespace(face_threshold=60)
+    good = Face(0, 0, 0.1, 0.1, 0.95, 0.8, emb)
+    blurry = Face(0, 0, 0.1, 0.1, 0.95, 0.4, emb)
+
+    async def go():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        out = [await svc.learnable(settings, {"id": 5}, good)]
+        out.append(await svc.learnable(settings, {"id": 5}, blurry))  # not sharp enough
+        out.append(await svc.learnable(settings, {"id": 7}, good))  # strangers are never learned
+        out.append(await svc.learnable(settings, None, good))  # not recognised in the event
+        async with maker() as db:
+            for _ in range(2):
+                db.add(FaceSample(person_id=5, embedding=emb.tobytes(), source="auto"))
+            await db.commit()
+        out.append(await svc.learnable(settings, {"id": 5}, good))  # today's quota used up
+        await engine.dispose()
+        return out
+
+    assert asyncio.run(go()) == [5, None, None, None, None]
+
+
+def test_event_switches_to_the_main_stream_once_something_real_is_seen(monkeypatch):
+    from app.services import camera_worker as cw
+    from app.services.ai.types import DetectedObject
+
+    acquired = []
+    monkeypatch.setattr(cw.hq_stream_manager, "acquire", lambda cam, url, loop: acquired.append(url))
+    monkeypatch.setattr(cw.hq_stream_manager, "release", lambda cam: acquired.append("released"))
+    calls = iter([[DetectedObject("person", 0.2, 0.1, 0.1, 0.2, 0.5)],
+                  [DetectedObject("person", 0.8, 0.1, 0.1, 0.2, 0.5)]])
+
+    async def detect(settings, frame, camera_id, priority=None):
+        return next(calls)
+
+    monkeypatch.setattr(cw.ai_pipeline, "detect_frame", detect)
+    w = cw.CameraWorker.__new__(cw.CameraWorker)
+    w.camera_id, w.rtsp_main_url, w.rtsp_sub_url, w._hq_for_faces = 1, "rtsp://main", "rtsp://sub", False
+    settings = SimpleNamespace(detection_confidence=50)
+
+    async def go():
+        await w._detect(settings, None, 1, 1)  # a weak box only: stay on the substream
+        first = list(acquired)
+        await w._detect(settings, None, 1, 1)
+        w._release_face_stream()
+        return first
+
+    assert asyncio.run(go()) == []
+    assert acquired == ["rtsp://main", "released"]
+
+
+def test_each_recogniser_has_its_own_match_bar(monkeypatch):
+    from app.services import faces as fs
+
+    s = SimpleNamespace(face_threshold=60, face_model="adaface")
+    monkeypatch.setattr(fs.model_registry, "present", lambda name, d: False)
+    assert fs.active_model(s) == "sface"  # chosen but not downloaded: stays on SFace
+    assert abs(fs.threshold_for(s) - 0.45) < 1e-9
+    monkeypatch.setattr(fs.model_registry, "present", lambda name, d: True)
+    assert fs.active_model(s) == "adaface"
+    assert abs(fs.threshold_for(s) - 0.38) < 1e-9
+
+
+def test_model_comparison_on_confirmed_faces():
+    from app.api.routes.faces import compare_models
+
+    rng = np.random.default_rng(0)
+    people = {1: _unit(rng.normal(size=512)), 2: _unit(rng.normal(size=512))}
+
+    def sample(i, pid, sface_noise, ada_noise, source="capture"):
+        # Noise vectors of the given length: similarity to the person ~ 1/sqrt(1+n^2).
+        sf = _unit(_unit(np.resize(people[pid], 128)) + rng.normal(size=128) / np.sqrt(128) * sface_noise)
+        ad = _unit(people[pid] + rng.normal(size=512) / np.sqrt(512) * ada_noise)
+        return SimpleNamespace(id=i, person_id=pid, track_uid=f"t{i}", source=source,
+                               embedding=sf.astype(np.float32).tobytes(), embedding_ada=ad.astype(np.float32).tobytes())
+
+    # SFace struggles with these camera faces (lots of noise), AdaFace doesn't.
+    samples = [sample(i, 1 + i % 2, 2.3, 0.5) for i in range(16)]  # SFace ~0.4 (a near miss), AdaFace ~0.9
+    samples += [sample(100 + p, p, 0.1, 0.1, "upload") for p in (1, 2)]
+    r = compare_models(samples, SimpleNamespace(face_threshold=60))
+    assert r["models"]["adaface"]["tested"] == 16
+    assert r["models"]["adaface"]["correct"] > r["models"]["sface"]["correct"]
+    assert r["models"]["adaface"]["wrong"] == 0
+    assert r["verdict"] == "adaface"
+    assert compare_models(samples[:3], SimpleNamespace(face_threshold=60))["verdict"] == "not_enough"

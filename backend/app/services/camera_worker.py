@@ -39,7 +39,9 @@ def _appearance(frame, group: str, box) -> dict:
 
 
 def _encode_jpeg(frame, quality: int = 90) -> bytes | None:
-    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    from app.services.motion_event import fit_for_storage
+
+    ok, buf = cv2.imencode(".jpg", fit_for_storage(frame), [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return buf.tobytes() if ok else None
 
 
@@ -326,8 +328,8 @@ class CameraWorker:
             motion_active=lambda: bool(viewer and viewer.motion_active),
             hold_motion=lambda seconds: viewer.hold_motion(seconds) if viewer else None,
             motion_level=lambda: (viewer.last_sample.change_pct if viewer and viewer.last_sample else 0.0),
-            get_frame=frame_bus.get_fresh,
-            detect=ai_pipeline.detect_frame,
+            get_frame=self._event_frame,
+            detect=self._detect,
             emit=emit,
             describe=_describe,
             tz=tz,
@@ -498,22 +500,46 @@ class CameraWorker:
         # A long wait crosses the 10-minute clip limit: several parts, one event.
         return clips[0][0], (min(c[1] for c in clips), max(c[2] for c in clips)), len(clips)
 
-    async def _recognise_faces(self, settings, frame, boxes):
-        """Face search on the camera's main stream when it has one.
+    # ── main stream during real events ───────────────────────────────────────
+    #
+    # Motion detection runs on the substream (640x360 to 720p) all the time.
+    # Once AI confirms something real in an event, the rest of the event uses
+    # the camera's main stream (2K/4MP): detection, the alert snapshot, the
+    # clearest picture, clothing colours, the vision-model description and,
+    # most of all, faces - a face across a driveway is 15-30px in the
+    # substream and 2-4x that in the main stream. Not on motion alone (a
+    # swaying plant would keep a 4MP decode running all day); released when
+    # the event ends. Boxes are fractions of the frame, so they apply to
+    # either picture.
 
-        The live picture (the substream: 640x360 to 720p) is what motion and
-        object detection use, but a face across a driveway is 15-30px in it -
-        too small to find - and 2-4x bigger in a 2K/4MP main stream. The main
-        stream is decoded only while a person is in view during an event (it
-        is released when the event ends); the person boxes are fractions of
-        the frame, so they apply to either picture."""
-        if self.rtsp_main_url and self.rtsp_main_url != self.rtsp_sub_url:
-            if not self._hq_for_faces:
-                self._hq_for_faces = True
-                hq_stream_manager.acquire(self.camera_id, self.rtsp_main_url, asyncio.get_running_loop())
-            fresh = hq_frame_bus.get_fresh(self.camera_id, max_age=1.0)
+    def _use_main_stream(self) -> None:
+        if self._hq_for_faces or not self.rtsp_main_url or self.rtsp_main_url == self.rtsp_sub_url:
+            return
+        self._hq_for_faces = True
+        hq_stream_manager.acquire(self.camera_id, self.rtsp_main_url, asyncio.get_running_loop())
+
+    def _event_frame(self, camera_id: int):
+        if self._hq_for_faces:
+            fresh = hq_frame_bus.get_fresh(camera_id, max_age=1.0)
             if fresh is not None:
-                frame = fresh[0]
+                return fresh
+        return frame_bus.get_fresh(camera_id)
+
+    async def _detect(self, settings, frame, camera_id: int = 0, priority: int | None = None):
+        kwargs = {} if priority is None else {"priority": priority}
+        result = await ai_pipeline.detect_frame(settings, frame, camera_id, **kwargs)
+        if isinstance(result, list):
+            floor = (getattr(settings, "detection_confidence", 50) or 50) / 100.0
+            if any(o.confidence >= floor for o in result):
+                self._use_main_stream()
+        return result
+
+    async def _recognise_faces(self, settings, frame, boxes):
+        """Face search, on the main stream once it's running (see above)."""
+        self._use_main_stream()
+        fresh = hq_frame_bus.get_fresh(self.camera_id, max_age=1.0) if self._hq_for_faces else None
+        if fresh is not None:
+            frame = fresh[0]
         return await face_service.recognise(settings, frame, boxes, camera_id=self.camera_id)
 
     def _release_face_stream(self) -> None:
@@ -575,7 +601,9 @@ class CameraWorker:
                         # Every face seen is kept for "Who is this?" (unknown
                         # samples expire after a few days); recognised ones too,
                         # but only the user can add a sighting to a person.
-                        await face_service.save_sample(t.best_face, None, self.camera_id, t.best_face_score, track_uid,
+                        person_id = await face_service.learnable(session.settings, t.identity, t.best_face)
+                        await face_service.save_sample(t.best_face, person_id, self.camera_id, t.best_face_score,
+                                                       track_uid, source="auto" if person_id else "capture",
                                                        seen_at=t.best_face_at)
                     except Exception:
                         logger.exception("Could not save face sample")

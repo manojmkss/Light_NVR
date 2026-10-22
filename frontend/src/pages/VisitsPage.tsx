@@ -4,6 +4,7 @@ import { listCameras } from "../api/cameras";
 import { buildMediaUrl } from "../api/client";
 import { listIncidentsWithEvents, type IncidentWithEvents } from "../api/security";
 import { PlaybackPopup } from "../components/PlaybackPopup";
+import { updateSystemSettings } from "../api/system";
 import { useSettings } from "../context/SettingsContext";
 
 type Period = "today" | "yesterday" | "week";
@@ -45,7 +46,9 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : word.e
 /** Visits: motion on one or more cameras that belongs together, in order -
  *  with a plain-language summary of the period on top. */
 export function VisitsPage() {
-  const { timezone, fmtTime, fmtDateTime } = useSettings();
+  const { timezone, fmtTime, fmtDateTime, reload: reloadSettings } = useSettings();
+  const myZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const [tzError, setTzError] = useState<string | null>(null);
   const [period, setPeriod] = useState<Period>("today");
   const [realOnly, setRealOnly] = useState(true);
   const [items, setItems] = useState<IncidentWithEvents[]>([]);
@@ -95,7 +98,7 @@ export function VisitsPage() {
     const hours: Record<string, number> = {};
     let unknownFaces = 0;
     for (const i of real) {
-      for (const [label, n] of Object.entries(i.counts ?? {})) objects[label] = (objects[label] ?? 0) + n;
+      for (const label of Object.keys(i.counts ?? {})) objects[label] = (objects[label] ?? 0) + 1;
       for (const name of i.identities ?? []) people[name] = (people[name] ?? 0) + 1;
       for (const id of i.camera_ids ?? []) {
         const name = cameraNames[id] ?? `Camera ${id}`;
@@ -139,6 +142,24 @@ export function VisitsPage() {
         </label>
       </div>
       {error && <div className="error-text">{error}</div>}
+      {!timezone && myZone && myZone !== "UTC" && (
+        <div className="card" style={{ marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+          <span style={{ flex: 1 }}>
+            The NVR has no timezone set, so visit descriptions and alerts give times in UTC.
+          </span>
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={() =>
+              updateSystemSettings({ timezone: myZone })
+                .then(() => reloadSettings())
+                .catch((e) => setTzError((e as Error).message))
+            }
+          >
+            Use my timezone ({myZone})
+          </button>
+          {tzError && <span className="error-text">{tzError}</span>}
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: 14 }}>
         <strong>{periodLabel}</strong>
@@ -160,7 +181,9 @@ export function VisitsPage() {
               )}
             </div>
             {digest.objects.length > 0 && (
-              <div>Seen: {digest.objects.map(([label, n]) => plural(n, label)).join(", ")}</div>
+              <div>
+                Seen: {digest.objects.map(([label, n]) => `${label === "person" ? "people" : `${label}s`} in ${plural(n, "visit")}`).join(", ")}
+              </div>
             )}
             {(digest.people.length > 0 || digest.unknownFaces > 0) && (
               <div>
@@ -186,7 +209,9 @@ export function VisitsPage() {
 
       <div style={{ display: "grid", gap: 10 }}>
         {shown.map((i) => {
-          const counts = Object.entries(i.counts ?? {}).map(([k, n]) => plural(n, k)).join(", ");
+          // Kinds only: the per-kind number counts every time someone came
+          // back into view, so "10 persons" was often one or two people.
+          const counts = Object.keys(i.counts ?? {}).map((k) => (k === "person" ? "people" : `${k}s`)).join(", ");
           const events = i.events.filter((e) => VISIT_EVENT_TYPES.has(e.type));
           const open = expanded.has(i.id);
           const list = open ? events : events.slice(0, 4);

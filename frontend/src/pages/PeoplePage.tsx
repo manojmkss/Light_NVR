@@ -6,7 +6,11 @@ import {
   createPerson,
   deletePerson,
   discardGroup,
+  compareFaceModels,
+  downloadAdaFace,
   faceCaptureStats,
+  getFaceModel,
+  setFaceModel,
   faceReadiness,
   downloadFaceModels,
   faceModels,
@@ -17,6 +21,8 @@ import {
   updatePerson,
   uploadPhotos,
   type FaceCaptureStats,
+  type FaceModelStatus,
+  type ModelComparison,
   type FaceReadiness,
   type FaceGroup,
   type Person,
@@ -94,7 +100,7 @@ function usualTime(times: string[]): string {
 
 function TrustSelect({ value, onChange }: { value: PersonCategory; onChange: (v: PersonCategory) => void }) {
   return (
-    <select value={value} title={TRUST.find((t) => t.key === value)?.hint} onChange={(e) => onChange(e.target.value as PersonCategory)}>
+    <select value={value} style={{ width: "auto" }} title={TRUST.find((t) => t.key === value)?.hint} onChange={(e) => onChange(e.target.value as PersonCategory)}>
       {TRUST.map((t) => <option key={t.key} value={t.key} title={t.hint}>{t.label}</option>)}
     </select>
   );
@@ -103,10 +109,21 @@ function TrustSelect({ value, onChange }: { value: PersonCategory; onChange: (v:
 function NotifySelect({ value, category, onChange }: { value: PersonNotify; category: PersonCategory; onChange: (v: PersonNotify) => void }) {
   if (category === "watchlist") return <span style={{ fontSize: 13, color: "var(--danger)" }}>Always (urgent)</span>;
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value as PersonNotify)}>
+    <select value={value} style={{ width: "auto" }} onChange={(e) => onChange(e.target.value as PersonNotify)}>
       {NOTIFY.map((n) => <option key={n.key} value={n.key}>{n.label}</option>)}
     </select>
   );
+}
+
+const pct = (v: number) => `${Math.round(v * 100)}%`;
+
+/** Unknown face groups that look like someone already known - offered in bulk
+ *  so one click files every sighting (e.g. after confirming a couple by hand). */
+function lookalikes(groups: FaceGroup[], person: Person): FaceGroup[] {
+  return groups.filter((g) => {
+    const near = g.suggestion ?? g.closest;
+    return near?.person_id === person.id && near.score >= g.threshold - 0.06;
+  });
 }
 
 /** What a click on a face opens: that camera, at that moment. */
@@ -254,9 +271,32 @@ export function PeoplePage() {
       {msg && <div style={{ marginBottom: 10, fontSize: 13 }}>{msg}</div>}
 
       <Readiness ready={ready} />
+      <FaceModelCard onChanged={reload} />
       <CaptureHealth stats={capture} cameraNames={cameraNames} />
 
       <h2 style={{ fontSize: 16, margin: "0 0 8px" }}>Who is this?</h2>
+      {people.map((p) => {
+        const same = lookalikes(groups, p);
+        if (same.length < 2) return null;
+        return (
+          <div key={`bulk-${p.id}`} className="card" style={{ marginBottom: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ flex: 1 }}>
+              <strong>{same.length} sightings</strong> below look like <strong>{p.name}</strong>.
+            </span>
+            <button
+              className="btn btn-sm btn-primary"
+              onClick={() =>
+                run(
+                  () => Promise.all(same.map((g) => assignGroup(g.sample_ids, { person_id: p.id }))),
+                  `Added ${same.length} sightings to ${p.name} - they'll be recognised more easily now.`,
+                )
+              }
+            >
+              Add all to {p.name}
+            </button>
+          </div>
+        );
+      })}
       <div style={{ display: "grid", gap: 10, marginBottom: 20 }}>
         {groups.map((g) => (
           <WhoIsThis
@@ -311,6 +351,11 @@ export function PeoplePage() {
                   <span style={{ color: STRENGTH[p.strength].color, letterSpacing: 1 }}>{STRENGTH[p.strength].dots}</span>{" "}
                   <span style={{ fontSize: 13 }}>{STRENGTH[p.strength].label}</span>
                   {p.strength_hint && <div style={{ fontSize: 11, color: "var(--text-dim)", maxWidth: 180 }}>{p.strength_hint}</div>}
+                  {p.learned > 0 && (
+                    <div style={{ fontSize: 11, color: "var(--text-dim)" }} title="Confident recognitions are added by themselves, so recognition improves day by day">
+                      learned {p.learned} sighting{p.learned === 1 ? "" : "s"} by itself
+                    </div>
+                  )}
                 </td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   <label className="btn btn-sm" style={{ cursor: "pointer" }}>
@@ -392,6 +437,13 @@ function WhoIsThis({
 }) {
   const [form, setForm] = useState<PersonInput>(blank());
   const sug = group.suggestion;
+  const near = group.closest;
+  const likely =
+    sug != null
+      ? { person_id: sug.person_id, name: sug.name, score: sug.score, known: sug.band === "known" }
+      : near != null && near.score >= 0.25
+        ? { person_id: near.person_id, name: near.name, score: near.score, known: false }
+        : null;
   const where = group.camera_ids.map((id) => cameraNames[id] ?? `camera ${id}`).join(", ");
   const usual = usualTime(group.seen_at);
   const seen = group.sightings === 1 ? `Seen once, ${when(group.last_seen)}` : `Seen ${group.sightings}× · ${when(group.first_seen)} – ${when(group.last_seen)}`;
@@ -420,11 +472,17 @@ function WhoIsThis({
           {usual && ` · ${usual}`}
           {where && ` · ${where}`}
         </div>
-        {sug && (
-          <button className="btn btn-sm btn-primary" style={{ marginTop: 6 }} onClick={() => onAssign({ person_id: sug.person_id }, `Added to ${sug.name}.`)}>
-            {sug.band === "known" ? "Yes, it's " : "Possibly "}
-            {sug.name}
-          </button>
+        {likely && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
+            <button className="btn btn-sm btn-primary" onClick={() => onAssign({ person_id: likely.person_id }, `Added to ${likely.name} - they'll be recognised more easily now.`)}>
+              Yes, it's {likely.name}
+            </button>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              {likely.known
+                ? "recognised"
+                : `looks most like ${likely.name} (${pct(likely.score)} similar; recognised from ${pct(group.threshold)}). Confirming teaches the NVR how they look on camera.`}
+            </span>
+          </div>
         )}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
           <input placeholder="Name" value={form.name} style={{ width: 130 }} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -441,7 +499,7 @@ function WhoIsThis({
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
           {people.length > 0 && (
-            <select value="" onChange={(e) => e.target.value && onAssign({ person_id: Number(e.target.value) }, "Added.")}>
+            <select value="" style={{ width: "auto" }} onChange={(e) => e.target.value && onAssign({ person_id: Number(e.target.value) }, "Added.")}>
               <option value="">Add to someone known…</option>
               {people.map((p) => <option key={p.id} value={p.id}>{p.name}{p.note ? ` (${p.note})` : ""}</option>)}
             </select>
@@ -554,6 +612,126 @@ function Readiness({ ready }: { ready: FaceReadiness | null }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** SFace (built in) or AdaFace (optional): download, compare on your own
+ *  confirmed faces, and switch only if it's clearly better. */
+function FaceModelCard({ onChanged }: { onChanged: () => void }) {
+  const [st, setSt] = useState<FaceModelStatus | null>(null);
+  const [cmp, setCmp] = useState<ModelComparison | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => getFaceModel().then((s) => alive && setSt(s)).catch(() => {});
+    load();
+    const t = setInterval(() => st?.preparing.running && load(), 3000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [st?.preparing.running]);
+
+  if (!st) return null;
+  const act = async (label: string, fn: () => Promise<unknown>) => {
+    setBusy(label);
+    setErr(null);
+    try {
+      await fn();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const name = (m: string) => (m === "adaface" ? "AdaFace" : "SFace");
+  const p = st.preparing;
+
+  return (
+    <div className="card" style={{ marginBottom: 16, fontSize: 13 }}>
+      <strong style={{ fontSize: 14 }}>Face recognition model: {name(st.active)}</strong>
+      {!st.adaface.present ? (
+        <>
+          <p style={{ color: "var(--text-dim)", margin: "4px 0 8px" }}>
+            AdaFace is a newer model built for small, blurry, badly lit faces - what CCTV gives. Download it to compare it
+            with the current one on <em>your own</em> confirmed faces; nothing changes unless you switch. {st.adaface.license}
+          </p>
+          <button className="btn btn-sm btn-primary" disabled={!!busy} onClick={() => act("dl", async () => setSt(await downloadAdaFace()))}>
+            {busy === "dl" ? "Downloading…" : `Download AdaFace (${st.adaface.size_mb} MB)`}
+          </button>
+        </>
+      ) : p.running ? (
+        <p style={{ color: "var(--text-dim)", margin: "4px 0 0" }}>
+          Preparing your saved faces for AdaFace… {p.done} / {p.total}
+        </p>
+      ) : (
+        <>
+          <p style={{ color: "var(--text-dim)", margin: "4px 0 8px" }}>
+            Each confirmed camera sighting is matched against everyone's other photos with both models - the same
+            decision as live.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn btn-sm" disabled={!!busy} onClick={() => act("cmp", async () => setCmp(await compareFaceModels()))}>
+              {busy === "cmp" ? "Comparing…" : "Compare on my faces"}
+            </button>
+            {(["sface", "adaface"] as const)
+              .filter((m) => m !== st.active)
+              .map((m) => (
+                <button
+                  key={m}
+                  className={`btn btn-sm${cmp?.verdict === m ? " btn-primary" : ""}`}
+                  disabled={!!busy}
+                  onClick={() => act("set", async () => {
+                    setSt(await setFaceModel(m));
+                    onChanged();
+                  })}
+                >
+                  Switch to {name(m)}
+                </button>
+              ))}
+          </div>
+          {cmp && (
+            <div style={{ marginTop: 10 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>Sightings tested</th>
+                    <th>Recognised correctly</th>
+                    <th>Wrong person</th>
+                    <th>Missed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(["sface", "adaface"] as const).map((m) => {
+                    const r = cmp.models[m];
+                    return (
+                      <tr key={m}>
+                        <td>{name(m)}{m === st.active ? " (in use)" : ""}</td>
+                        <td>{r.tested}</td>
+                        <td><strong>{r.correct}</strong></td>
+                        <td style={{ color: r.wrong ? "var(--danger)" : undefined }}>{r.wrong}</td>
+                        <td>{r.missed}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div style={{ marginTop: 6 }}>
+                {cmp.verdict === "not_enough"
+                  ? "Not enough confirmed camera sightings yet - confirm at least 5 under Who is this? (yourself and others), then compare again."
+                  : cmp.verdict === "adaface"
+                    ? "AdaFace is clearly better on your faces - switching is recommended."
+                    : "AdaFace isn't clearly better on your faces - keeping SFace is recommended."}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      {err && <div className="error-text" style={{ marginTop: 6 }}>{err}</div>}
     </div>
   );
 }

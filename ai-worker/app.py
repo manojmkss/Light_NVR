@@ -20,6 +20,7 @@ API (all coordinates normalised 0..1 against the frame):
 """
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
@@ -180,7 +181,8 @@ async def detect(image: UploadFile = File(...), min_confidence: float = Form(def
 
 
 @app.post("/v2/faces", dependencies=[Depends(require_key)])
-async def faces(image: UploadFile = File(...), boxes: str = Form(default=""), min_face: int = Form(default=40)):
+async def faces(image: UploadFile = File(...), boxes: str = Form(default=""), min_face: int = Form(default=40),
+                crops: bool = Form(default=False)):
     """`boxes`: JSON [[x, y, w, h], ...] person boxes (normalised). Empty =
     search the whole image (used for enrolment photos)."""
     img = await _decode(image)
@@ -191,8 +193,18 @@ async def faces(image: UploadFile = File(...), boxes: str = Form(default=""), mi
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Bad boxes: {exc}") from exc
-    found = await run_in_threadpool(_tracked, engine.find, img, person_boxes, min_face)
-    return {"faces": [f.to_dict() for f in found]}
+    found = await run_in_threadpool(_tracked, engine.find, img, person_boxes, min_face, crops)
+    out = []
+    for f in found:
+        d = f.to_dict()
+        if crops and f.crop is not None:
+            # The aligned face: what a second recogniser (AdaFace) needs, and a
+            # better "Who is this?" picture than a plain box cut.
+            ok, buf = cv2.imencode(".jpg", f.crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+            if ok:
+                d["crop"] = base64.b64encode(buf.tobytes()).decode()
+        out.append(d)
+    return {"faces": out}
 
 
 @app.get("/v2/capabilities")

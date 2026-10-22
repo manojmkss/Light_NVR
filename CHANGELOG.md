@@ -6,6 +6,44 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-22
+
+Faces that get recognised from your cameras' point of view, and that keep
+getting better; visits that count people properly.
+
+### Added
+- **Learns by itself.** When someone in Family or Familiar is recognised with
+  confidence (two agreeing sightings or one clear one, a sharp frontal face,
+  a clear margin over everyone else), that camera sighting is added to their
+  photos automatically - at most 5 a day and 40 in all, oldest replaced - so
+  recognition adapts to how they look on *your* cameras. The People table
+  shows "learned N sightings by itself".
+- **Near misses are visible.** Each "Who is this?" card says who it looks most
+  like and how close it came ("41% similar; recognised from 45%"), with a
+  one-click "Yes, it's ..." that teaches the NVR. "N sightings look like X -
+  Add all" files them in one go. Sightings group more readily across visits.
+- **AdaFace (optional).** A second face recogniser built for small, blurred,
+  badly lit faces. Download it on the People page (92 MB; weights for home
+  use), compare it with the current one on your own confirmed faces, and
+  switch only if it wins.
+- **The same person coming back into view is counted once** ("person #1 came
+  back"), from their clothing colours and recognised face, within 5 minutes -
+  and doesn't trigger another "another person arrived" alert.
+- **Main stream for real events.** Once AI confirms a person, vehicle or
+  animal, the rest of the event uses the camera's full-resolution stream for
+  detection, snapshots, faces and descriptions (not on motion alone).
+- Visits page: one-click "Use my timezone" when the NVR has none set (visit
+  texts and alerts were in UTC).
+
+### Changed
+- Recognition strength says "weak - only phone photos" until someone has a
+  few camera sightings: phone photos alone match CCTV faces poorly.
+- Visits count visits per kind ("people in 40 visits") instead of adding up
+  every re-entry into view ("170 persons").
+- "Who is this?" cards are compact.
+- The AI worker returns the aligned face with each match (better pictures,
+  and what AdaFace needs).
+
 ## [0.4.4] - 2026-10-22
 
 ### Added
@@ -445,7 +483,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/manojmkss/Light_NVR/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/manojmkss/Light_NVR/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/manojmkss/Light_NVR/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/manojmkss/Light_NVR/compare/v0.4.1...v0.4.2

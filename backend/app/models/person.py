@@ -39,6 +39,9 @@ class FaceSample(Base):
     person_id: Mapped[int | None] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"), nullable=True, index=True)
     camera_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     embedding: Mapped[bytes] = mapped_column(LargeBinary)  # 128 x float32, L2-normalised (SFace)
+    # 512 x float32 (AdaFace), once its model is downloaded - kept alongside so
+    # the two can be compared on the user's own faces and switched either way.
+    embedding_ada: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     quality: Mapped[float] = mapped_column(Float, default=0.0)
     score: Mapped[float | None] = mapped_column(Float, nullable=True)  # best match score when seen

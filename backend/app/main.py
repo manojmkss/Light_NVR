@@ -127,6 +127,11 @@ async def lifespan(app: FastAPI):
     from app.services.incident_store import incident_loop
 
     incident_task = asyncio.create_task(incident_loop())
+    # Finish giving saved faces an AdaFace embedding if a restart interrupted
+    # it (no-op unless AdaFace was downloaded).
+    from app.services.faces import face_service
+
+    face_backfill_task = asyncio.create_task(face_service.backfill_ada())
 
     from app.db.session import AsyncSessionLocal
     from app.models.remote_access_settings import RemoteAccessSettings
@@ -151,6 +156,7 @@ async def lifespan(app: FastAPI):
         relocator_task,
         mode_task,
         incident_task,
+        face_backfill_task,
     ]
     for task in background_tasks:
         task.cancel()
@@ -168,7 +174,7 @@ async def lifespan(app: FastAPI):
     await hq_stream_manager.shutdown()
 
 
-app = FastAPI(title="LightNVR API", version="0.4.4", lifespan=lifespan)
+app = FastAPI(title="LightNVR API", version="0.4.5", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

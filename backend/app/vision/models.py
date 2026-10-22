@@ -30,6 +30,17 @@ MANIFEST: dict[str, dict] = {
         "license": "Apache-2.0 (OpenCV Zoo SFace)",
         "task": "face recognition",
     },
+    # Optional second face recogniser, tried side by side with SFace on the
+    # user's own confirmed faces before anything switches (People page).
+    "adaface": {
+        "file": "adaface_ir_18.onnx",
+        "url": "https://github.com/yakhyo/adaface-onnx/releases/download/weights/adaface_ir_18.onnx",
+        "sha256": "6b6a35772fb636cdd4fa86520c1a259d0c41472a76f70f802b351837a00d9870",
+        "size_mb": 92,
+        "license": "MIT code (AdaFace, CVPR 2022; ONNX export yakhyo/adaface-onnx). The weights were trained on "
+                   "WebFace4M, a research-use dataset: fine for your own home, not for selling a product.",
+        "task": "face recognition (built for low-quality faces)",
+    },
 }
 
 

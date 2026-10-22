@@ -16,6 +16,7 @@ export interface Person {
   strength: "weak" | "good" | "strong";
   strength_hint: string;
   cover_sample_id: number | null;
+  learned: number; // camera sightings added by itself from confident recognitions
   cover_camera_id: number | null; // where / when the cover photo was taken (null for uploads)
   cover_seen_at: string | null;
   last_seen: string | null;
@@ -33,6 +34,10 @@ export interface FaceGroup {
   seen_at: string[];
   camera_ids: number[];
   faces: { id: number; camera_id: number | null; seen_at: string | null }[];
+  /** The enrolled person it's most like, however weakly. */
+  closest: { person_id: number; name: string; score: number } | null;
+  /** Similarity needed to be recognised (Settings -> AI -> face match). */
+  threshold: number;
   suggestion: { person_id: number; name: string; score: number; band: string } | null;
 }
 
@@ -81,6 +86,30 @@ export interface FaceReadiness {
   checks: { key: string; ok: boolean; label: string; fix: string }[];
   cameras: { id: number; name: string; recording_mode: string; motion: boolean; checked_today: number }[];
 }
+export interface FaceModelStatus {
+  active: "sface" | "adaface";
+  chosen: string;
+  adaface: { present: boolean; size_mb: number; license: string };
+  preparing: { running: boolean; done: number; total: number };
+}
+export interface ModelResult {
+  tested: number;
+  correct: number;
+  wrong: number;
+  missed: number;
+  threshold: number;
+  same_person_avg: number | null;
+  other_people_max: number | null;
+}
+export interface ModelComparison {
+  models: { sface: ModelResult; adaface: ModelResult };
+  verdict: "sface" | "adaface" | "not_enough";
+}
+export const getFaceModel = () => apiFetch<FaceModelStatus>("/faces/model");
+export const downloadAdaFace = () => apiFetch<FaceModelStatus>("/faces/model/adaface/download", { method: "POST" });
+export const setFaceModel = (model: "sface" | "adaface") =>
+  apiFetch<FaceModelStatus>("/faces/model", { method: "PUT", body: JSON.stringify({ model }) });
+export const compareFaceModels = () => apiFetch<ModelComparison>("/faces/model/compare");
 export const faceReadiness = () => apiFetch<FaceReadiness>("/faces/readiness");
 export const faceCaptureStats = () => apiFetch<Record<string, FaceCaptureStats>>("/faces/capture-stats");
 export const listUnknownGroups = () => apiFetch<FaceGroup[]>("/faces/unknown-groups");
