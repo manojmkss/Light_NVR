@@ -37,6 +37,12 @@ def choose_providers(preference: str = "auto") -> list:
     CPU so a misconfigured GPU still detects (slowly) instead of not at all."""
     avail = available_providers()
     pref = (preference or "auto").lower()
+    # Explicit devices (the AI engine card): exactly that device, CPU behind it.
+    if pref == "intel_gpu":
+        return ([("OpenVINOExecutionProvider", {"device_type": "GPU"})] if "OpenVINOExecutionProvider" in avail
+                else []) + ["CPUExecutionProvider"]
+    if pref == "nvidia_gpu":
+        return (["CUDAExecutionProvider"] if "CUDAExecutionProvider" in avail else []) + ["CPUExecutionProvider"]
     if pref != "auto":
         name = PROVIDER_ALIASES.get(pref, pref)
         chosen = [name] if name in avail else []
@@ -61,8 +67,9 @@ def _has_render_node() -> bool:
         return False
 
 
-def make_session(path: str, preference: str = "auto", threads: int | None = None):
-    """Returns (session, provider actually in use)."""
+def make_session(path: str, preference: str = "auto", threads: int | None = None, strict: bool = False):
+    """Returns (session, provider actually in use). `strict`: raise instead of
+    quietly falling back to CPU (so a device test can say *why* it failed)."""
     import onnxruntime as ort
 
     opts = ort.SessionOptions()
@@ -73,6 +80,8 @@ def make_session(path: str, preference: str = "auto", threads: int | None = None
     try:
         session = ort.InferenceSession(path, opts, providers=providers)
     except Exception:
+        if strict:
+            raise
         logger.exception("Could not create session with %s - falling back to CPU", providers)
         session = ort.InferenceSession(path, opts, providers=["CPUExecutionProvider"])
     used = session.get_providers()[0] if session.get_providers() else "CPUExecutionProvider"

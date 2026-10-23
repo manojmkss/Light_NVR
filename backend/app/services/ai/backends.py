@@ -201,6 +201,11 @@ class RemoteHttpBackend(InferenceBackend):
             device = info.get("device", "unknown")
             return True, f"Remote worker reachable in {took}ms (device: {device})"
         except Exception as exc:
+            if "ai-worker" in self.base_url and ("name resolution" in str(exc).lower() or "Name or service" in str(exc)):
+                # The compose name only exists while the container runs.
+                return False, ("This NVR's AI service isn't running (no 'ai-worker' container). Run the update "
+                               "once - ./scripts/update-linux.sh - which sets it up for this machine's hardware; "
+                               "until then choose 'This machine (CPU)' under Where it runs.")
             return False, f"Could not reach remote AI worker at {self.base_url}: {exc}"
 
     async def close(self) -> None:

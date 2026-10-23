@@ -283,6 +283,17 @@ fi
 #    pulls in the macvlan override automatically, so no -f juggling here)
 # ---------------------------------------------------------------------------
 
+# The AI service for this machine's hardware: its image, and the GPU when there
+# is one (it idles until AI is turned on in Settings -> AI).
+if $DRY_RUN; then
+  log "[DRY RUN] Would detect GPUs and set the AI service's image/devices in .env."
+else
+  DOCKER=(docker)
+  configure_ai_service
+  if $HW_DRI; then log "AI service: ${AI_VARIANT_CHOSEN:-off} image, Intel GPU connected."
+  else log "AI service: ${AI_VARIANT_CHOSEN:-off} image."; fi
+fi
+
 # Prefer the prebuilt multi-arch images from GHCR (a ~1-minute pull, no build).
 # Fall back to building from source if they can't be fetched - e.g. no release
 # has been published yet, the packages are private, or the host is air-gapped.
@@ -309,6 +320,7 @@ if ! $DRY_RUN; then
     sleep 3
   done
   $ready || warn "Health check didn't succeed within 2 minutes - check 'docker compose logs backend'."
+  if $ready; then write_hardware_report; fi
 fi
 
 # ---------------------------------------------------------------------------

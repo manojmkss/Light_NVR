@@ -242,7 +242,7 @@ and descriptions explain the few events that survive.
 - **Faces you enrol** (People page, opt-in, local only): "Ramesh (milkman) arrived", unknown faces flagged, watch list always urgent. Delete or forget all at any time.
 - **Package left / taken**, **camera tamper** (covered, blurred, turned) alerts.
 - **Search** in plain words: "person in red shirt yesterday", "car driveway".
-- **Local AI service** with CPU, Intel GPU and NVIDIA images: `./scripts/enable-ai.sh` detects your hardware, starts the right one and benchmarks it. Settings → AI → "Measure this hardware" shows what each feature can sustain.
+- **Local AI service on CPU, Intel GPU or NVIDIA GPU, chosen in the web UI.** The install and update scripts detect the machine's GPU and connect it to the AI service; Settings → AI → **AI engine** then lists each device with its measured speed and switches instantly ("Automatic" picks the fastest that works and falls back to the CPU if a GPU fails). Added a GPU later? Run the normal update once. Settings → AI → "Measure this hardware" shows what each feature can sustain. (`AI_WORKER=off` in `.env` leaves the AI service out; `./scripts/enable-ai.sh --variant cpu|openvino|cuda` pins an image by hand.)
 
 ## Recording modes
 

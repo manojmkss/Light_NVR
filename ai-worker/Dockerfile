@@ -30,9 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl libglib2.0
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY ai-worker/requirements*.txt ./
+COPY ai-worker/requirements*.txt ai-worker/clear_execstack.py ./
+# clear_execstack: some ONNX Runtime wheels (the OpenVINO one) are flagged as
+# needing an executable stack, which newer kernels refuse to load - the AI
+# service then couldn't run at all. The import check fails the build instead
+# of shipping an image whose AI can't start.
 RUN python3 -m pip install --no-cache-dir -r requirements.txt \
-    && python3 -m pip install --no-cache-dir -r requirements-${VARIANT}.txt
+    && python3 -m pip install --no-cache-dir -r requirements-${VARIANT}.txt \
+    && python3 clear_execstack.py "$(python3 -c 'import site; print(site.getsitepackages()[0])')" \
+    && python3 -c "import onnxruntime as o; print('onnxruntime providers:', o.get_available_providers())"
 
 # The shared vision package keeps its import path (app.vision).
 COPY backend/app/vision /app/app/vision

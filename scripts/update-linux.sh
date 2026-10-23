@@ -170,6 +170,24 @@ if [[ -n "$missing" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 3b. AI service for this machine's hardware (a GPU added since the last run
+#     is connected here; the web page then switches to it)
+# ---------------------------------------------------------------------------
+if $DRY_RUN; then
+  log "[DRY RUN] Would detect GPUs and set the AI service's image/devices in .env."
+else
+  configure_ai_service
+  if [[ -n "${AI_VARIANT_CHOSEN:-}" ]]; then
+    gpu_note="no GPU"
+    $HW_DRI && gpu_note="Intel GPU connected"
+    [[ "$AI_VARIANT_CHOSEN" == "cuda" ]] && gpu_note="NVIDIA GPU connected"
+    if $HW_INTEL && ! $HW_DRI; then gpu_note="Intel GPU present but its driver isn't loaded - see Settings -> AI -> AI engine"; fi
+    if $HW_NVIDIA && ! $HW_NVIDIA_TOOLKIT; then gpu_note="NVIDIA GPU present but the NVIDIA Container Toolkit is missing"; fi
+    log "AI service: ${AI_VARIANT_CHOSEN} image ($gpu_note). Choose CPU/GPU in Settings -> AI -> AI engine."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Rebuild + restart  (.env's COMPOSE_FILE, if set, layers in overrides)
 # ---------------------------------------------------------------------------
 
@@ -218,6 +236,7 @@ if ! $DRY_RUN; then
   done
   $ready && log "Update complete - backend healthy." \
          || warn "Health check didn't pass within 2 minutes - check '${DOCKER[*]} compose logs backend'."
+  if $ready; then write_hardware_report; fi
 fi
 
 echo

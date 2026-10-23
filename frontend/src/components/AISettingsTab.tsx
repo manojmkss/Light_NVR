@@ -8,9 +8,10 @@ import {
   updateAISettings,
 } from "../api/ai";
 import type { AISettings, AITestResult } from "../api/types";
+import { AIEngineCard } from "./AIEngineCard";
 import { AIPerformanceCard } from "./AIPerformanceCard";
 
-// The AI sidecar started by scripts/enable-ai.sh, reached over the compose network.
+// The NVR's own AI service (set up by the install/update scripts), reached over the compose network.
 const SIDECAR_URL = "http://ai-worker:8811";
 
 const MODELS = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m"];
@@ -270,6 +271,13 @@ export function AISettingsTab() {
 
       {s.enabled && (
         <>
+          <AIEngineCard
+            onUseThisNvr={() => {
+              up("backend", "remote");
+              up("remote_url", SIDECAR_URL);
+            }}
+          />
+
           {/* ── Where it runs ────────────────────────────────────────── */}
           <div className="card">
             <strong>Where it runs</strong>

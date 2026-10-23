@@ -6,6 +6,34 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-23
+
+Choose CPU, Intel GPU or NVIDIA GPU for AI from the web page.
+
+### Added
+- **Settings -> AI -> AI engine.** Every device the AI service can use, with
+  its measured speed ("CPU - 455 ms per check"), and a switch that takes
+  effect instantly: Automatic (the fastest device that actually works), CPU,
+  Intel GPU or NVIDIA GPU. A GPU is only kept after it has run real
+  detections; one that starts failing hands over to the CPU by itself. When
+  something is missing (a VM without the GPU driver, no NVIDIA Container
+  Toolkit, a GPU added since the last update) the card says what to do.
+- **The install and update scripts set up the AI service for the hardware**:
+  it's part of every Linux install now (idle until AI is turned on), on the
+  Intel-capable image for 64-bit PCs, NVIDIA's with the Container Toolkit,
+  and with the GPU connected when the machine has one. Adding a GPU later is
+  picked up by the normal update. `AI_WORKER=off` in .env leaves it out;
+  `enable-ai.sh --variant ...` pins an image by hand.
+
+### Fixed
+- **The Intel (OpenVINO) AI image couldn't start its AI on newer Linux
+  kernels** ("cannot enable executable stack"), in every release so far. The
+  build now clears that flag and refuses to produce an image whose AI can't
+  load.
+- "Could not reach remote AI worker at http://ai-worker:8811: name
+  resolution" now says what it means: this NVR's AI service isn't running,
+  and the update sets it up.
+
 ## [0.4.5] - 2026-10-22
 
 Faces that get recognised from your cameras' point of view, and that keep
@@ -483,7 +511,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.6...HEAD
+[0.4.6]: https://github.com/manojmkss/Light_NVR/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/manojmkss/Light_NVR/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/manojmkss/Light_NVR/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/manojmkss/Light_NVR/compare/v0.4.2...v0.4.3

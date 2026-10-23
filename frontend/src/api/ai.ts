@@ -103,3 +103,36 @@ export function listDetections(params: {
   const qs = q.toString();
   return apiFetch<Detection[]>(`/ai/detections${qs ? `?${qs}` : ""}`);
 }
+
+// ── AI engine (CPU / Intel GPU / NVIDIA GPU) ─────────────────────────────────
+
+export type EngineDevice = "cpu" | "intel_gpu" | "nvidia_gpu";
+export interface EngineDeviceInfo {
+  id: EngineDevice;
+  label: string;
+  name: string;
+  available: boolean;
+  reason: string | null;
+  result: { ok: boolean; p50_ms?: number; error?: string; at: number } | null;
+}
+export interface EngineState {
+  choice: "auto" | EngineDevice;
+  active: EngineDevice;
+  note: string;
+  variant: string;
+  devices: EngineDeviceInfo[];
+}
+export interface EngineStatus {
+  worker_url: string;
+  in_use: boolean;
+  local: boolean;
+  reachable: boolean;
+  error: string | null;
+  engine: EngineState | null;
+  hardware: Record<string, unknown> | null;
+  hints: string[];
+}
+export const getAIEngine = () => apiFetch<EngineStatus>("/ai/engine");
+export const setAIEngine = (device: "auto" | EngineDevice) =>
+  apiFetch<EngineState>("/ai/engine", { method: "PUT", body: JSON.stringify({ device }) });
+export const benchmarkAIEngine = () => apiFetch<EngineState>("/ai/engine/benchmark", { method: "POST" });

@@ -71,7 +71,8 @@ if $DISABLE; then
     "${DOCKER[@]}" compose stop ai-worker >/dev/null 2>&1 || true
     "${DOCKER[@]}" compose rm -f ai-worker >/dev/null 2>&1 || true
     if [ "$base" = "docker-compose.yml" ]; then env_unset COMPOSE_FILE; else env_set COMPOSE_FILE "$base"; fi
-    for k in AI_WORKER_VARIANT AI_CPUS AI_MEM_LIMIT RENDER_GID AI_WORKER_PROVIDER; do env_unset "$k"; done
+    for k in AI_WORKER_VARIANT AI_CPUS AI_MEM_LIMIT RENDER_GID AI_WORKER_PROVIDER AI_WORKER_VARIANT_AUTO; do env_unset "$k"; done
+    env_set AI_WORKER off  # updates won't add it back (remove this line from .env to undo)
   fi
   log "Done. In the web UI switch Settings -> AI -> Where it runs back to 'This machine (CPU)' or turn AI off."
   exit 0
@@ -92,13 +93,14 @@ fi
 HAS_NVIDIA=false; command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1 && HAS_NVIDIA=true
 NVIDIA_TOOLKIT=false
 if "${DOCKER[@]}" info 2>/dev/null | grep -qi nvidia || command -v nvidia-ctk >/dev/null 2>&1; then NVIDIA_TOOLKIT=true; fi
-RENDER_GID="$(getent group render 2>/dev/null | cut -d: -f3 || true)"
+RENDER_GID="${RENDER_GID:-$(stat -c %g /dev/dri/renderD* 2>/dev/null | head -1 || getent group render 2>/dev/null | cut -d: -f3 || true)}"
 
 log "This machine: $ARCH, $CORES cores, ${RAM_MB} MB RAM"
 $HAS_NVIDIA && log "  NVIDIA GPU: $(nvidia-smi -L 2>/dev/null | head -1)$($NVIDIA_TOOLKIT || echo ' (NVIDIA Container Toolkit NOT installed)')"
 $INTEL_GPU && log "  Intel GPU: present$($HAS_DRI || echo ' (but /dev/dri is missing - not usable)')"
 $AMD_GPU && log "  AMD GPU: present (ROCm isn't supported yet - the CPU image will be used)"
 
+REQUESTED_VARIANT="$VARIANT"
 if [ "$VARIANT" = "auto" ]; then
   if [ "$ARCH" != "x86_64" ]; then
     VARIANT="cpu"
@@ -131,6 +133,9 @@ apply_variant() {
   [ "$v" = "cuda" ] && files="$files:docker-compose.ai.nvidia.yml"
   env_set COMPOSE_FILE "$files"
   env_set AI_WORKER_VARIANT "$v"
+  env_unset AI_WORKER
+  # An image chosen by hand stays; "auto" lets every update re-pick it for the hardware.
+  if [ "$REQUESTED_VARIANT" = "auto" ]; then env_unset AI_WORKER_VARIANT_AUTO; else env_set AI_WORKER_VARIANT_AUTO off; fi
   env_set AI_CPUS "$CPUS"
   env_set AI_MEM_LIMIT "$MEM_LIMIT"
   if [ "$v" = "openvino" ]; then env_set RENDER_GID "${RENDER_GID:-109}"; fi

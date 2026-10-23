@@ -119,10 +119,10 @@ def decode(output: np.ndarray, scale: float, dx: int, dy: int, orig_w: int, orig
 class YoloDetector:
     """One ONNX YOLO model on whichever provider engine.make_session picks."""
 
-    def __init__(self, path: str, preference: str = "auto", threads: int | None = None) -> None:
+    def __init__(self, path: str, preference: str = "auto", threads: int | None = None, strict: bool = False) -> None:
         from app.vision.engine import make_session
 
-        self.session, self.provider = make_session(path, preference, threads)
+        self.session, self.provider = make_session(path, preference, threads, strict)
         self.input_name = self.session.get_inputs()[0].name
 
     def detect(self, img: np.ndarray, min_confidence: float) -> list[Box]:
