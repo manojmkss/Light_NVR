@@ -97,3 +97,9 @@ async def migrate_data(conn: AsyncConnection) -> None:
     # the arrival on/off switch became Yes / Only when Away / No.
     await conn.execute(text("UPDATE persons SET category = 'familiar' WHERE category IN ('staff', 'visitor')"))
     await conn.execute(text("UPDATE persons SET notify = 'never' WHERE arrival_alert = 0 AND notify = 'always'"))
+    # v0.4.8: AI no longer runs inside the NVR - those installs move to the
+    # NVR's own AI service (set up by every install/update).
+    await conn.execute(text(
+        "UPDATE ai_settings SET backend = 'remote', remote_url = 'http://ai-worker:8811', remote_api_key = '' "
+        "WHERE backend = 'local' OR backend IS NULL OR (backend = 'remote' AND (remote_url IS NULL OR remote_url = ''))"
+    ))

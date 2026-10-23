@@ -205,8 +205,13 @@ these is seen"* and tree/shadow/rain alerts stop. Recording is never affected �
 it starts the instant motion is seen, so you never lose footage, and any AI
 failure falls back to plain motion behaviour.
 
-- **This machine (CPU)** — the default. One-time model download, run on the
-  machine hosting LightNVR:
+AI always runs in its own service, never inside the NVR, so it can't slow down
+or crash recording. Pick what runs it under **Settings → AI → AI engine**:
+
+- **This NVR's AI service** — set up by the install/update scripts on every
+  install, on its **CPU**, **Intel GPU** or **NVIDIA GPU** ("Automatic" picks the
+  fastest that works). One-time model download, run on the machine hosting
+  LightNVR (the card shows this too when it's missing):
   ```bash
   # Linux / macOS
   ./scripts/fetch-ai-models.sh yolov8n
@@ -215,8 +220,9 @@ failure falls back to plain motion behaviour.
   # Windows
   .\scripts\fetch-ai-models.ps1 -Model yolov8n
   ```
-- **Another PC with a GPU** — run [ai-worker/](ai-worker/) there and point the
-  NVR at it. Worth it for a Pi, many cameras, or a bigger model.
+- **Another PC on your network** — run [ai-worker/](ai-worker/) there (e.g. a
+  PC with a gaming GPU) and enter its address. Worth it for a Pi, many cameras,
+  or a bigger model.
 
 **Descriptions — "what happened?"** Turns *"Motion on Front Door"* into *"A
 delivery person left a package at the front door"*, plus an optional daily

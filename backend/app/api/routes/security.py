@@ -256,6 +256,44 @@ class IncidentOut(BaseModel):
         from_attributes = True
 
 
+class CameraGroupsSettingsIn(BaseModel):
+    join_seconds: int = Field(ge=10, le=600)
+
+
+@router.get("/camera-groups")
+async def camera_groups(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
+    """Cameras and the group each is in (cameras that watch the same place).
+    A camera with no group is on its own. Change a camera's group with
+    PUT /api/cameras/{id} {"area": ...} - applied without a restart."""
+    from app.models.camera import Camera
+    from app.models.system_settings import SystemSettings
+
+    cams = (await db.execute(select(Camera).order_by(Camera.name))).scalars().all()
+    s = await db.get(SystemSettings, 1)
+    groups = sorted({(c.area or "").strip() for c in cams if (c.area or "").strip()}, key=str.lower)
+    return {
+        "cameras": [{"id": c.id, "name": c.name, "group": (c.area or "").strip() or None} for c in cams],
+        "groups": groups,
+        "join_seconds": getattr(s, "visit_join_seconds", None) or 60,
+    }
+
+
+@router.put("/camera-groups/settings")
+async def camera_groups_settings(payload: CameraGroupsSettingsIn, db: AsyncSession = Depends(get_db),
+                                 _: User = Depends(require_admin)):
+    from app.models.system_settings import SystemSettings
+    from app.services.incidents import incident_manager
+
+    s = await db.get(SystemSettings, 1)
+    if s is None:
+        s = SystemSettings(id=1)
+        db.add(s)
+    s.visit_join_seconds = payload.join_seconds
+    await db.commit()
+    incident_manager.join_window = float(payload.join_seconds)
+    return {"join_seconds": payload.join_seconds}
+
+
 @router.get("/areas")
 async def list_areas(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
     """Area names in use by cameras, plus the walking-time links between them."""

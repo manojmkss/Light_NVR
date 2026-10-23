@@ -100,15 +100,23 @@ async def engine(_: User = Depends(require_admin)):
     s = await _settings()
     url, headers, in_use = _worker(s)
     hw = hardware_report()
-    try:
-        state = await _call("GET", f"{url}/v2/engine", headers, 15)
-        error = None
-    except Exception as exc:
-        state, error = None, str(getattr(exc, "detail", exc)) or type(exc).__name__
+    state, error = await _engine_of(url, headers)
+    local = url == LOCAL_WORKER_URL
+    # This NVR's own devices too, so the card can offer them while another
+    # PC is in use.
+    local_state = state if local else (await _engine_of(LOCAL_WORKER_URL, {}))[0]
     return {
-        "worker_url": url, "in_use": in_use, "local": url == LOCAL_WORKER_URL, "reachable": state is not None,
-        "error": error, "engine": state, "hardware": hw, "hints": hints(hw, state),
+        "worker_url": url, "in_use": in_use, "local": local, "reachable": state is not None,
+        "error": error, "engine": state, "local_engine": local_state, "hardware": hw,
+        "hints": hints(hw, local_state),
     }
+
+
+async def _engine_of(url: str, headers: dict) -> tuple[dict | None, str | None]:
+    try:
+        return await _call("GET", f"{url}/v2/engine", headers, 15), None
+    except Exception as exc:
+        return None, str(getattr(exc, "detail", exc)) or type(exc).__name__
 
 
 class DeviceIn(BaseModel):

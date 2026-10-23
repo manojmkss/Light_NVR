@@ -279,6 +279,9 @@ async def create_camera(payload: CameraCreate, db: AsyncSession = Depends(get_db
     return camera
 
 
+LIVE_FIELDS = {"area", "is_favorite"}  # applied without restarting the camera
+
+
 @router.put("/{camera_id}", response_model=CameraOut)
 async def update_camera(
     camera_id: int,
@@ -290,7 +293,9 @@ async def update_camera(
     if camera is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    changed = {f for f, v in changes.items() if getattr(camera, f) != v}
+    for field, value in changes.items():
         setattr(camera, field, value)
 
     await db.commit()
@@ -298,7 +303,12 @@ async def update_camera(
 
     from app.services.camera_supervisor import supervisor
 
-    await supervisor.sync_camera(camera)
+    # Moving a camera to another group or starring it must not restart its
+    # streams (a gap in the recording); everything else does.
+    if changed <= LIVE_FIELDS:
+        supervisor.apply_live(camera)
+    else:
+        await supervisor.sync_camera(camera)
     return camera
 
 

@@ -79,6 +79,46 @@ if ($behind -eq "0" -and -not $DryRun) {
 }
 
 # ---------------------------------------------------------------------------
+# 2b. The AI service. AI always runs in its own container now, never inside
+#     the NVR (it competed with recording there). Docker Desktop can't hand an
+#     Intel GPU to Linux containers, so Windows runs the CPU image; choose
+#     the device in Settings -> AI -> AI engine. AI_WORKER=off opts out.
+# ---------------------------------------------------------------------------
+
+$EnvFile = Join-Path $RepoRoot ".env"
+function Get-EnvVar {
+    param([string]$Key)
+    if (-not (Test-Path $EnvFile)) { return "" }
+    $line = Get-Content $EnvFile | Where-Object { $_ -match "^$([regex]::Escape($Key))=" } | Select-Object -Last 1
+    if ($line) { return ($line -split "=", 2)[1].Trim() } else { return "" }
+}
+function Set-EnvVar {
+    param([string]$Key, [string]$Value)
+    $lines = @()
+    if (Test-Path $EnvFile) { $lines = @(Get-Content $EnvFile) }
+    $found = $false
+    $out = foreach ($l in $lines) {
+        if ($l -match "^$([regex]::Escape($Key))=") { $found = $true; "$Key=$Value" } else { $l }
+    }
+    if (-not $found) { $out = @($out) + "$Key=$Value" }
+    # No byte-order mark: docker compose would read it as part of the first key.
+    [System.IO.File]::WriteAllLines($EnvFile, [string[]]$out, (New-Object System.Text.UTF8Encoding $false))
+}
+
+if (-not $DryRun -and (Get-EnvVar "AI_WORKER") -ne "off") {
+    $aiFiles = @("docker-compose.ai.yml", "docker-compose.ai.intel.yml", "docker-compose.ai.nvidia.yml")
+    $current = Get-EnvVar "COMPOSE_FILE"
+    if (-not $current) { $current = "docker-compose.yml" }
+    $parts = @($current -split "[;:]" | Where-Object { $_ -and ($aiFiles -notcontains $_) })
+    # Windows compose separates COMPOSE_FILE entries with ';'.
+    Set-EnvVar "COMPOSE_FILE" ((@($parts) + "docker-compose.ai.yml") -join ";")
+    if ((Get-EnvVar "AI_WORKER_VARIANT_AUTO") -ne "off") { Set-EnvVar "AI_WORKER_VARIANT" "cpu" }
+    if (-not (Get-EnvVar "AI_CPUS")) { Set-EnvVar "AI_CPUS" ([string][Math]::Max(1, [int]([Environment]::ProcessorCount / 2))) }
+    if (-not (Get-EnvVar "AI_MEM_LIMIT")) { Set-EnvVar "AI_MEM_LIMIT" "1536m" }
+    Write-Step "AI service: CPU image (choose it in Settings -> AI -> AI engine)."
+}
+
+# ---------------------------------------------------------------------------
 # 3. Rebuild + restart
 # ---------------------------------------------------------------------------
 

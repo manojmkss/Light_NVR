@@ -61,6 +61,13 @@ class CameraSupervisor:
             if camera.enabled:
                 await self._start_worker(camera)
 
+    def apply_live(self, camera: Camera) -> None:
+        """Settings that don't touch the streams (camera group, favourite):
+        applied to the running worker - no restart, so no recording gap."""
+        worker = self._workers.get(camera.id)
+        if worker is not None:
+            worker.area = getattr(camera, "area", None)
+
     async def remove_camera(self, camera_id: int) -> None:
         async with self._lock(camera_id):
             await self._remove_locked(camera_id)

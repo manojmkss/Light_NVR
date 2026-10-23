@@ -85,6 +85,9 @@ async def update_ai_settings(payload: AISettingsUpdate, _: User = Depends(requir
                 c.strip().lower() for c in data["detection_classes"] if c and c.strip()
             )
 
+        # AI always runs on an AI worker now; "local" means this NVR's own one.
+        if data.get("backend") == "local":
+            data["backend"], data["remote_url"], data["remote_api_key"] = "remote", "http://ai-worker:8811", ""
         merged_backend = data.get("backend", record.backend)
         merged_remote_url = data.get("remote_url", record.remote_url)
         if merged_backend == "remote" and not merged_remote_url:

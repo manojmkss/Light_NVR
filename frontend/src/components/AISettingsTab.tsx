@@ -3,7 +3,6 @@ import {
   getAIClasses,
   getAISettings,
   listOllamaModels,
-  testAIBackend,
   testVlm,
   updateAISettings,
 } from "../api/ai";
@@ -11,8 +10,6 @@ import type { AISettings, AITestResult } from "../api/types";
 import { AIEngineCard } from "./AIEngineCard";
 import { AIPerformanceCard } from "./AIPerformanceCard";
 
-// The NVR's own AI service (set up by the install/update scripts), reached over the compose network.
-const SIDECAR_URL = "http://ai-worker:8811";
 
 const MODELS = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m"];
 
@@ -42,16 +39,6 @@ function isLocalUrl(url: string): boolean {
     host.startsWith("192.168.") ||
     /^172\.(1[6-9]|2\d|3[01])\./.test(host)
   );
-}
-
-function modelCommand(model: string): { primary: string; other: string; otherLabel: string } {
-  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-  const isWindows = /Windows/i.test(ua);
-  const ps = `.\\scripts\\fetch-ai-models.ps1 -Model ${model}`;
-  const sh = `./scripts/fetch-ai-models.sh ${model}`;
-  return isWindows
-    ? { primary: ps, other: sh, otherLabel: "On Linux / macOS instead" }
-    : { primary: sh, other: ps, otherLabel: "On Windows (PowerShell) instead" };
 }
 
 /** Small inline result line for the various Test buttons. */
@@ -102,14 +89,11 @@ function Section({
 export function AISettingsTab() {
   const [s, setS] = useState<AISettings | null>(null);
   const [suggested, setSuggested] = useState<string[]>([]);
-  const [remoteKey, setRemoteKey] = useState("");
   const [vlmKey, setVlmKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<AITestResult | null>(null);
   const [vlmTesting, setVlmTesting] = useState(false);
   const [vlmResult, setVlmResult] = useState<AITestResult | null>(null);
   const [ollamaModels, setOllamaModels] = useState<string[] | null>(null);
@@ -128,8 +112,6 @@ export function AISettingsTab() {
     setS((p) => (p ? { ...p, [k]: v } : p));
     setSaved(false);
   };
-
-  const where = s.backend === "remote" && s.remote_url === SIDECAR_URL ? "sidecar" : s.backend;
 
   const toggleClass = (cls: string) =>
     up(
@@ -165,9 +147,7 @@ export function AISettingsTab() {
       // hitting Save silently discarded the change.
       const result = await updateAISettings({
         enabled: s.enabled,
-        backend: s.backend,
-        remote_url: s.remote_url,
-        ...(remoteKey ? { remote_api_key: remoteKey } : {}),
+        // Where AI runs (and its password) is saved by the AI engine card itself.
         detection_enabled: s.detection_enabled,
         detection_model: s.detection_model,
         detection_confidence: s.detection_confidence,
@@ -189,7 +169,6 @@ export function AISettingsTab() {
         alpr_enabled: s.alpr_enabled,
       });
       setS(result);
-      setRemoteKey("");
       setVlmKey("");
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
@@ -197,18 +176,6 @@ export function AISettingsTab() {
       setError((e as Error).message);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const runTest = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      setTestResult(await testAIBackend());
-    } catch (e) {
-      setTestResult({ success: false, message: (e as Error).message });
-    } finally {
-      setTesting(false);
     }
   };
 
@@ -271,116 +238,7 @@ export function AISettingsTab() {
 
       {s.enabled && (
         <>
-          <AIEngineCard
-            onUseThisNvr={() => {
-              up("backend", "remote");
-              up("remote_url", SIDECAR_URL);
-            }}
-          />
-
-          {/* ── Where it runs ────────────────────────────────────────── */}
-          <div className="card">
-            <strong>Where it runs</strong>
-            <div style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 4, marginBottom: 8 }}>
-              This finds <em>objects</em> (“is there a person?”). It is not the same as the vision model
-              that writes descriptions — LM Studio, Ollama, OpenAI and Claude go under{" "}
-              <strong>“Describe what's happening”</strong> lower down, not here.
-            </div>
-            <div className="field" style={{ marginTop: 10 }}>
-              <select
-                value={where}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "sidecar") {
-                    up("backend", "remote");
-                    up("remote_url", SIDECAR_URL);
-                  } else {
-                    up("backend", v as AISettings["backend"]);
-                    if (v === "remote" && s.remote_url === SIDECAR_URL) up("remote_url", "");
-                  }
-                }}
-              >
-                <option value="local">This machine (CPU, inside the NVR) — simplest</option>
-                <option value="sidecar">This NVR's AI service (separate container, GPU if available)</option>
-                <option value="remote">Another PC running the LightNVR ai-worker</option>
-              </select>
-            </div>
-
-            {where === "sidecar" && (
-              <div style={{ color: "var(--text-dim)", fontSize: 12 }}>
-                <p style={{ marginTop: 0 }}>
-                  Runs the models in their own container next to the NVR, so AI can never slow down or crash
-                  recording, and uses an Intel or NVIDIA GPU when there is one. One-time setup, on the machine
-                  hosting LightNVR (it checks the hardware and proves it with a benchmark):
-                </p>
-                <code style={{ display: "block", padding: "6px 8px", background: "var(--bg-alt, #0d1117)", borderRadius: 4 }}>
-                  ./scripts/enable-ai.sh
-                </code>
-              </div>
-            )}
-
-            {where === "sidecar" ? null : s.backend === "local" ? (
-              <div style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 0 }}>
-                <p style={{ marginTop: 0 }}>
-                  Runs here on the CPU, only when motion happens (never on every frame) — that's what
-                  keeps it light. One-time setup: run this <strong>on the machine hosting LightNVR</strong>{" "}
-                  to download the model, then press “Check it works”.
-                </p>
-                <code style={{ display: "block", padding: "6px 8px", background: "var(--bg-alt, #0d1117)", borderRadius: 4 }}>
-                  {modelCommand(s.detection_model).primary}
-                </code>
-                <details style={{ marginTop: 6 }}>
-                  <summary style={{ cursor: "pointer" }}>{modelCommand(s.detection_model).otherLabel}</summary>
-                  <code style={{ display: "block", padding: "6px 8px", marginTop: 4, background: "var(--bg-alt, #0d1117)", borderRadius: 4 }}>
-                    {modelCommand(s.detection_model).other}
-                  </code>
-                </details>
-              </div>
-            ) : (
-              <>
-                <div className="field">
-                  <label>Address of the AI worker</label>
-                  <input
-                    type="text"
-                    placeholder="http://192.168.1.20:8811"
-                    value={s.remote_url}
-                    onChange={(e) => up("remote_url", e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>
-                    Password{" "}
-                    {s.has_remote_api_key && (
-                      <span style={{ color: "var(--text-dim)" }}>(saved — leave blank to keep)</span>
-                    )}
-                  </label>
-                  <input
-                    type="password"
-                    placeholder={s.has_remote_api_key ? "••••••••" : "optional"}
-                    value={remoteKey}
-                    onChange={(e) => setRemoteKey(e.target.value)}
-                  />
-                </div>
-                <p style={{ color: "var(--text-dim)", fontSize: 12 }}>
-                  This must be the LightNVR <code>ai-worker</code> running on that PC (see the{" "}
-                  <code>ai-worker/</code> folder in the project) — <strong>not</strong> LM Studio or
-                  Ollama, which speak a different API and are for descriptions, not detection. Video
-                  frames go to that PC on your own network; nothing leaves your home.
-                </p>
-              </>
-            )}
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <button className="btn btn-sm" onClick={runTest} disabled={testing}>
-                {testing ? "Checking..." : "Check it works"}
-              </button>
-              <TestLine result={testResult} />
-            </div>
-            <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6, marginBottom: 0 }}>
-              Press <strong>Save</strong> before checking — this tests the saved settings, not what's
-              on screen.
-            </p>
-          </div>
+          <AIEngineCard settings={s} onSettings={setS} />
 
           <AIPerformanceCard onUseInterval={(ms) => up("monitor_interval_ms", ms)} />
 

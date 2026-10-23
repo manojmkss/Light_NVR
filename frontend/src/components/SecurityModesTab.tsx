@@ -16,7 +16,7 @@ import {
   type RuleAction,
   type SecurityMode,
 } from "../api/security";
-import { AreasCard } from "./AreasCard";
+import { CameraGroupsCard } from "./CameraGroupsCard";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MODES: SecurityMode[] = ["home", "away", "night", "disarmed"];
@@ -210,7 +210,7 @@ export function SecurityModesTab() {
         {error && <div className="error-text" style={{ marginTop: 8 }}>{error}</div>}
       </div>
 
-      <AreasCard />
+      <CameraGroupsCard />
 
       {preview && (
         <div className="card">

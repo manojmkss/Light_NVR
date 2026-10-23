@@ -21,13 +21,14 @@ class AISettings(Base):
     # ── Master switch ───────────────────────────────────────────────────────
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # ── Where inference actually runs ───────────────────────────────────────
-    # "local"  - ONNX Runtime in the backend process, CPU. No extra infra, but
-    #            costs CPU on the NVR box itself.
-    # "remote" - POST frames to an ai-worker on another machine (e.g. a PC with
-    #            a GPU on the LAN). The NVR box then does almost no AI work.
-    backend: Mapped[str] = mapped_column(String(16), default="local")
-    remote_url: Mapped[str] = mapped_column(String(256), default="")
+    # ── Where inference runs: always an AI worker ───────────────────────────
+    # This NVR's own AI service (a separate container, http://ai-worker:8811 -
+    # CPU, Intel or NVIDIA GPU) or one on another PC. AI never runs inside the
+    # NVR process any more: there it competed with recording on slow hardware,
+    # and a crash in a model could take recording down with it. ("local" rows
+    # from older versions are moved to the AI service by schema_sync.)
+    backend: Mapped[str] = mapped_column(String(16), default="remote")
+    remote_url: Mapped[str] = mapped_column(String(256), default="http://ai-worker:8811")
     remote_api_key: Mapped[str] = mapped_column(String(256), default="")
 
     # ── Tier 1: object detection ────────────────────────────────────────────

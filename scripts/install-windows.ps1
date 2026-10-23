@@ -242,6 +242,13 @@ if ($SkipFirewall) {
 # 5. Bring the stack up
 # ---------------------------------------------------------------------------
 
+# The AI service runs in its own container (CPU image on Windows: Docker Desktop
+# can't hand an Intel GPU to Linux containers). It idles until AI is turned on.
+Set-EnvVar "COMPOSE_FILE" "docker-compose.yml;docker-compose.ai.yml"
+Set-EnvVar "AI_WORKER_VARIANT" "cpu"
+Set-EnvVar "AI_CPUS" ([string][Math]::Max(1, [int]([Environment]::ProcessorCount / 2)))
+Set-EnvVar "AI_MEM_LIMIT" "1536m"
+
 # Prefer prebuilt images from GHCR (a ~1-minute pull, no build); fall back to
 # building from source if they can't be fetched.
 Write-Step "Fetching prebuilt images and starting LightNVR (first run can take a few minutes)."

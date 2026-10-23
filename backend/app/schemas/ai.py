@@ -55,6 +55,7 @@ class AISettingsOut(BaseModel):
 
 class AISettingsUpdate(BaseModel):
     enabled: bool | None = None
+    # "local" is accepted from older clients and treated as this NVR's AI service.
     backend: Literal["local", "remote"] | None = None
     remote_url: OptionalHttpUrl = None
     remote_api_key: str | None = None

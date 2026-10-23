@@ -12,7 +12,7 @@
 #   ./scripts/enable-ai.sh [--variant auto|cpu|openvino|cuda] [--cpus N] [--yes] [--dry-run]
 #   ./scripts/enable-ai.sh --disable
 #
-# Afterwards, in the web UI: Settings -> AI -> Where it runs -> "This NVR's AI service".
+# Afterwards, in the web UI: Settings -> AI -> AI engine (CPU / Intel GPU / NVIDIA GPU).
 
 set -euo pipefail
 
@@ -74,7 +74,7 @@ if $DISABLE; then
     for k in AI_WORKER_VARIANT AI_CPUS AI_MEM_LIMIT RENDER_GID AI_WORKER_PROVIDER AI_WORKER_VARIANT_AUTO; do env_unset "$k"; done
     env_set AI_WORKER off  # updates won't add it back (remove this line from .env to undo)
   fi
-  log "Done. In the web UI switch Settings -> AI -> Where it runs back to 'This machine (CPU)' or turn AI off."
+  log "Done. AI is off on this NVR now (AI_WORKER=off): turn AI off in Settings -> AI, or point it at another PC there."
   exit 0
 fi
 
@@ -207,5 +207,5 @@ fi
 
 log "AI service ready: $VARIANT image, inference on ${DEVICE:-cpu}, ${P50} ms per check."
 echo
-log "Last step, in the web UI: Settings -> AI -> Where it runs -> 'This NVR's AI service',"
-log "Save, then 'Measure this hardware' for the features it can sustain."
+log "Last step, in the web UI: Settings -> AI -> AI engine - pick Automatic, CPU or the GPU,"
+log "then 'Measure this hardware' for the features it can sustain."

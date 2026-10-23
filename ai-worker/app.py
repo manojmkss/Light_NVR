@@ -281,7 +281,9 @@ def apply_engine(choice: str) -> dict:
 
 def engine_status() -> dict:
     return {"choice": _engine["choice"], "active": _engine["active"], "note": _engine["note"],
-            "variant": VARIANT, "devices": device_options()}
+            "variant": VARIANT, "devices": device_options(),
+            # Without the detection model nothing can run - the NVR shows how to get it.
+            "model": DEFAULT_MODEL, "model_ready": os.path.exists(os.path.join(MODEL_DIR, f"{DEFAULT_MODEL}.onnx"))}
 
 
 def _detector(name: str):

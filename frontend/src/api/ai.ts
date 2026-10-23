@@ -121,6 +121,8 @@ export interface EngineState {
   note: string;
   variant: string;
   devices: EngineDeviceInfo[];
+  model?: string;
+  model_ready?: boolean;
 }
 export interface EngineStatus {
   worker_url: string;
@@ -128,7 +130,8 @@ export interface EngineStatus {
   local: boolean;
   reachable: boolean;
   error: string | null;
-  engine: EngineState | null;
+  engine: EngineState | null; // the AI service in use
+  local_engine: EngineState | null; // this NVR's own AI service (null when it isn't running)
   hardware: Record<string, unknown> | null;
   hints: string[];
 }

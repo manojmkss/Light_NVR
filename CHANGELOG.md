@@ -6,6 +6,32 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-10-23
+
+### Added
+- **Camera groups** (Visits -> Camera groups, also Settings -> Modes): put
+  cameras that watch the same place in one group and their events are one
+  visit. Cameras in different groups are separate visits - unless the same
+  person (a recognised face, or clothing colours that match very closely)
+  shows up on the other group's camera within 60 seconds (adjustable); then
+  the visits are merged into one with a route ("Front porch -> Back yard").
+  A camera with no group is on its own - cameras are no longer lumped into
+  one visit. Replaces area links with walking times.
+- **One "AI engine" choice** in Settings -> AI: Automatic, CPU, Intel GPU,
+  NVIDIA GPU (all on this NVR's AI service) or another PC on the network
+  running the AI worker - with each device's speed, why one can't be used,
+  and the model download step when it's missing. Applied straight away.
+- Windows installs get the AI service too (CPU).
+
+### Changed
+- **AI no longer runs inside the NVR.** It always runs in its own service, so
+  it can't slow down or crash recording on modest hardware. Installs using
+  "This machine (CPU)" move to the NVR's AI service on update automatically;
+  if the AI service is down, motion alerts still arrive, marked "AI
+  unavailable".
+- Changing a camera's group or starring it no longer restarts the camera
+  (no gap in recording).
+
 ## [0.4.7] - 2026-10-23
 
 ### Fixed
@@ -520,7 +546,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.7...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.8...HEAD
+[0.4.8]: https://github.com/manojmkss/Light_NVR/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/manojmkss/Light_NVR/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/manojmkss/Light_NVR/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/manojmkss/Light_NVR/compare/v0.4.4...v0.4.5

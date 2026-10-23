@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { listCameras } from "../api/cameras";
 import { buildMediaUrl } from "../api/client";
 import { listIncidentsWithEvents, type IncidentWithEvents } from "../api/security";
+import { CameraGroupsCard } from "../components/CameraGroupsCard";
 import { PlaybackPopup } from "../components/PlaybackPopup";
 import { updateSystemSettings } from "../api/system";
 import { useSettings } from "../context/SettingsContext";
@@ -56,6 +57,7 @@ export function VisitsPage() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [loaded, setLoaded] = useState(false);
   const [playAt, setPlayAt] = useState<{ cameraId: number; at: number; title?: string } | null>(null);
+  const [showGroups, setShowGroups] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -140,8 +142,16 @@ export function VisitsPage() {
           <input type="checkbox" checked={realOnly} onChange={(e) => setRealOnly(e.target.checked)} />
           Real activity only
         </label>
+        <button className={`btn btn-sm${showGroups ? " btn-primary" : ""}`} onClick={() => setShowGroups((v) => !v)}>
+          Camera groups
+        </button>
       </div>
       {error && <div className="error-text">{error}</div>}
+      {showGroups && (
+        <div style={{ marginBottom: 14 }}>
+          <CameraGroupsCard />
+        </div>
+      )}
       {!timezone && myZone && myZone !== "UTC" && (
         <div className="card" style={{ marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
           <span style={{ flex: 1 }}>

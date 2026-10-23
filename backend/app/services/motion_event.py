@@ -203,6 +203,7 @@ class Track:
     sig_n: int = 0
     reid_of: "Track | None" = None  # the earlier track this one is the same as
     came_back: bool = False  # a later track was found to be this one returning
+    reported: bool = False  # clothing passed to the visit (other camera groups)
 
     def predicted(self, now: float) -> tuple:
         """Where the box should be now, given how it was moving - ticks get
@@ -227,6 +228,7 @@ class Track:
 REID_GROUPS = ("person", "animal")
 REID_WINDOW = 300.0  # a comeback within 5 minutes of leaving is considered
 REID_SIM = 0.8  # how alike the clothing colours must be (histogram correlation)
+REID_STABLE_LOOKS = 4  # looks before a clothing signature is trusted for other cameras
 
 
 def _identities_differ(a: "Track", b: "Track") -> bool:
@@ -696,6 +698,7 @@ class MotionEventSession:
         rules: list | None = None,
         recognise=None,  # async (frame, boxes) -> [(index, Face, Match)]; None = faces off
         on_identity=None,  # async (track) -> None, when a track is recognised
+        on_person=None,  # async (track) -> None, once a person's clothing colours are clear
     ):
         self.camera_id = camera_id
         self.camera_name = camera_name
@@ -714,6 +717,7 @@ class MotionEventSession:
         self.high_conf = (getattr(settings, "detection_confidence", 50) or 50) / 100.0
         self._recognise = recognise
         self._on_identity = on_identity
+        self._on_person = on_person
         self._face_task: asyncio.Task | None = None
         self.tz = tz
 
@@ -879,6 +883,7 @@ class MotionEventSession:
         self.ai_worked = True
         newly = self.tracker.update(objects, captured_mono, wall, frame, high=self.high_conf)
         holding = self.tracker.holding(captured_mono)
+        await self._report_people()
 
         if in_grace:
             # Pixels went quiet, but is someone still standing there?
@@ -914,6 +919,20 @@ class MotionEventSession:
                 await self._emit_safe("motion_update", text, snap, self._payload(visible))
         elif not self.alerted and not self.objects_only and time.monotonic() - self.started_mono >= self.AI_GRACE_SECONDS:
             await self._plain_alert()
+
+    async def _report_people(self) -> None:
+        """Once a person's clothing colours have settled (a few looks), tell
+        the camera worker - it compares them with people just seen in other
+        camera groups, to join their visits (incidents.same_person)."""
+        if self._on_person is None:
+            return
+        for t in self.tracker.confirmed():
+            if t.group == "person" and t.sig_n >= REID_STABLE_LOOKS and not t.reported and t.reid_of is None:
+                t.reported = True
+                try:
+                    await self._on_person(t)
+                except Exception:
+                    logger.exception("Comparing a person with other cameras failed")
 
     # ── faces ────────────────────────────────────────────────────────────────
 

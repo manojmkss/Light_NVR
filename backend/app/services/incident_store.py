@@ -102,6 +102,37 @@ async def emit_incident(kind, message, snapshot, payload, camera_id, inc) -> Non
     await emit_event(camera_id, kind, message, snapshot_path=path, payload=payload, incident_id=inc.id)
 
 
+async def merge_rows(src_id: int, dst_id: int) -> None:
+    """Visit src turned out to be part of visit dst (the same person in
+    another camera group): its events and detections move to dst."""
+    from sqlalchemy import delete, update
+
+    from app.models.detection import Detection
+    from app.models.event import Event
+
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as db:
+        # The copy of the visit number inside each event's details too.
+        await db.execute(text("UPDATE events SET payload = json_set(payload, '$.incident_id', :dst) "
+                              "WHERE incident_id = :src AND payload IS NOT NULL AND json_valid(payload)"),
+                         {"src": src_id, "dst": dst_id})
+        await db.execute(update(Event).where(Event.incident_id == src_id).values(incident_id=dst_id))
+        await db.execute(update(Detection).where(Detection.incident_id == src_id).values(incident_id=dst_id))
+        await db.execute(delete(Incident).where(Incident.id == src_id))
+        await db.commit()
+
+
+async def load_join_window() -> None:
+    from app.models.system_settings import SystemSettings
+
+    async with AsyncSessionLocal() as db:
+        s = await db.get(SystemSettings, 1)
+    seconds = getattr(s, "visit_join_seconds", None) if s else None
+    if seconds:
+        incident_manager.join_window = float(seconds)
+
+
 async def reload_links() -> None:
     async with AsyncSessionLocal() as db:
         rows = (await db.execute(select(AreaLink))).scalars().all()
@@ -111,6 +142,11 @@ async def reload_links() -> None:
 async def incident_loop() -> None:
     incident_manager._persist = persist
     incident_manager._emit = emit_incident
+    incident_manager._merged = merge_rows
+    try:
+        await load_join_window()
+    except Exception:
+        logger.exception("Could not load the visit join window")
     try:
         # Open visits live in memory; any still "open" in the database were
         # cut off by a restart. Close them so they don't show as in progress.

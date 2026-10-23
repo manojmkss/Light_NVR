@@ -99,5 +99,5 @@ fi
 
 echo
 echo "==> Done. Now enable it in the web UI:"
-echo "    Settings -> AI -> Use AI -> Where it runs: This machine (CPU)"
+echo "    Settings -> AI -> Use AI, then pick the device under AI engine"
 echo "    Model: ${MODEL}, then press 'Check it works'."

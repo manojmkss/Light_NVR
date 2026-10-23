@@ -1,13 +1,18 @@
 """Ties motion events on different cameras into one visit (an "incident").
 
-A new event joins an open incident when the evidence says it's the same visit:
-- time and place: same area within SAME_AREA_GAP seconds, or an area linked
-  to one the incident has been in, within that link's walking time;
-- identity: the same recognised person (faces) joins even further apart;
-- a different recognised person never joins on time alone.
+Cameras are put in *camera groups* (the camera's "area"): cameras that watch
+the same place. A camera with no group is a group of its own - so cameras
+aren't lumped together unless the user says they overlap.
 
-Without any areas configured, the whole property is one area, so cameras
-active within SAME_AREA_GAP of each other form one visit out of the box.
+- Same group: an event joins the group's open visit if the group was active
+  within SAME_AREA_GAP seconds (or still is).
+- Different groups: separate visits - unless the *same person* is then seen
+  in the other group within `join_window` seconds (60 by default): a
+  recognised face, or clothing colours that match very closely with no
+  recognised face saying otherwise. That's only known once someone has been
+  looked at, after the event started, so the two visits are merged then
+  (same_person): "walked from the porch to the yard" is one visit.
+- A different recognised person never joins on time alone.
 
 Notification policy: the first event of an incident alerts as usual; later
 events on other cameras alert only when the visit escalates (reaches a more
@@ -23,11 +28,11 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 SAME_AREA_GAP = 90.0
-LINK_SLACK = 1.5  # a link's max walking time is stretched by this much
+JOIN_WINDOW = 60.0  # the same person in another camera group within this joins the visit
+CROSS_CAMERA_SIM = 0.9  # clothing colours must match this closely across different cameras
 JOIN_SCORE = 0.6
 IDLE_CLOSE = 60.0  # close an incident this long after its last member event ended
 MAX_INCIDENT = 3600.0
-DEFAULT_AREA = "Property"
 
 # More private = later in this list.
 AREA_RANK = ["street", "perimeter", "gate", "driveway", "garden", "yard", "porch", "entry", "door", "garage",
@@ -79,6 +84,9 @@ class OpenIncident:
     last_activity: dict = field(default_factory=dict)  # area -> wall time
     snapshot: bytes | None = None
     mode: str | None = None
+    # People looked at in this visit: (group, wall time, recognised name, clothing signature).
+    people: list = field(default_factory=list)
+    merged_into: "OpenIncident | None" = None  # folded into another visit (same person)
 
     @property
     def active(self) -> bool:
@@ -106,26 +114,17 @@ class OpenIncident:
         return out
 
 
-def _linked(links: list[Link], a: str, b: str) -> Link | None:
-    for ln in links:
-        if {ln.a.lower(), ln.b.lower()} == {a.lower(), b.lower()}:
-            return ln
-    return None
+def group_of(area: str | None, camera_name: str) -> str:
+    """A camera's group: its area, or (none set) the camera on its own."""
+    return (area or "").strip() or camera_name
 
 
-def score(inc: OpenIncident, area: str, now: float, links: list[Link], identity: str | None = None) -> float:
+def score(inc: OpenIncident, area: str, now: float, links: list | None = None, identity: str | None = None) -> float:
     s = 0.0
     if area in inc.last_activity and now - inc.last_activity[area] <= SAME_AREA_GAP:
         s = 1.0
     elif inc.active and area in inc.last_activity:
         s = 1.0
-    else:
-        for other, t in inc.last_activity.items():
-            ln = _linked(links, area, other)
-            if ln is not None and ln.min_s - 5 <= now - t <= ln.max_s * LINK_SLACK:
-                s = max(s, 0.8)
-            elif ln is not None and inc.active:
-                s = max(s, 0.8)
     if identity:
         if identity in inc.identities:
             s += 1.0
@@ -143,16 +142,83 @@ class IncidentManager:
         self.open: list[OpenIncident] = []
         self.links: list[Link] = []
         self.closed: list[OpenIncident] = []
+        self.join_window = JOIN_WINDOW
+        # merged(src_id, dst_id): re-point the merged visit's events (injected).
+        self._merged = None
 
     def set_links(self, links: list[Link]) -> None:
-        self.links = links
+        self.links = links  # walking-time links: superseded by same_person, kept for old data
+
+    @staticmethod
+    def current(inc: OpenIncident | None) -> OpenIncident | None:
+        """The visit an event belongs to now (it may have been merged)."""
+        while inc is not None and inc.merged_into is not None:
+            inc = inc.merged_into
+        return inc
+
+    # ── the same person across camera groups ─────────────────────────────────
+
+    async def same_person(self, inc: OpenIncident, group: str, name: str | None, sig: tuple | None) -> OpenIncident:
+        """Someone was looked at in `inc` on a camera of `group`. If the same
+        person was seen in another group's open visit within join_window,
+        the two visits are one: merged into the older. Returns the visit
+        this is part of now."""
+        from app.services.motion_event import signature_similarity
+
+        inc = self.current(inc)
+        now = self._clock()
+        inc.people.append((group, now, name, sig))
+        for other in list(self.open):
+            if other is inc or other.merged_into is not None:
+                continue
+            for p_group, p_at, p_name, p_sig in other.people:
+                if p_group == group or abs(now - p_at) > self.join_window:
+                    continue
+                if name and p_name:
+                    same = name == p_name  # recognised faces decide
+                elif sig is not None and p_sig is not None:
+                    same = signature_similarity(sig, p_sig) >= CROSS_CAMERA_SIM
+                else:
+                    same = False
+                if same:
+                    dst, src = (other, inc) if other.started <= inc.started else (inc, other)
+                    await self._merge(src, dst)
+                    return dst
+        return inc
+
+    async def _merge(self, src: OpenIncident, dst: OpenIncident) -> None:
+        dst.members.extend(src.members)
+        dst.identities |= src.identities
+        dst.people.extend(src.people)
+        for area, t in src.last_activity.items():
+            dst.last_activity[area] = max(t, dst.last_activity.get(area, 0.0))
+        dst.max_rank = max(dst.max_rank, src.max_rank)
+        dst.alerted = dst.alerted or src.alerted
+        dst.started = min(dst.started, src.started)
+        if dst.snapshot is None:
+            dst.snapshot = src.snapshot
+        src.merged_into = dst
+        if src in self.open:
+            self.open.remove(src)
+        logger.info("Visit %s joined into visit %s (same person in another camera group)", src.id, dst.id)
+        if self._persist is not None:
+            try:
+                await self._persist(dst)
+            except Exception:
+                logger.exception("Could not save merged visit")
+        if self._merged is not None and src.id is not None and dst.id is not None:
+            try:
+                await self._merged(src.id, dst.id)
+            except Exception:
+                logger.exception("Could not move events of visit %s to %s", src.id, dst.id)
 
     # ── membership ───────────────────────────────────────────────────────────
 
     async def join(self, camera_id: int, camera_name: str, area: str | None, mode: str | None = None) -> tuple[OpenIncident, Member, bool]:
         """A motion event started on a camera. Returns (incident, member,
-        should_alert): whether this event's own first alert should go out."""
-        area = (area or "").strip() or DEFAULT_AREA
+        should_alert): whether this event's own first alert should go out.
+        `area` is the camera's group; none = the camera on its own."""
+        area = group_of(area, camera_name)
         now = self._clock()
         best, best_s = None, 0.0
         for inc in self.open:
@@ -182,22 +248,24 @@ class IncidentManager:
         return inc, member, should_alert
 
     def mark_alerted(self, inc: OpenIncident) -> None:
-        inc.alerted = True
+        self.current(inc).alerted = True
 
     def add_identity(self, inc: OpenIncident, name: str) -> bool:
         """A recognised person on a member. True if new to this incident."""
+        inc = self.current(inc)
         if name in inc.identities:
             return False
         inc.identities.add(name)
         return True
 
-    def note_activity(self, inc: OpenIncident, area: str | None) -> None:
-        inc.last_activity[(area or "").strip() or DEFAULT_AREA] = self._clock()
+    def note_activity(self, inc: OpenIncident, area: str) -> None:
+        self.current(inc).last_activity[area] = self._clock()
 
     async def leave(self, inc: OpenIncident, member: Member, counts: dict, waited: list, clip,
                     snapshot: bytes | None, identities: list) -> bool:
         """A member event ended. Returns True when the caller should send its
         own per-camera summary (single-camera visit so far)."""
+        inc = self.current(inc)
         member.ended = self._clock()
         member.counts = counts or {}
         member.waited = waited or []

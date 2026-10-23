@@ -202,18 +202,18 @@ export function CameraDetailsForm({ initial, submitLabel, submitting, serverErro
       )}
 
       <div className="field">
-        <label>Area (optional)</label>
+        <label>Camera group (optional)</label>
         <input
           type="text"
           maxLength={64}
-          placeholder="e.g. Gate, Driveway, Back yard"
+          placeholder="e.g. Front porch, Back yard"
           value={form.area ?? ""}
           onChange={(e) => update("area", e.target.value || null)}
         />
         <div className="muted">
-          Which part of the property this camera watches. Events on cameras in the same area — or in areas you link
-          with a walking time (Settings → Modes → Areas) — are joined into one visit, with one summary. Leave empty and
-          all cameras count as one area.
+          Cameras that watch the same place go in one group: their events become one visit. Cameras in different
+          groups make separate visits unless the same person shows up on both within a minute. Leave empty and this
+          camera is on its own. (Also on the Visits page → Camera groups.)
         </div>
       </div>
 

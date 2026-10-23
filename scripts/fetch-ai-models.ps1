@@ -85,7 +85,7 @@ function Test-ModelInVolume {
 if (Test-ModelInVolume $Model) {
     Write-Step "Already installed: /data/models/$Model.onnx - nothing to do."
     Write-Host ""
-    Write-Host "  Enable it at: Settings -> AI -> Use AI -> Where it runs: This machine (CPU)"
+    Write-Host "  Enable it at: Settings -> AI -> Use AI, then pick the device under AI engine"
     exit 0
 }
 
@@ -174,5 +174,5 @@ Write-Host ""
 Write-Step "Done."
 Write-Host "  Now enable it in the web UI:"
 Write-Host "    Settings -> AI -> Use AI"
-Write-Host "    Where it runs: This machine (CPU)   Model: $Model"
+Write-Host "    AI engine: Automatic (or CPU / GPU)   Model: $Model"
 Write-Host "    then press 'Check it works'."

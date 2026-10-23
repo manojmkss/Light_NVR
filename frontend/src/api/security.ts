@@ -96,6 +96,17 @@ export interface Incident {
   mode: string | null;
 }
 
+export interface CameraGroups {
+  cameras: { id: number; name: string; group: string | null }[];
+  groups: string[];
+  join_seconds: number;
+}
+export const getCameraGroups = () => apiFetch<CameraGroups>("/security/camera-groups");
+export const setCameraGroupsSettings = (joinSeconds: number) =>
+  apiFetch<{ join_seconds: number }>("/security/camera-groups/settings", {
+    method: "PUT",
+    body: JSON.stringify({ join_seconds: joinSeconds }),
+  });
 export const getAreas = () =>
   apiFetch<{ areas: { name: string; cameras: { id: number; name: string }[] }[]; links: AreaLink[] }>("/security/areas");
 export const createAreaLink = (l: Omit<AreaLink, "id">) =>

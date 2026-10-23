@@ -343,6 +343,7 @@ class CameraWorker:
             recognise=(lambda frame, boxes: self._recognise_faces(settings, frame, boxes))
             if faces_enabled(settings) else None,
             on_identity=lambda track: self._on_identity(holder[0] if holder else None, track),
+            on_person=lambda track: self._same_person(holder[0] if holder else None, track),
         )
         self._session.incident, self._session.member = incident, member
         self._session.incident_alert = incident_alert
@@ -419,7 +420,7 @@ class CameraWorker:
         """A person on this camera was recognised: tell the visit, and send an
         arrival alert if that person has one (with its own cooldown)."""
         ident = track.identity or {}
-        inc = getattr(session, "incident", None)
+        inc = await self._same_person(session, track)
         new_to_visit = True
         if inc is not None and ident.get("name"):
             new_to_visit = incident_manager.add_identity(inc, ident["name"])
@@ -448,11 +449,29 @@ class CameraWorker:
                    "categories": [person.category]}
         await self._emit_for(session, self.camera_id, "arrival", message, jpeg, payload)
 
+    async def _same_person(self, session, track):
+        """Someone on this camera was recognised, or their clothing colours
+        are clear: if the same person was just in another camera group's
+        visit, this event joins it (see incidents.same_person). Returns the
+        visit this event belongs to now."""
+        inc = incident_manager.current(getattr(session, "incident", None)) if session else None
+        member = getattr(session, "member", None) if session else None
+        if inc is None or member is None:
+            return inc
+        try:
+            inc = await incident_manager.same_person(
+                inc, member.area, (track.identity or {}).get("name"), getattr(track, "sig", None)
+            )
+        except Exception:
+            logger.exception("Could not compare this person with other cameras' visits")
+        session.incident = inc
+        return inc
+
     async def _emit_for(self, session, camera_id, event_type, message, jpeg, payload=None) -> int | None:
         """Session events, tied to their visit. A camera joining a visit that
         another camera already alerted about stays quiet unless the visit
         escalated (see incidents.py)."""
-        inc = getattr(session, "incident", None)
+        inc = incident_manager.current(getattr(session, "incident", None))
         notify = True
         if inc is not None:
             payload = dict(payload or {}, incident_id=inc.id)
@@ -560,7 +579,7 @@ class CameraWorker:
 
             event_id = session.alert_event_id
             s = session.settings
-            inc, member = getattr(session, "incident", None), getattr(session, "member", None)
+            inc, member = incident_manager.current(getattr(session, "incident", None)), getattr(session, "member", None)
             summary = None
             if s is None or getattr(s, "event_summary_enabled", True) is not False:
                 summary = await session.build_summary(clip, clip_parts=parts)
