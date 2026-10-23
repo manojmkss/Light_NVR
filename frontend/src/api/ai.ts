@@ -139,3 +139,30 @@ export const getAIEngine = () => apiFetch<EngineStatus>("/ai/engine");
 export const setAIEngine = (device: "auto" | EngineDevice) =>
   apiFetch<EngineState>("/ai/engine", { method: "PUT", body: JSON.stringify({ device }) });
 export const benchmarkAIEngine = () => apiFetch<EngineState>("/ai/engine/benchmark", { method: "POST" });
+
+// ── Detection model (ready-made models published by LightNVR) ────────────────
+
+export interface DetectionModel {
+  name: string;
+  label: string; // Fast | Balanced | Accurate | Original
+  family: string;
+  accuracy: number; // COCO mAP50-95
+  about: string;
+  size_mb: number;
+  downloadable: boolean;
+  present: boolean;
+  result: { ok: boolean; p50_ms?: number; error?: string; device: EngineDevice } | null;
+}
+export interface DetectionModels {
+  in_use: string;
+  device: EngineDevice;
+  device_name: string;
+  license: string;
+  models: DetectionModel[];
+}
+export const getDetectionModels = () => apiFetch<DetectionModels>("/ai/engine/models");
+const modelAction = (name: string, action: "download" | "test" | "use") =>
+  apiFetch<DetectionModels>(`/ai/engine/models/${encodeURIComponent(name)}/${action}`, { method: "POST" });
+export const downloadDetectionModel = (name: string) => modelAction(name, "download");
+export const testDetectionModel = (name: string) => modelAction(name, "test");
+export const switchDetectionModel = (name: string) => modelAction(name, "use");

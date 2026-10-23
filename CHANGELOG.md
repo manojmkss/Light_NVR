@@ -6,6 +6,25 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-10-23
+
+### Added
+- **Choose a better detection model in Settings -> AI -> Detection model**:
+  Fast (YOLO26n), Balanced (YOLO26s) or Accurate (YOLO26m), next to the
+  Original (YOLOv8n). YOLO26 finds noticeably more - far-away, dark and
+  partly hidden people - and the small one is as fast as the original. Each
+  is one click to download, verified against a checksum pinned in this
+  version, timed on the device in use ("Test speed"), and switched to only
+  after it has really run - no restart, no command line. The page recommends
+  Balanced with a GPU, Fast on a CPU, and warns when a model is too slow for
+  how often pictures are checked.
+- The models are exported once in CI (`ai-models-*` tag) and published as a
+  GitHub release, so nobody needs the 2 GB exporter on their own machine.
+
+### Fixed
+- The update scripts now fetch release tags, so a checkout that was behind on
+  tags no longer misses that it's on a release and builds from source.
+
 ## [0.4.9] - 2026-10-23
 
 ### Fixed

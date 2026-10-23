@@ -109,6 +109,66 @@ def test_a_gpu_that_keeps_failing_hands_over_to_the_cpu(worker, monkeypatch):
     assert boxes == [] and worker._engine["active"] == "cpu" and "stopped working" in worker._engine["note"]
 
 
+@needs_worker
+def test_detection_model_switches_only_after_it_really_runs(worker, monkeypatch):
+    models = os.environ["AI_WORKER_MODEL_DIR"]
+    os.makedirs(models, exist_ok=True)
+    for name in ("yolov8n", "yolo26s"):
+        open(os.path.join(models, f"{name}.onnx"), "wb").close()
+
+    class Det:
+        provider = "CPUExecutionProvider"
+
+        def __init__(self, name):
+            self.name = name
+
+        def detect(self, img, conf):
+            if self.name == "yolo26m":
+                raise RuntimeError("out of memory")
+            return []
+
+    monkeypatch.setattr(worker, "_new_detector", lambda name, dev, strict: Det(name))
+    st = worker.detectors_status()
+    assert st["in_use"] == "yolov8n" and st["device"] == "cpu"
+    by = {m["name"]: m for m in st["models"]}
+    assert by["yolo26s"]["present"] and not by["yolo26m"]["present"] and by["yolo26m"]["downloadable"]
+
+    st = worker.use_detector("yolo26s")
+    assert st["in_use"] == "yolo26s" and worker._model() == "yolo26s"
+    assert {m["name"]: m for m in st["models"]}["yolo26s"]["result"]["ok"]
+    assert '"yolo26s"' in open(os.environ["AI_WORKER_ENGINE_FILE"]).read()  # kept across restarts
+
+    open(os.path.join(models, "yolo26m.onnx"), "wb").close()
+    with pytest.raises(RuntimeError, match="out of memory"):
+        worker.use_detector("yolo26m")
+    assert worker._model() == "yolo26s"  # a model that can't run is never switched to
+
+    # A speed timed on another device says nothing about this one.
+    worker._engine["active"] = "intel_gpu"
+    assert all(m["result"] is None for m in worker.detectors_status()["models"])
+
+
+def test_detection_model_download_is_checked_against_the_pinned_checksum(tmp_path, monkeypatch):
+    import hashlib
+    import io
+
+    from app.vision import models
+
+    payload = b"onnx-bytes"
+    monkeypatch.setattr(models.urllib.request, "urlopen", lambda req, timeout: io.BytesIO(payload))
+    monkeypatch.setitem(models.DETECTORS, "yolo26s", {**models.DETECTORS["yolo26s"], "sha256": "0" * 64})
+    with pytest.raises(RuntimeError, match="Checksum mismatch"):
+        models.download_detector("yolo26s", str(tmp_path))
+    assert os.listdir(tmp_path) == []  # nothing wrong is left behind
+
+    monkeypatch.setitem(models.DETECTORS, "yolo26s",
+                        {**models.DETECTORS["yolo26s"], "sha256": hashlib.sha256(payload).hexdigest()})
+    path = models.download_detector("yolo26s", str(tmp_path))
+    assert path.endswith("yolo26s.onnx") and open(path, "rb").read() == payload
+    # Every model offered in the UI ships with a checksum.
+    assert all(len(m["sha256"]) == 64 for m in models.DETECTORS.values())
+
+
 # ── the install/update scripts ───────────────────────────────────────────────
 
 

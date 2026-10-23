@@ -17,6 +17,8 @@ API (all coordinates normalised 0..1 against the frame):
   POST /v2/benchmark            - time the loaded models
   GET  /v2/models               - which optional models are present
   POST /v2/models/{name}        - download one (checksum-verified)
+  GET  /v2/detectors            - the ready-made detection models, and which is in use
+  POST /v2/detectors/{name}/download | test | use
 """
 
 import asyncio
@@ -107,7 +109,8 @@ ENGINE_FILE = os.environ.get("AI_WORKER_ENGINE_FILE", os.path.join(os.path.dirna
 LEGACY_PROVIDER = {"cpu": "cpu", "openvino": "intel_gpu", "cuda": "nvidia_gpu"}
 GPU_FAILS_BEFORE_FALLBACK = 3
 
-_engine = {"choice": "auto", "active": "cpu", "note": "", "results": {}}
+_engine = {"choice": "auto", "active": "cpu", "note": "", "results": {}, "model": DEFAULT_MODEL}
+_model_results: dict[str, dict] = {}  # detection model -> its last speed test (on the device then in use)
 _gpu_fails = 0
 _engine_lock = threading.Lock()
 
@@ -211,12 +214,18 @@ def _really_on(det, device: str) -> bool:
     return det.provider == want
 
 
-def measure(device: str, runs: int = 10) -> dict:
-    """Load the default model on `device` and time real detections. First
-    GPU runs compile the model, so they're warm-up, not counted."""
+def _model() -> str:
+    """The detection model in use (Settings -> AI -> AI engine -> Detection model)."""
+    return _engine["model"]
+
+
+def measure(device: str, runs: int = 10, model: str | None = None) -> dict:
+    """Load the model in use (or `model`) on `device` and time real
+    detections. First GPU runs compile the model, so they're warm-up, not
+    counted."""
     frame = np.random.default_rng(0).integers(0, 255, (360, 640, 3), dtype=np.uint8)
     try:
-        det = _new_detector(DEFAULT_MODEL, device, strict=device != "cpu")
+        det = _new_detector(model or _model(), device, strict=device != "cpu")
         if not _really_on(det, device):
             raise RuntimeError({
                 "intel_gpu": "Intel's engine couldn't use the graphics device - it isn't an Intel GPU, or its "
@@ -236,14 +245,15 @@ def measure(device: str, runs: int = 10) -> dict:
         raise
     except Exception as exc:
         result = {"ok": False, "error": str(exc)[:300], "at": time.time()}
-    _engine["results"][device] = result
+    if model is None or model == _model():
+        _engine["results"][device] = result
     return result
 
 
 def _save_engine() -> None:
     try:
         with open(ENGINE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"choice": _engine["choice"]}, f)
+            json.dump({"choice": _engine["choice"], "model": _engine["model"]}, f)
     except OSError:
         logger.warning("Could not save the AI engine choice to %s", ENGINE_FILE)
 
@@ -287,7 +297,7 @@ def engine_status() -> dict:
     return {"choice": _engine["choice"], "active": _engine["active"], "note": _engine["note"],
             "variant": VARIANT, "devices": device_options(),
             # Without the detection model nothing can run - the NVR shows how to get it.
-            "model": DEFAULT_MODEL, "model_ready": os.path.exists(os.path.join(MODEL_DIR, f"{DEFAULT_MODEL}.onnx"))}
+            "model": _model(), "model_ready": os.path.exists(os.path.join(MODEL_DIR, f"{_model()}.onnx"))}
 
 
 def _detector(name: str):
@@ -340,12 +350,15 @@ async def startup() -> None:
     choice = LEGACY_PROVIDER.get(PROVIDER, "auto")
     try:
         with open(ENGINE_FILE, encoding="utf-8") as f:
-            choice = json.load(f).get("choice", choice)
-    except (OSError, ValueError):
+            saved = json.load(f)
+        choice = saved.get("choice", choice)
+        if os.path.exists(os.path.join(MODEL_DIR, f"{saved.get('model')}.onnx")):
+            _engine["model"] = saved["model"]
+    except (OSError, ValueError, TypeError, AttributeError):
         pass
     try:
         await run_in_threadpool(apply_engine, choice if choice in ("auto",) + DEVICES else "auto")
-        await run_in_threadpool(_detector, DEFAULT_MODEL)
+        await run_in_threadpool(_detector, _model())
     except Exception as exc:
         logger.warning("Default model not loaded yet: %s", exc)
     if device_label(_provider()) == "cpu" and VARIANT != "cpu":
@@ -355,7 +368,7 @@ async def startup() -> None:
 @app.get("/health")
 async def health():
     return {"status": "ok", "device": device_label(_provider()), "provider": _provider(),
-            "default_model": DEFAULT_MODEL, "loaded_models": sorted(_detectors)}
+            "default_model": _model(), "loaded_models": sorted(_detectors)}
 
 
 def _run_detect(img: np.ndarray, name: str, min_confidence: float) -> tuple[list, float]:
@@ -389,7 +402,7 @@ def _run_detect(img: np.ndarray, name: str, min_confidence: float) -> tuple[list
 @app.post("/v2/detect", dependencies=[Depends(require_key)])
 async def detect(image: UploadFile = File(...), min_confidence: float = Form(default=0.5), model: str = Form(default="")):
     img = await _decode(image)
-    name = model or DEFAULT_MODEL
+    name = model or _model()
     try:
         dets, took = await run_in_threadpool(_tracked, _run_detect, img, name, min_confidence)
     except FileNotFoundError as exc:
@@ -442,7 +455,7 @@ async def capabilities():
 
 @app.post("/v2/benchmark", dependencies=[Depends(require_key)])
 async def benchmark(runs: int = Form(default=12), model: str = Form(default="")):
-    name = model or DEFAULT_MODEL
+    name = model or _model()
     frame = np.random.default_rng(0).integers(0, 255, (360, 640, 3), dtype=np.uint8)
     try:
         await run_in_threadpool(_run_detect, frame, name, 0.5)
@@ -504,3 +517,93 @@ async def fetch_model(name: str):
     global _faces
     _faces = None
     return {"downloaded": name, "path": path}
+
+
+# ── which detection model (Settings -> AI -> AI engine -> Detection model) ───
+#
+# Ready-made ONNX models published by LightNVR, downloaded only when the user
+# asks, checked against the checksum this version ships with, timed on the
+# device in use, and switched to without a restart.
+
+
+def detectors_status() -> dict:
+    on = _engine["active"]
+    models = []
+    for name, m in model_registry.DETECTORS.items():
+        r = _model_results.get(name)
+        if r is None and name == _model() and _engine["results"].get(on):
+            r = {**_engine["results"][on], "device": on}
+        models.append({"name": name, "label": m["label"], "family": m["family"], "accuracy": m["accuracy"],
+                       "about": m["about"], "size_mb": m["size_mb"], "downloadable": bool(m["sha256"]),
+                       "present": os.path.exists(os.path.join(MODEL_DIR, model_registry.detector_file(name))),
+                       # A speed measured on another device says nothing about this one.
+                       "result": r if r and r.get("device") == on else None})
+    return {"in_use": _model(), "device": on, "device_name": DEVICE_NAMES[on],
+            "license": model_registry.DETECTOR_LICENSE, "models": models}
+
+
+def _known_detector(name: str) -> None:
+    if name not in model_registry.DETECTORS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown detection model '{name}'")
+
+
+def test_detector(name: str) -> dict:
+    r = measure(_engine["active"], model=name)
+    _model_results[name] = {**r, "device": _engine["active"]}
+    return _model_results[name]
+
+
+def use_detector(name: str) -> dict:
+    """Switch detection to `name` - only once it has really run here."""
+    r = test_detector(name)
+    if not r["ok"]:
+        raise RuntimeError(f"{name} couldn't run on the {DEVICE_NAMES[_engine['active']]}: {r['error']}")
+    with _engine_lock:
+        old, on = _model(), _engine["active"]
+        if old not in _model_results and _engine["results"].get(on):
+            _model_results[old] = {**_engine["results"][on], "device": on}  # still shown for comparison
+        _engine["model"] = name
+        # Device speeds were timed with the old model.
+        _engine["results"] = {_engine["active"]: {k: v for k, v in r.items() if k != "device"}}
+        _save_engine()
+    _detector(name)
+    logger.info("Detection model switched to %s (%s ms on %s)", name, r.get("p50_ms"), _engine["active"])
+    return detectors_status()
+
+
+@app.get("/v2/detectors")
+async def list_detectors():
+    return await run_in_threadpool(detectors_status)
+
+
+@app.post("/v2/detectors/{name}/download", dependencies=[Depends(require_key)])
+async def download_detector(name: str):
+    _known_detector(name)
+    try:
+        await run_in_threadpool(model_registry.download_detector, name, MODEL_DIR)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Download failed: {exc}") from exc
+    return await run_in_threadpool(detectors_status)
+
+
+@app.post("/v2/detectors/{name}/test", dependencies=[Depends(require_key)])
+async def test_detector_endpoint(name: str):
+    _known_detector(name)
+    async with _lock:
+        try:
+            await run_in_threadpool(test_detector, name)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{name} isn't downloaded yet") from exc
+    return await run_in_threadpool(detectors_status)
+
+
+@app.post("/v2/detectors/{name}/use", dependencies=[Depends(require_key)])
+async def use_detector_endpoint(name: str):
+    _known_detector(name)
+    async with _lock:
+        try:
+            return await run_in_threadpool(use_detector, name)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{name} isn't downloaded yet") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

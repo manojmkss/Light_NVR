@@ -210,16 +210,14 @@ or crash recording. Pick what runs it under **Settings → AI → AI engine**:
 
 - **This NVR's AI service** — set up by the install/update scripts on every
   install, on its **CPU**, **Intel GPU** or **NVIDIA GPU** ("Automatic" picks the
-  fastest that works). One-time model download, run on the machine hosting
-  LightNVR (the card shows this too when it's missing):
-  ```bash
-  # Linux / macOS
-  ./scripts/fetch-ai-models.sh yolov8n
-  ```
-  ```powershell
-  # Windows
-  .\scripts\fetch-ai-models.ps1 -Model yolov8n
-  ```
+  fastest that works).
+- **Detection model** (the card below it) — **Fast** (YOLO26n, fine on a CPU),
+  **Balanced** (YOLO26s, the best choice with a GPU) or **Accurate**
+  (YOLO26m). Each is one click to download (ready-made ONNX files published by
+  LightNVR, checked against a SHA-256 pinned in the code), shows its speed
+  measured on your device, and is switched to without a restart. Without
+  internet access on the AI service, `./scripts/fetch-ai-models.sh yolo26s`
+  (or `.\scripts\fetch-ai-models.ps1 -Model yolo26s`) exports one locally.
 - **Another PC on your network** — run [ai-worker/](ai-worker/) there (e.g. a
   PC with a gaming GPU) and enter its address. Worth it for a Pi, many cameras,
   or a bigger model.

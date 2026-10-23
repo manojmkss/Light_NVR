@@ -141,3 +141,73 @@ async def select_device(payload: DeviceIn, user: User = Depends(require_admin)):
 async def benchmark_devices(_: User = Depends(require_admin)):
     url, headers, _ = _worker(await _settings())
     return await _call("POST", f"{url}/v2/engine/benchmark", headers, 300)
+
+
+# ── Detection model (ready-made models published by LightNVR) ────────────────
+
+
+async def _detectors(url: str, headers: dict, method: str = "GET", path: str = "", timeout: float = 20) -> dict:
+    from app.vision.models import DETECTORS
+
+    if path and path.split("/")[1] not in DETECTORS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown detection model")
+    try:
+        return await _call(method, f"{url}/v2/detectors{path}", headers, timeout)
+    except HTTPException as exc:
+        if "Not Found" in str(exc.detail):
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                                detail="This AI service is older than the model choice - update it first.") from exc
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"The AI service isn't answering ({type(exc).__name__}).") from exc
+
+
+def _with_settings_model(state: dict, s: AISettings | None) -> dict:
+    # Detection asks for the NVR's saved model on every request, so that is
+    # the one really in use.
+    if s is not None and s.detection_model:
+        state["in_use"] = s.detection_model
+    return state
+
+
+@router.get("/models")
+async def detection_models(_: User = Depends(require_admin)):
+    s = await _settings()
+    url, headers, _ = _worker(s)
+    return _with_settings_model(await _detectors(url, headers), s)
+
+
+@router.post("/models/{name}/download")
+async def download_detection_model(name: str, user: User = Depends(require_admin)):
+    s = await _settings()
+    url, headers, _ = _worker(s)
+    state = await _detectors(url, headers, "POST", f"/{name}/download", timeout=900)
+    from app.services.events import emit_event
+
+    await emit_event(None, "audit", f"Detection model {name} downloaded by {user.username}", notify=False)
+    return _with_settings_model(state, s)
+
+
+@router.post("/models/{name}/test")
+async def test_detection_model(name: str, _: User = Depends(require_admin)):
+    s = await _settings()
+    url, headers, _ = _worker(s)
+    # A GPU's first run compiles the model: allow for it.
+    return _with_settings_model(await _detectors(url, headers, "POST", f"/{name}/test", timeout=300), s)
+
+
+@router.post("/models/{name}/use")
+async def use_detection_model(name: str, user: User = Depends(require_admin)):
+    s = await _settings()
+    url, headers, _ = _worker(s)
+    state = await _detectors(url, headers, "POST", f"/{name}/use", timeout=300)
+    async with AsyncSessionLocal() as db:
+        record = await db.get(AISettings, 1)
+        if record is not None:
+            record.detection_model = name
+            await db.commit()
+    from app.services.events import emit_event
+
+    await emit_event(None, "audit", f"Detection model set to {name} by {user.username}", notify=False)
+    return state

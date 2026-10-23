@@ -108,7 +108,9 @@ fi
 
 branch="$(git rev-parse --abbrev-ref HEAD)"
 log "Fetching latest on '$branch'..."
-run git fetch origin "$branch"
+# --tags: without it a checkout never learns the release tags, can't tell it
+# is on a release, and falls back to building every image from source.
+run git fetch --tags origin "$branch"
 
 head_before="$(git rev-parse HEAD)"
 behind="$(git rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo 0)"

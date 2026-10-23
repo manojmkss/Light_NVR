@@ -31,7 +31,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m")]
+    [ValidateSet("yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m", "yolo26n", "yolo26s", "yolo26m")]
     [string]$Model = "yolov8n"
 )
 

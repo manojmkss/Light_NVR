@@ -64,7 +64,8 @@ if ($dirty) {
 
 $branch = (git rev-parse --abbrev-ref HEAD).Trim()
 Write-Step "Fetching latest on '$branch'..."
-if (-not $DryRun) { git fetch origin $branch }
+# --tags: without it the checkout never learns the release tags and builds from source.
+if (-not $DryRun) { git fetch --tags origin $branch }
 
 $behind = (git rev-list --count "HEAD..origin/$branch").Trim()
 if ($behind -eq "0" -and -not $DryRun) {

@@ -216,7 +216,8 @@ export function AIEngineCard({ settings, onSettings }: { settings: AISettings; o
       {(onOtherPc ? remote : local)?.model_ready === false && (
         <div style={{ fontSize: 13, marginTop: 10, padding: "6px 8px", borderRadius: 6, background: "var(--bg)" }}>
           💡 The detection model ({(onOtherPc ? remote : local)!.model}) isn&apos;t downloaded yet, so nothing can be
-          detected. One-time step on {onOtherPc ? "that PC" : "the machine running LightNVR"}:
+          detected. Download one under <strong>Detection model</strong> below (one click), or without internet access
+          on the AI service, run this on {onOtherPc ? "that PC" : "the machine running LightNVR"}:
           <code style={{ display: "block", padding: "6px 8px", marginTop: 4, background: "var(--bg-alt, #0d1117)", borderRadius: 4 }}>
             {modelCommand((onOtherPc ? remote : local)!.model ?? "yolov8n").primary}
             {onOtherPc ? " --volume lightnvr-ai-worker-models" : ""}

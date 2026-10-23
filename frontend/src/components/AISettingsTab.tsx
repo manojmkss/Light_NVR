@@ -9,9 +9,7 @@ import {
 import type { AISettings, AITestResult } from "../api/types";
 import { AIEngineCard } from "./AIEngineCard";
 import { AIPerformanceCard } from "./AIPerformanceCard";
-
-
-const MODELS = ["yolov8n", "yolov8s", "yolov8m", "yolo11n", "yolo11s", "yolo11m"];
+import { DetectionModelCard } from "./DetectionModelCard";
 
 /** The one-time model download command, for the OS the user is most likely on.
  *
@@ -240,6 +238,8 @@ export function AISettingsTab() {
         <>
           <AIEngineCard settings={s} onSettings={setS} />
 
+          <DetectionModelCard settings={s} onSettings={setS} />
+
           <AIPerformanceCard onUseInterval={(ms) => up("monitor_interval_ms", ms)} />
 
           {/* ── Tier 1: what to look for ─────────────────────────────── */}
@@ -285,17 +285,6 @@ export function AISettingsTab() {
                 Advanced
               </summary>
               <div style={{ marginTop: 12 }}>
-                <div className="field">
-                  <label>Model</label>
-                  <select value={s.detection_model} onChange={(e) => up("detection_model", e.target.value)}>
-                    {MODELS.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                        {m.endsWith("n") ? " — fastest (best for CPU)" : m.endsWith("m") ? " — most accurate (GPU)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
                 <div className="field">
                   <label>Check the picture every (milliseconds)</label>
                   <input
