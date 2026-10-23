@@ -12,7 +12,7 @@ services:
       dockerfile: ai-worker/Dockerfile
       args:
         VARIANT: ${AI_WORKER_VARIANT:-cpu}
-        BASE_IMAGE: ${AI_WORKER_BASE_IMAGE:-python:3.11-slim}
+        BASE_IMAGE: ${AI_WORKER_BASE_IMAGE:-python:3.11-slim-bookworm}
     container_name: lightnvr-ai-worker
     restart: unless-stopped
     init: true

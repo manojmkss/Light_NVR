@@ -6,6 +6,29 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-10-23
+
+### Fixed
+- **The backend's memory kept growing during long events until it had to
+  restart** (every ~20 minutes on a camera with swaying plants and a parked
+  car - each restart a short gap in recording). Every object seen in an event
+  kept a full camera picture (12 MB from a 4MP main stream) until the event
+  ended. Now an object's picture is released once it has left (a small JPEG
+  and its crop are kept for search and colours), stray sightings are
+  forgotten, the clearest pictures stay for the summary, and stored pictures
+  are capped at 1920px.
+- The main stream is decoded only when a *person* is seen - a parked car or
+  bicycle no longer keeps a 4MP decode running (less CPU too).
+- **The Intel image couldn't use an Intel GPU**: its base moved to Debian 13,
+  which has no Intel GPU runtime, and the install failure was skipped
+  silently. Pinned to Debian 12 (runtime 22.43: Intel 6th-12th gen GPUs, e.g.
+  UHD 630) and the build now fails instead. Measured on a UHD 630: 23 ms per
+  check vs 229 ms on the CPU.
+
+### Changed
+- "CPU" in the AI engine runs through Intel's engine on the Intel image -
+  about twice as fast on Intel processors (99 vs 229 ms on an i7-8700T).
+
 ## [0.4.8] - 2026-10-23
 
 ### Added
@@ -546,7 +569,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.9...HEAD
+[0.4.9]: https://github.com/manojmkss/Light_NVR/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/manojmkss/Light_NVR/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/manojmkss/Light_NVR/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/manojmkss/Light_NVR/compare/v0.4.5...v0.4.6

@@ -549,7 +549,11 @@ class CameraWorker:
         result = await ai_pipeline.detect_frame(settings, frame, camera_id, **kwargs)
         if isinstance(result, list):
             floor = (getattr(settings, "detection_confidence", 50) or 50) / 100.0
-            if any(o.confidence >= floor for o in result):
+            # People only: that's where full resolution pays (faces, clothing).
+            # A parked car or bicycle is "confirmed" on every look, and swaying
+            # plants keep motion going - for those it would keep a 4MP decode
+            # running all day for nothing.
+            if any(o.confidence >= floor and o.label == "person" for o in result):
                 self._use_main_stream()
         return result
 
@@ -609,9 +613,10 @@ class CameraWorker:
             # clearest frame - linked to the event and the clip.
             recording_id = getattr(recording, "id", None)
             for t in session.tracker.confirmed():
-                if t.best_frame is None:
+                if t.best_frame is None and t.best_jpeg is None:
                     continue
-                jpeg = await asyncio.to_thread(_encode_jpeg, t.best_frame)
+                # Objects that left mid-event kept only a JPEG and their crop (memory).
+                jpeg = t.best_jpeg if t.best_frame is None else await asyncio.to_thread(_encode_jpeg, t.best_frame)
                 if not jpeg:
                     continue
                 track_uid = f"{self.camera_id}:{int(session.started_wall * 1000)}:{t.label}{t.id}"
@@ -635,7 +640,10 @@ class CameraWorker:
                     "stationary_seconds": round(t.max_still, 1),
                     "zones": t.zones or None,
                     "incident_id": inc.id if inc is not None else None,
-                    "attributes": await asyncio.to_thread(_appearance, t.best_frame, t.group, t.best_box) or None,
+                    "attributes": (await asyncio.to_thread(_appearance, t.best_frame, t.group, t.best_box)
+                                   if t.best_frame is not None else
+                                   await asyncio.to_thread(_appearance, t.best_crop, t.group, (0.0, 0.0, 1.0, 1.0))
+                                   if t.best_crop is not None else None) or None,
                 }
                 await ai_pipeline.store_detections(
                     self.camera_id,

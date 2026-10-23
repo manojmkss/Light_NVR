@@ -41,6 +41,12 @@ def choose_providers(preference: str = "auto") -> list:
     if pref == "intel_gpu":
         return ([("OpenVINOExecutionProvider", {"device_type": "GPU"})] if "OpenVINOExecutionProvider" in avail
                 else []) + ["CPUExecutionProvider"]
+    if pref == "openvino_cpu":
+        # Intel's engine on the CPU: about twice as fast as the default CPU
+        # path on Intel processors (measured 99 vs 229 ms per check on an
+        # i7-8700T); falls back to the default CPU path where unavailable.
+        return ([("OpenVINOExecutionProvider", {"device_type": "CPU"})] if "OpenVINOExecutionProvider" in avail
+                else []) + ["CPUExecutionProvider"]
     if pref == "nvidia_gpu":
         return (["CUDAExecutionProvider"] if "CUDAExecutionProvider" in avail else []) + ["CPUExecutionProvider"]
     if pref != "auto":

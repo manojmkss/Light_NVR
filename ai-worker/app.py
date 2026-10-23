@@ -197,13 +197,17 @@ def _new_detector(name: str, device: str, strict: bool):
     from app.vision.yolo import YoloDetector
 
     threads = max(1, (os.cpu_count() or 2) // 2) if device == "cpu" else None
-    return YoloDetector(_model_path(name), device, threads, strict=strict)
+    # "CPU" runs through Intel's engine where this image has it (~2x faster on
+    # Intel processors); the default CPU path otherwise.
+    preference = "openvino_cpu" if device == "cpu" and "OpenVINOExecutionProvider" in available_providers() else device
+    return YoloDetector(_model_path(name), preference, threads, strict=strict)
 
 
 def _really_on(det, device: str) -> bool:
     """The session runs on the device asked for (not a quiet CPU fallback)."""
-    want = {"cpu": "CPUExecutionProvider", "intel_gpu": "OpenVINOExecutionProvider",
-            "nvidia_gpu": "CUDAExecutionProvider"}[device]
+    if device == "cpu":
+        return det.provider in ("CPUExecutionProvider", "OpenVINOExecutionProvider")
+    want = {"intel_gpu": "OpenVINOExecutionProvider", "nvidia_gpu": "CUDAExecutionProvider"}[device]
     return det.provider == want
 
 

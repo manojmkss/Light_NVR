@@ -617,3 +617,27 @@ def test_recognised_faces_overrule_matching_clothes():
     assert back.identity == {"id": 1, "name": "Manoj"}  # carried over, no second arrival alert
     back.identity = {"id": 2, "name": "Son"}  # ...unless faces later say it's someone else
     assert tr.totals() == {"person": 2}
+
+
+def test_a_long_event_does_not_keep_every_picture():
+    """Swaying plants keep an event going; objects come and go all the while.
+    Pictures of objects that left are released (a JPEG and crop are kept),
+    stray sightings are forgotten, and the clearest pictures stay for the summary."""
+    tr = ObjectTracker()
+    t = 0.0
+    for n in range(12):  # twelve different people walking through, one after another
+        colour = ((n * 20) % 255, 80, 200 - n * 10)
+        t = _walk(tr, t, 0.1 + (n % 5) * 0.15, colour, (n * 15 % 255, 200, 40))
+        t = _away(tr, t, 8)
+        # A stray single sighting in between (never counts).
+        o = person(0.85, conf=0.55)
+        tr.update([o], now=t, wall=t, frame=_scene([((o.x, o.y, o.w, o.h), RED, RED)]))
+        t = _away(tr, t, 12)
+    counted = tr.confirmed()
+    full = [x for x in tr.tracks if x.best_frame is not None]
+    assert len(full) <= ObjectTracker.KEEP_FRAMES
+    assert all(x.best_jpeg and x.best_crop is not None for x in counted if x.best_frame is None)
+    assert all(x.announced for x in tr.tracks)  # the strays are gone
+    assert tr.totals()["person"] >= 2  # counting is unaffected
+    best = max(counted, key=lambda x: x.best_score)
+    assert best.best_frame is not None  # the summary's picture is still there

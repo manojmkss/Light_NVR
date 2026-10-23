@@ -7,7 +7,9 @@
 #                --build-arg BASE_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 -t ... .   # NVIDIA
 #
 # Prebuilt: ghcr.io/manojmkss/light_nvr-ai-worker:<version>-cpu | -openvino | -cuda
-ARG BASE_IMAGE=python:3.11-slim
+# Pinned to Debian 12: the plain python:3.11-slim tag moved to Debian 13, which
+# has no Intel GPU compute runtime - so the Intel image silently lost its GPU.
+ARG BASE_IMAGE=python:3.11-slim-bookworm
 FROM ${BASE_IMAGE}
 
 ARG VARIANT=cpu
@@ -19,13 +21,21 @@ ENV PYTHONUNBUFFERED=1 \
 
 # curl: healthcheck. libglib/libgl: OpenCV. The CUDA base is Ubuntu without
 # Python, so it gets python3 + pip too. The OpenVINO variant needs Intel's
-# compute runtime for the iGPU (the CPU path works without it).
-RUN apt-get update && apt-get install -y --no-install-recommends curl libglib2.0-0 libgl1 \
+# GPU compute runtime (OpenCL) - without it Intel's engine finds no GPU at all
+# ("Specified device - GPU is not available"). Debian 12's 22.43 still
+# supports older iGPUs (6th-12th gen, e.g. UHD 630); Intel's newest runtimes
+# dropped those. It's required: the build fails rather than ship an "Intel"
+# image that can't use an Intel GPU (it used to be skipped silently).
+RUN if [ "$VARIANT" = "openvino" ] && [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+         sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
+       fi \
+    && apt-get update && apt-get install -y --no-install-recommends curl libglib2.0-0 libgl1 \
     && if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then \
          apt-get install -y --no-install-recommends python3 python3-pip && ln -sf /usr/bin/python3 /usr/bin/python; \
        fi \
     && if [ "$VARIANT" = "openvino" ]; then \
-         apt-get install -y --no-install-recommends intel-opencl-icd ocl-icd-libopencl1 || true; \
+         apt-get install -y --no-install-recommends intel-opencl-icd ocl-icd-libopencl1 \
+         && test -f /etc/OpenCL/vendors/intel.icd; \
        fi \
     && rm -rf /var/lib/apt/lists/*
 

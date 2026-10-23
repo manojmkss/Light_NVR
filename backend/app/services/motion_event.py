@@ -204,6 +204,9 @@ class Track:
     reid_of: "Track | None" = None  # the earlier track this one is the same as
     came_back: bool = False  # a later track was found to be this one returning
     reported: bool = False  # clothing passed to the visit (other camera groups)
+    # Once the object has left and its full picture is released (memory):
+    best_jpeg: bytes | None = None  # the clearest view, JPEG
+    best_crop: np.ndarray | None = None  # just the object, for clothing colours
 
     def predicted(self, now: float) -> tuple:
         """Where the box should be now, given how it was moving - ticks get
@@ -288,6 +291,7 @@ class ObjectTracker:
         self._lines = [r for r in rules if r.get("kind") == "line" and len(r.get("points", [])) >= 2]
         self.events: list[tuple[str, Track, dict, float]] = []  # (kind, track, rule, value) for the session
         self.peak: dict[str, int] = {}
+        self._fit_key, self._fit_val = None, None
         self._seq: dict[str, int] = {}
         self.timeline: list[tuple[float, str]] = []  # (wall time, text)
         self._in_zone = in_zone or (lambda _x, _y: True)
@@ -332,6 +336,43 @@ class ObjectTracker:
         self._seq[t.label] = self._seq.get(t.label, 0) + 1
         t.id = self._seq[t.label]
         self.timeline.append((wall, text.format(name=f"{t.label} #{t.id}")))
+
+    # ── memory: an event can last a long time (swaying plants keep motion
+    # going, a parked car is re-detected every look), and every object used to
+    # keep a full camera picture - 12 MB each from a 4MP main stream - until
+    # the event ended. That grew the NVR's memory until it had to restart.
+
+    KEEP_FRAMES = 3  # clearest full pictures kept per event (the summary picks from these)
+    RELEASE_AFTER = 10.0  # seconds after an object left
+
+    def _storable(self, frame: np.ndarray | None) -> np.ndarray | None:
+        """At most 1920px, shared by every object seen in the same frame."""
+        if frame is None:
+            return None
+        if self._fit_key is not frame:
+            self._fit_key, self._fit_val = frame, fit_for_storage(frame)
+        return self._fit_val
+
+    def _release_frames(self, now: float) -> None:
+        gone = [t for t in self.tracks if t.left_at is not None and now - t.left_at > self.RELEASE_AFTER]
+        if not gone:
+            return
+        # Never counted (a stray sighting): nothing will ever use it.
+        stray = {id(t) for t in gone if not t.announced and not t.seeded}
+        if stray:
+            self.tracks = [t for t in self.tracks if id(t) not in stray]
+        keep = {id(t) for t in sorted((t for t in self.tracks if t.announced and t.best_frame is not None),
+                                      key=lambda t: -t.best_score)[: self.KEEP_FRAMES]}
+        for t in gone:
+            if id(t) in stray or id(t) in keep or t.best_frame is None:
+                continue
+            # What the event's records still need, at a fraction of the size.
+            t.best_jpeg = _jpeg(t.best_frame, 85)
+            H, W = t.best_frame.shape[:2]
+            x, y, w, h = t.best_box
+            crop = t.best_frame[max(0, int(y * H)):int((y + h) * H), max(0, int(x * W)):int((x + w) * W)]
+            t.best_crop = crop.copy() if crop.size else None
+            t.best_frame = None
 
     def _comeback(self, t: Track, now: float) -> Track | None:
         """An earlier track this new one is the same person (or animal) as:
@@ -463,7 +504,7 @@ class ObjectTracker:
             score = o.confidence * o.w * o.h  # clearest view: confident and close
             if score > t.best_score:
                 t.best_score, t.best_conf, t.best_box = score, o.confidence, box
-                t.best_frame, t.best_at = frame, wall
+                t.best_frame, t.best_at = self._storable(frame), wall
 
             self._zone_rules(t, box, now - prev_seen if t.hits > 1 else 0.0, wall)
 
@@ -490,6 +531,8 @@ class ObjectTracker:
                 if not any(_iou(t.box, _grow(p, 0.5)) > 0 for p in people):
                     t.package_pending = False
                     self.events.append(("package_left", t, {"name": (t.zones[-1] if t.zones else None)}, 0.0))
+
+        self._release_frames(now)
 
         counts: dict[str, int] = {}
         for t in self.tracks:
