@@ -1,0 +1,53 @@
+name: AI models
+
+# Publishes the ready-made detection models (ONNX) that Settings -> AI ->
+# AI engine -> Detection model downloads. Run once per model set, not per
+# release - the models change far less often than LightNVR does:
+#
+#   git tag ai-models-1 && git push origin ai-models-1
+#
+# Then pin the printed SHA-256s in backend/app/vision/models.py (DETECTORS).
+# The release is never marked "latest", so it can't be mistaken for a
+# LightNVR version.
+
+on:
+  push:
+    tags:
+      - "ai-models-*"
+
+permissions:
+  contents: write   # create the GitHub Release holding the models
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the exporter (CPU PyTorch only)
+        run: |
+          pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install --quiet ultralytics onnx "onnxruntime==1.20.1" opencv-python-headless numpy
+
+      - name: Export and check each model
+        run: python .github/scripts/export_models.py out yolov8n yolo11n yolo11s yolo11m yolo26n yolo26s yolo26m
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Detection models (${{ github.ref_name }})"
+          make_latest: "false"
+          body: |
+            Ready-made object-detection models for LightNVR, exported to ONNX (640x640) from
+            Ultralytics YOLO and checked against LightNVR's own decoder. LightNVR downloads
+            them from Settings -> AI -> AI engine -> Detection model and verifies each file
+            against the SHA-256 it ships with (also listed in manifest.json).
+
+            Licence: AGPL-3.0 (Ultralytics), the same licence as LightNVR.
+          files: |
+            out/*.onnx
+            out/manifest.json
