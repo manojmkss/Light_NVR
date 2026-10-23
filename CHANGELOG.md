@@ -6,6 +6,15 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-10-23
+
+### Fixed
+- **Update stopped with "touch: .env: Permission denied"** on installs whose
+  `.env` belongs to root (the installer runs with sudo, updates usually
+  don't). Since 0.4.6 the update writes the AI service's settings to `.env`;
+  it now uses sudo for that one file when it has to (one line says so)
+  instead of failing.
+
 ## [0.4.6] - 2026-10-23
 
 Choose CPU, Intel GPU or NVIDIA GPU for AI from the web page.
@@ -511,7 +520,8 @@ no build step.
 - `.gitattributes` pins shell scripts to LF so a fresh Windows clone runs
   cleanly (no nginx CRLF crash-loop).
 
-[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.6...HEAD
+[Unreleased]: https://github.com/manojmkss/Light_NVR/compare/v0.4.7...HEAD
+[0.4.7]: https://github.com/manojmkss/Light_NVR/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/manojmkss/Light_NVR/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/manojmkss/Light_NVR/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/manojmkss/Light_NVR/compare/v0.4.3...v0.4.4

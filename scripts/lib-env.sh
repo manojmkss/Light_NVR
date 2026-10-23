@@ -17,12 +17,35 @@
 # file lists) pass through untouched.
 env_set() {
   local key="$1" value="$2"
-  touch "$ENV_FILE"
-  if grep -qE "^${key}=" "$ENV_FILE"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+  _env_as touch "$ENV_FILE"
+  if _env_read grep -qE "^${key}=" "$ENV_FILE"; then
+    _env_as sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
   else
-    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    printf '%s=%s\n' "$key" "$value" | _env_as tee -a "$ENV_FILE" >/dev/null
   fi
+}
+
+# _env_as CMD... / _env_read CMD... - run CMD on .env, with sudo when it isn't
+# ours. The installer runs as root, so .env is often root-owned while updates
+# run as the user; without this the first write ("touch: Permission denied")
+# stopped the whole update.
+_env_needs_sudo() {
+  [[ $EUID -ne 0 ]] || return 1
+  if [[ -e "$ENV_FILE" ]]; then [[ ! -w "$ENV_FILE" ]]; else [[ ! -w "$(dirname "$ENV_FILE")" ]]; fi
+}
+_env_as() {
+  if _env_needs_sudo; then
+    if [[ -z "${_ENV_SUDO_NOTED:-}" ]]; then
+      _ENV_SUDO_NOTED=1
+      printf '\033[1;34m==>\033[0m %s\n' "$ENV_FILE belongs to root (made by the installer) - using sudo just to update it." >&2
+    fi
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+_env_read() {
+  if [[ -e "$ENV_FILE" && ! -r "$ENV_FILE" && $EUID -ne 0 ]]; then sudo "$@"; else "$@"; fi
 }
 
 # env_get KEY - print KEY's current value from $ENV_FILE (empty if unset).
@@ -37,14 +60,14 @@ env_set() {
 env_get() {
   local key="$1"
   [[ -f "$ENV_FILE" ]] || return 0
-  grep -E "^${key}=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true
+  _env_read grep -E "^${key}=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true
 }
 
 # env_unset KEY - remove KEY's line from $ENV_FILE entirely.
 env_unset() {
   local key="$1"
   [[ -f "$ENV_FILE" ]] || return 0
-  sed -i "/^${key}=/d" "$ENV_FILE"
+  _env_as sed -i "/^${key}=/d" "$ENV_FILE"
 }
 
 # --- network auto-detection -------------------------------------------------

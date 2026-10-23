@@ -182,3 +182,38 @@ def test_update_respects_opt_out_and_a_hand_picked_image(tmp_path):
     (tmp_path / "z").mkdir()
     env, _ = _configure(tmp_path / "z", arch="aarch64", dri=True)
     assert env["AI_WORKER_VARIANT"] == "cpu"
+
+
+@needs_bash
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="needs to start as root to drop to a user")
+def test_root_owned_env_is_updated_through_sudo_instead_of_failing(tmp_path):
+    # The installer runs as root, updates as the user: .env is often root's.
+    import pathlib
+    import tempfile
+
+    # Somewhere the dropped-to user can reach (pytest's tmp dir is root-only).
+    work = pathlib.Path(tempfile.mkdtemp(dir="/tmp"))
+    os.chmod(work, 0o777)
+    env = work / ".env"
+    env.write_text("COMPOSE_FILE=docker-compose.yml\n")
+    os.chmod(env, 0o644)  # root-owned, not writable by the user
+    log = work / "sudo.log"
+    stubs = work / "bin"
+    stubs.mkdir()
+    (stubs / "sudo").write_text(f"#!/bin/sh\necho \"$*\" >> {log}\nexit 0\n")
+    (stubs / "sudo").chmod(0o755)
+    script = f'''
+        set -euo pipefail
+        export PATH="{stubs}:$PATH"
+        ENV_FILE="{env}"
+        source "{LIB_ENV}"
+        env_set AI_WORKER_VARIANT openvino
+        env_set COMPOSE_FILE docker-compose.yml:docker-compose.ai.yml
+        echo "value=$(env_get COMPOSE_FILE)"
+    '''
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                         preexec_fn=lambda: (os.setgid(65534), os.setuid(65534)))
+    assert out.returncode == 0, out.stderr  # no "touch: Permission denied" abort
+    calls = log.read_text()
+    assert "touch" in calls and "tee -a" in calls and "sed -i" in calls
+    assert "belongs to root" in out.stderr and out.stderr.count("belongs to root") == 1
