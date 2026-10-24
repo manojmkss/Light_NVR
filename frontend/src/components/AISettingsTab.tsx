@@ -3,12 +3,14 @@ import {
   getAIClasses,
   getAISettings,
   listOllamaModels,
+  LOCAL_DESCRIBER_URL,
   testVlm,
   updateAISettings,
 } from "../api/ai";
 import type { AISettings, AITestResult } from "../api/types";
 import { AIEngineCard } from "./AIEngineCard";
 import { AIPerformanceCard } from "./AIPerformanceCard";
+import { DescriberLocalCard } from "./DescriberLocalCard";
 import { DetectionModelCard } from "./DetectionModelCard";
 
 /** The one-time model download command, for the OS the user is most likely on.
@@ -97,6 +99,8 @@ export function AISettingsTab() {
   const [ollamaModels, setOllamaModels] = useState<string[] | null>(null);
   const [ollamaLoading, setOllamaLoading] = useState(false);
   const [ollamaError, setOllamaError] = useState<string | null>(null);
+  // Where descriptions are written: this NVR's own describer, or another PC / service.
+  const [describeWhere, setDescribeWhere] = useState<"local" | "other" | null>(null);
 
   useEffect(() => {
     getAISettings().then(setS).catch((e) => setError((e as Error).message));
@@ -105,6 +109,7 @@ export function AISettingsTab() {
 
   if (error && !s) return <div className="error-text">{error}</div>;
   if (!s) return <p style={{ color: "var(--text-dim)" }}>Loading...</p>;
+  const where = describeWhere ?? (s.vlm_url && s.vlm_url !== LOCAL_DESCRIBER_URL ? "other" : "local");
 
   const up = <K extends keyof AISettings>(k: K, v: AISettings[K]) => {
     setS((p) => (p ? { ...p, [k]: v } : p));
@@ -337,127 +342,158 @@ export function AISettingsTab() {
             onToggle={(v) => up("vlm_enabled", v)}
           >
             <div className="field">
-              <label>Vision model provider</label>
-              <select
-                value={s.vlm_provider}
-                onChange={(e) => {
-                  up("vlm_provider", e.target.value as AISettings["vlm_provider"]);
-                  setOllamaModels(null);
-                }}
-              >
-                <option value="ollama">Ollama — free, runs on your own PC</option>
-                <option value="openai_compatible">LM Studio / vLLM / OpenAI</option>
-                <option value="anthropic">Claude (Anthropic)</option>
-              </select>
+              <label>Where descriptions are written</label>
+              <div style={{ display: "grid", gap: 4 }}>
+                {(
+                  [
+                    ["local", "This NVR", "a small vision model on this machine - free, nothing leaves it"],
+                    ["other", "Another PC or service", "Ollama or LM Studio on a PC with a GPU, or a cloud model"],
+                  ] as const
+                ).map(([key, label, hint]) => (
+                  <label key={key} style={{ display: "flex", gap: 8, alignItems: "baseline", cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name="describe-where"
+                      checked={where === key}
+                      onChange={() => setDescribeWhere(key)}
+                    />
+                    <span>
+                      {label}
+                      <span style={{ color: "var(--text-dim)", fontSize: 12 }}> — {hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
 
-            {s.vlm_provider === "ollama" && (
+            {where === "local" && <DescriberLocalCard onSettings={setS} />}
+
+            {where === "other" && (
               <>
-                <div className="field">
-                  <label>Ollama address</label>
-                  <div className="form-row">
+              <div className="field">
+                <label>Vision model provider</label>
+                <select
+                  value={s.vlm_provider}
+                  onChange={(e) => {
+                    up("vlm_provider", e.target.value as AISettings["vlm_provider"]);
+                    setOllamaModels(null);
+                  }}
+                >
+                  <option value="ollama">Ollama — free, runs on your own PC</option>
+                  <option value="openai_compatible">LM Studio / vLLM / OpenAI</option>
+                  <option value="anthropic">Claude (Anthropic)</option>
+                </select>
+              </div>
+
+              {s.vlm_provider === "ollama" && (
+                <>
+                  <div className="field">
+                    <label>Ollama address</label>
+                    <div className="form-row">
+                      <input
+                        type="text"
+                        style={{ flex: 1 }}
+                        placeholder="http://192.168.1.20:11434"
+                        value={s.vlm_url}
+                        onChange={(e) => up("vlm_url", e.target.value)}
+                      />
+                      <button className="btn btn-sm" onClick={loadOllama} disabled={!s.vlm_url || ollamaLoading}>
+                        {ollamaLoading ? "Loading..." : "Find models"}
+                      </button>
+                    </div>
+                    <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                      The PC running Ollama. Port is usually 11434. It must be started with{" "}
+                      <code>OLLAMA_HOST=0.0.0.0</code> so this NVR can reach it over the network.
+                    </p>
+                    {ollamaError && <div className="error-text">{ollamaError}</div>}
+                  </div>
+
+                  <div className="field">
+                    <label>Model</label>
+                    {ollamaModels && ollamaModels.length > 0 ? (
+                      <select value={s.vlm_model} onChange={(e) => up("vlm_model", e.target.value)}>
+                        <option value="">Select a model…</option>
+                        {ollamaModels.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder="llama3.2-vision"
+                        value={s.vlm_model}
+                        onChange={(e) => up("vlm_model", e.target.value)}
+                      />
+                    )}
+                    <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                      Must be a model that can see images — e.g. <code>llama3.2-vision</code>,{" "}
+                      <code>llava</code>, <code>minicpm-v</code>, <code>moondream</code>. On the Ollama PC:{" "}
+                      <code>ollama pull llama3.2-vision</code>
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {s.vlm_provider !== "ollama" && (
+                <>
+                  <div className="field">
+                    <label>{s.vlm_provider === "anthropic" ? "API URL (leave blank for Anthropic's own)" : "Endpoint URL"}</label>
                     <input
                       type="text"
-                      style={{ flex: 1 }}
-                      placeholder="http://192.168.1.20:11434"
+                      placeholder={
+                        s.vlm_provider === "anthropic" ? "https://api.anthropic.com" : "http://192.168.1.20:1234/v1"
+                      }
                       value={s.vlm_url}
                       onChange={(e) => up("vlm_url", e.target.value)}
                     />
-                    <button className="btn btn-sm" onClick={loadOllama} disabled={!s.vlm_url || ollamaLoading}>
-                      {ollamaLoading ? "Loading..." : "Find models"}
-                    </button>
+                    {s.vlm_provider === "openai_compatible" && (
+                      <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                        For <strong>LM Studio</strong>: the address of the PC running it, ending in{" "}
+                        <code>/v1</code> (e.g. <code>http://192.168.68.101:1234/v1</code>). In LM Studio, start
+                        the <em>Local Server</em>, enable <em>“Serve on Local Network”</em>, and load a{" "}
+                        <strong>vision</strong> model (one that accepts images, e.g. a Qwen2-VL or LLaVA build) —
+                        a text-only model will connect but can't see the snapshot.
+                      </p>
+                    )}
                   </div>
-                  <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-                    The PC running Ollama. Port is usually 11434. It must be started with{" "}
-                    <code>OLLAMA_HOST=0.0.0.0</code> so this NVR can reach it over the network.
-                  </p>
-                  {ollamaError && <div className="error-text">{ollamaError}</div>}
-                </div>
-
-                <div className="field">
-                  <label>Model</label>
-                  {ollamaModels && ollamaModels.length > 0 ? (
-                    <select value={s.vlm_model} onChange={(e) => up("vlm_model", e.target.value)}>
-                      <option value="">Select a model…</option>
-                      {ollamaModels.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
+                  <div className="field">
+                    <label>Model</label>
                     <input
                       type="text"
-                      placeholder="llama3.2-vision"
+                      placeholder={s.vlm_provider === "anthropic" ? "claude-haiku-4-5-20251001" : "the model id shown in LM Studio"}
                       value={s.vlm_model}
                       onChange={(e) => up("vlm_model", e.target.value)}
                     />
-                  )}
-                  <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-                    Must be a model that can see images — e.g. <code>llama3.2-vision</code>,{" "}
-                    <code>llava</code>, <code>minicpm-v</code>, <code>moondream</code>. On the Ollama PC:{" "}
-                    <code>ollama pull llama3.2-vision</code>
-                  </p>
-                </div>
-              </>
-            )}
-
-            {s.vlm_provider !== "ollama" && (
-              <>
-                <div className="field">
-                  <label>{s.vlm_provider === "anthropic" ? "API URL (leave blank for Anthropic's own)" : "Endpoint URL"}</label>
-                  <input
-                    type="text"
-                    placeholder={
-                      s.vlm_provider === "anthropic" ? "https://api.anthropic.com" : "http://192.168.1.20:1234/v1"
-                    }
-                    value={s.vlm_url}
-                    onChange={(e) => up("vlm_url", e.target.value)}
-                  />
-                  {s.vlm_provider === "openai_compatible" && (
-                    <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-                      For <strong>LM Studio</strong>: the address of the PC running it, ending in{" "}
-                      <code>/v1</code> (e.g. <code>http://192.168.68.101:1234/v1</code>). In LM Studio, start
-                      the <em>Local Server</em>, enable <em>“Serve on Local Network”</em>, and load a{" "}
-                      <strong>vision</strong> model (one that accepts images, e.g. a Qwen2-VL or LLaVA build) —
-                      a text-only model will connect but can't see the snapshot.
+                  </div>
+                  <div className="field">
+                    <label>
+                      API key{" "}
+                      <span style={{ color: "var(--text-dim)" }}>
+                        {s.has_vlm_api_key ? "(saved — leave blank to keep)" : "(LM Studio needs none)"}
+                      </span>
+                    </label>
+                    <input
+                      type="password"
+                      placeholder={s.has_vlm_api_key ? "••••••••" : "leave blank for LM Studio / vLLM"}
+                      value={vlmKey}
+                      onChange={(e) => setVlmKey(e.target.value)}
+                    />
+                  </div>
+                  {isLocalUrl(s.vlm_url) ? (
+                    <p style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                      That's a local address, so snapshots stay on your own network — nothing leaves your home.
+                    </p>
+                  ) : (
+                    <p style={{ fontSize: 12, color: "var(--danger, #f85149)" }}>
+                      Heads up: this looks like a cloud endpoint, so camera snapshots leave your network. Only
+                      snapshots that already contain a detected object are sent — never your recordings — but if
+                      that's not OK, use LM Studio or Ollama on your own PC and nothing leaves your home.
                     </p>
                   )}
-                </div>
-                <div className="field">
-                  <label>Model</label>
-                  <input
-                    type="text"
-                    placeholder={s.vlm_provider === "anthropic" ? "claude-haiku-4-5-20251001" : "the model id shown in LM Studio"}
-                    value={s.vlm_model}
-                    onChange={(e) => up("vlm_model", e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label>
-                    API key{" "}
-                    <span style={{ color: "var(--text-dim)" }}>
-                      {s.has_vlm_api_key ? "(saved — leave blank to keep)" : "(LM Studio needs none)"}
-                    </span>
-                  </label>
-                  <input
-                    type="password"
-                    placeholder={s.has_vlm_api_key ? "••••••••" : "leave blank for LM Studio / vLLM"}
-                    value={vlmKey}
-                    onChange={(e) => setVlmKey(e.target.value)}
-                  />
-                </div>
-                {isLocalUrl(s.vlm_url) ? (
-                  <p style={{ fontSize: 12, color: "var(--text-dim)" }}>
-                    That's a local address, so snapshots stay on your own network — nothing leaves your home.
-                  </p>
-                ) : (
-                  <p style={{ fontSize: 12, color: "var(--danger, #f85149)" }}>
-                    Heads up: this looks like a cloud endpoint, so camera snapshots leave your network. Only
-                    snapshots that already contain a detected object are sent — never your recordings — but if
-                    that's not OK, use LM Studio or Ollama on your own PC and nothing leaves your home.
-                  </p>
-                )}
+                </>
+              )}
               </>
             )}
 

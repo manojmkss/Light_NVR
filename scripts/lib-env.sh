@@ -208,6 +208,55 @@ configure_ai_service() {
   AI_VARIANT_CHOSEN="$variant"
 }
 
+# --- Descriptions on this machine (every install and update) --------------
+#
+# The describer (docker-compose.describe.yml: Ollama with a small vision
+# model) is added whenever this machine can run one without hurting
+# recording - at least 4 cores and 8 GB of RAM - and idles until it's set up
+# in Settings -> AI. Below that it's left out and the page says why, offering
+# another PC instead.
+#
+#   DESCRIBER=off   in .env: never add it
+
+DESCRIBE_COMPOSE_FILES="docker-compose.describe.yml docker-compose.describe.nvidia.yml"
+DESCRIBER_MIN_CORES=4
+DESCRIBER_MIN_RAM_MB=7500  # "8 GB" machines report a little under 8000
+
+# configure_describer - sets DESCRIBER_STATE (on | off | too_small) and
+# DESCRIBER_WHY, and adds/removes the describer in COMPOSE_FILE. Run after
+# configure_ai_service (it uses the GPU facts that one detected).
+configure_describer() {
+  local cores ram current out="" f
+  cores="${LIGHTNVR_CORES:-$(nproc 2>/dev/null || echo 1)}"
+  ram="${LIGHTNVR_RAM_MB:-$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)}"
+  current="$(env_get COMPOSE_FILE)"
+  [[ -n "$current" ]] || current="docker-compose.yml"
+  local IFS=':'
+  for f in $current; do
+    case " $DESCRIBE_COMPOSE_FILES " in *" $f "*) ;; *) out="${out:+$out:}$f" ;; esac
+  done
+  unset IFS
+  DESCRIBER_WHY=""
+  if [[ "$(env_get DESCRIBER)" == "off" ]]; then
+    DESCRIBER_STATE="off"
+  elif [[ "$cores" -lt "$DESCRIBER_MIN_CORES" ]]; then
+    DESCRIBER_STATE="too_small"
+    DESCRIBER_WHY="needs at least $DESCRIBER_MIN_CORES CPU cores; this machine has $cores"
+  elif [[ "$ram" -lt "$DESCRIBER_MIN_RAM_MB" ]]; then
+    DESCRIBER_STATE="too_small"
+    DESCRIBER_WHY="needs at least 8 GB of RAM; this machine has $(( (ram + 512) / 1024 )) GB"
+  else
+    DESCRIBER_STATE="on"
+    out="$out:docker-compose.describe.yml"
+    if ${HW_NVIDIA:-false} && ${HW_NVIDIA_TOOLKIT:-false}; then out="$out:docker-compose.describe.nvidia.yml"; fi
+    # Half the cores at most (detection and recording need the rest), and
+    # room for the 4B model only on machines with RAM to spare.
+    [[ -n "$(env_get DESCRIBE_CPUS)" ]] || env_set DESCRIBE_CPUS "$(( cores >= 8 ? cores / 4 : 2 ))"
+    [[ -n "$(env_get DESCRIBE_MEM_LIMIT)" ]] || env_set DESCRIBE_MEM_LIMIT "$([[ "$ram" -ge 14000 ]] && echo 8g || echo 5g)"
+  fi
+  if [[ "$out" == "docker-compose.yml" ]]; then env_unset COMPOSE_FILE; else env_set COMPOSE_FILE "$out"; fi
+}
+
 # write_hardware_report - what the scripts saw, for the AI engine card to
 # explain problems ("an Intel GPU is present but its driver isn't loaded").
 # Needs the backend running (written into its data volume).
@@ -218,9 +267,13 @@ write_hardware_report() {
     line="${line//\/}"; line="${line//\"/}"
     gpus_json="${gpus_json:+$gpus_json,}\"$line\""
   done <<< "$HW_GPUS"
-  printf '{"detected_at":"%s","arch":"%s","virt":"%s","gpus":[%s],"intel_gpu":%s,"dri":%s,"nvidia_gpu":%s,"nvidia_toolkit":%s,"ai_worker":"%s","variant":"%s"}\n' \
+  local cores ram
+  cores="$(nproc 2>/dev/null || echo 1)"
+  ram="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+  printf '{"detected_at":"%s","arch":"%s","virt":"%s","gpus":[%s],"intel_gpu":%s,"dri":%s,"nvidia_gpu":%s,"nvidia_toolkit":%s,"ai_worker":"%s","variant":"%s","cores":%s,"ram_mb":%s,"describer":"%s","describer_why":"%s","describer_mem_limit":"%s"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$HW_ARCH" "${HW_VIRT:-none}" "$gpus_json" "$HW_INTEL" "$HW_DRI" \
     "$HW_NVIDIA" "$HW_NVIDIA_TOOLKIT" "$([[ "$(env_get AI_WORKER)" == "off" ]] && echo off || echo on)" \
-    "$(env_get AI_WORKER_VARIANT)" \
+    "$(env_get AI_WORKER_VARIANT)" "$cores" "$ram" "${DESCRIBER_STATE:-unknown}" "${DESCRIBER_WHY:-}" \
+    "$(env_get DESCRIBE_MEM_LIMIT)" \
     | "${dk[@]}" compose exec -T backend sh -c 'cat > /data/hardware.json' 2>/dev/null || true
 }

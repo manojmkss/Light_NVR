@@ -292,6 +292,11 @@ else
   configure_ai_service
   if $HW_DRI; then log "AI service: ${AI_VARIANT_CHOSEN:-off} image, Intel GPU connected."
   else log "AI service: ${AI_VARIANT_CHOSEN:-off} image."; fi
+  configure_describer
+  case "$DESCRIBER_STATE" in
+    on) log "Descriptions: can run on this machine (set them up in Settings -> AI -> Describe what's happening)." ;;
+    too_small) log "Descriptions: not added here ($DESCRIBER_WHY) - use another PC with Ollama instead." ;;
+  esac
 fi
 
 # Prefer the prebuilt multi-arch images from GHCR (a ~1-minute pull, no build).

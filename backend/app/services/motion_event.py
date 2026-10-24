@@ -716,7 +716,6 @@ class MotionEventSession:
     FACE_CLEAR_EXTRA = 0.08
     PRESENCE_HOLD_WITH_AI = 20.0  # background-model hold while AI is answering
     PRESENCE_HOLD_WITHOUT_AI = 120.0
-    VLM_TIMEOUT = 30.0
 
     def __init__(
         self,
@@ -1113,9 +1112,12 @@ class MotionEventSession:
     def _clock(self, wall: float) -> str:
         return datetime.fromtimestamp(wall, self.tz).strftime("%H:%M:%S")
 
-    async def build_summary(self, clip: tuple[float, float] | None = None, clip_parts: int = 1) -> EventSummary | None:
+    async def build_summary(self, clip: tuple[float, float] | None = None, clip_parts: int = 1,
+                            describe: bool = True) -> EventSummary | None:
         """None when there's nothing worth telling: objects-only mode and the
-        AI worked but saw nothing of interest (a tree, a shadow)."""
+        AI worked but saw nothing of interest (a tree, a shadow). `describe`
+        False: this summary won't be sent (part of a multi-camera visit, which
+        gets its own description), so don't spend a description on it."""
         end = self.ended_wall or time.time()
         now_mono = time.monotonic()
         for t in self.tracker.confirmed():
@@ -1185,7 +1187,7 @@ class MotionEventSession:
         if best is not None:
             boxes = [(t.label, t.best_conf, t.best_box) for t in self.tracker.confirmed() if t.best_frame is best.best_frame]
             snapshot = await asyncio.to_thread(lambda: _jpeg(draw_boxes(best.best_frame, boxes)))
-            description = await self._vlm_description(best, seen, end)
+            description = await self._vlm_description(best, seen, end) if describe else ""
             if description:
                 lines.insert(1, description)
         elif self._last_frame is not None:
@@ -1202,8 +1204,11 @@ class MotionEventSession:
         s = self.settings
         if self.skip_description or not (self._describe and s and s.vlm_enabled and getattr(s, "event_summary_vlm", True)):
             return ""
+        from app.services.ai.vlm import is_local, timeout_for
         from app.services.faces import privacy_safe_jpeg
 
+        if is_local(s) and not any(group_of(lbl) in ("person", "vehicle", "two_wheeler") for lbl in seen):
+            return ""  # this NVR's own (slow) describer is kept for real visits
         jpeg = await privacy_safe_jpeg(s, best.best_frame)
         if not jpeg:
             return ""
@@ -1215,7 +1220,7 @@ class MotionEventSession:
         )
         try:
             return await asyncio.wait_for(
-                self._describe(s, jpeg, list(seen), self.camera_name, prompt), timeout=self.VLM_TIMEOUT
+                self._describe(s, jpeg, list(seen), self.camera_name, prompt), timeout=timeout_for(s)
             )
         except Exception as exc:
             logger.warning("Event summary description failed for camera %s (%s)", self.camera_id, exc)

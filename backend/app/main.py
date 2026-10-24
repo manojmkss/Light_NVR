@@ -22,6 +22,7 @@ install_log_buffer()
 from app.api.routes import (
     ai,
     ai_engine,
+    describer,
     auth,
     backup,
     cameras,
@@ -175,7 +176,7 @@ async def lifespan(app: FastAPI):
     await hq_stream_manager.shutdown()
 
 
-app = FastAPI(title="LightNVR API", version="0.4.10", lifespan=lifespan)
+app = FastAPI(title="LightNVR API", version="0.4.11", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -191,6 +192,7 @@ app.add_middleware(
 
 app.include_router(ai.router)
 app.include_router(ai_engine.router)
+app.include_router(describer.router)
 app.include_router(auth.router)
 app.include_router(backup.router)
 app.include_router(cameras.router)

@@ -226,7 +226,15 @@ or crash recording. Pick what runs it under **Settings → AI → AI engine**:
 delivery person left a package at the front door"*, plus an optional daily
 summary. Uses a vision-language model, which can be:
 
-- **Ollama** on your own PC — free, no key, nothing leaves your network. The
+- **This NVR** — the install/update scripts check the machine and, when it has
+  at least 4 cores and 8 GB of RAM, add a describer (Ollama, idle until used).
+  Settings → AI → *Describe what's happening* → **This NVR** shows what the
+  machine is, which models fit (Qwen3-VL 2B on a CPU, bigger ones with an
+  NVIDIA GPU), downloads one, times it on one of your own camera pictures, and
+  switches it on. On a CPU it describes visit summaries only (people and
+  vehicles), one at a time, capped to part of the CPU so recording comes first.
+  `DESCRIBER=off` in `.env` leaves it out.
+- **Ollama** on another PC — free, no key, nothing leaves your network. The
   GUI lists the models installed on it (`ollama pull llama3.2-vision`; start
   Ollama with `OLLAMA_HOST=0.0.0.0` so the NVR can reach it).
 - **LM Studio / vLLM / OpenAI**, or **Claude** — cloud options send snapshots

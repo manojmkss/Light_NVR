@@ -71,7 +71,7 @@ async def _narrative(message: str, snapshot: bytes | None) -> str:
     import cv2
     import numpy as np
 
-    from app.services.ai.vlm import describe_frame
+    from app.services.ai.vlm import describe_frame, timeout_for
     from app.services.faces import privacy_safe_jpeg
 
     frame = cv2.imdecode(np.frombuffer(snapshot, np.uint8), cv2.IMREAD_COLOR)
@@ -85,7 +85,8 @@ async def _narrative(message: str, snapshot: bytes | None) -> str:
               f"Facts already known: {facts}. Describe in at most two factual sentences (40 words) what the person "
               "or vehicle in the picture is doing. No preamble, no speculation beyond the image.")
     try:
-        return await asyncio.wait_for(describe_frame(settings, jpeg, [], "visit", prompt=prompt), timeout=30)
+        return await asyncio.wait_for(describe_frame(settings, jpeg, [], "visit", prompt=prompt),
+                                      timeout=timeout_for(settings))
     except Exception as exc:
         logger.warning("Visit description failed (%s)", exc)
         return ""

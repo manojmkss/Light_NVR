@@ -1,0 +1,11 @@
+# NVIDIA GPU for the describer. Added to COMPOSE_FILE by the install/update
+# scripts when the NVIDIA Container Toolkit is present.
+services:
+  ai-describe:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

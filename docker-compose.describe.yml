@@ -1,0 +1,36 @@
+# Descriptions ("what happened?") on this machine: Ollama running a small
+# vision model, reached only by the NVR over its own network (no port is
+# published). Added to COMPOSE_FILE by the install/update scripts when this
+# machine can run it - don't edit; DESCRIBER=off in .env leaves it out.
+#
+# It idles with no model loaded (a few MB of RAM) until descriptions are set
+# up in Settings -> AI -> Describe what's happening -> This NVR, and unloads
+# the model again after 5 idle minutes. Its CPU is capped and it yields to
+# recording and detection whenever the machine is busy.
+services:
+  ai-describe:
+    image: ollama/ollama:${DESCRIBER_OLLAMA_VERSION:-0.40.2}
+    container_name: lightnvr-ai-describe
+    restart: unless-stopped
+    cpus: ${DESCRIBE_CPUS:-2}
+    cpu_shares: 256  # a quarter of the default weight: recording comes first
+    mem_limit: ${DESCRIBE_MEM_LIMIT:-5g}
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 5m
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_QUEUE: "4"
+    volumes:
+      - lightnvr-describe-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    networks:
+      - lightnvr
+
+volumes:
+  lightnvr-describe-models:
+    name: lightnvr-describe-models

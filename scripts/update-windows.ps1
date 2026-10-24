@@ -107,12 +107,23 @@ function Set-EnvVar {
 }
 
 if (-not $DryRun -and (Get-EnvVar "AI_WORKER") -ne "off") {
-    $aiFiles = @("docker-compose.ai.yml", "docker-compose.ai.intel.yml", "docker-compose.ai.nvidia.yml")
+    $aiFiles = @("docker-compose.ai.yml", "docker-compose.ai.intel.yml", "docker-compose.ai.nvidia.yml",
+                 "docker-compose.describe.yml", "docker-compose.describe.nvidia.yml")
     $current = Get-EnvVar "COMPOSE_FILE"
     if (-not $current) { $current = "docker-compose.yml" }
     $parts = @($current -split "[;:]" | Where-Object { $_ -and ($aiFiles -notcontains $_) })
+    $parts = @($parts) + "docker-compose.ai.yml"
+    # Descriptions on this PC (idle until set up in Settings -> AI) when it has
+    # the room: Docker Desktop's Linux VM gets about half the RAM, so 16 GB+.
+    $ramGb = [Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+    if ((Get-EnvVar "DESCRIBER") -ne "off" -and [Environment]::ProcessorCount -ge 4 -and $ramGb -ge 16) {
+        $parts += "docker-compose.describe.yml"
+        if (-not (Get-EnvVar "DESCRIBE_CPUS")) { Set-EnvVar "DESCRIBE_CPUS" "2" }
+        if (-not (Get-EnvVar "DESCRIBE_MEM_LIMIT")) { Set-EnvVar "DESCRIBE_MEM_LIMIT" "5g" }
+        Write-Step "Descriptions can run on this PC (Settings -> AI -> Describe what's happening)."
+    }
     # Windows compose separates COMPOSE_FILE entries with ';'.
-    Set-EnvVar "COMPOSE_FILE" ((@($parts) + "docker-compose.ai.yml") -join ";")
+    Set-EnvVar "COMPOSE_FILE" ($parts -join ";")
     if ((Get-EnvVar "AI_WORKER_VARIANT_AUTO") -ne "off") { Set-EnvVar "AI_WORKER_VARIANT" "cpu" }
     if (-not (Get-EnvVar "AI_CPUS")) { Set-EnvVar "AI_CPUS" ([string][Math]::Max(1, [int]([Environment]::ProcessorCount / 2))) }
     if (-not (Get-EnvVar "AI_MEM_LIMIT")) { Set-EnvVar "AI_MEM_LIMIT" "1536m" }

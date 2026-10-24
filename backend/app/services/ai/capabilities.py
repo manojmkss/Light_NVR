@@ -165,7 +165,9 @@ def feasibility(bench: dict, cameras: int, slots: int = 1, vlm_configured: bool 
         vlm = {"level": "recommended" if gpu else "summary_only",
                "reason": "vision model configured" + ("" if gpu else " - on CPU, keep it to summaries")}
     else:
-        vlm = {"level": "needs_setup", "reason": "point it at an Ollama/LM Studio box with a GPU"}
+        vlm = {"level": "needs_setup",
+               "reason": "set it up on this NVR (Settings -> AI -> Describe what's happening), or point it at "
+                         "an Ollama/LM Studio PC with a GPU"}
     return {
         "detection": det, "faces": faces, "search": search, "descriptions": vlm,
         "recommended_interval_ms": interval, "capacity_fps": round(capacity, 1), "demand_fps": demand,

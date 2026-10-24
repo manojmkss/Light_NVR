@@ -7,12 +7,50 @@ leaving the house and without per-call cost. "openai_compatible" covers
 LM Studio / vLLM / OpenAI itself; "anthropic" covers Claude directly.
 """
 
+import asyncio
 import base64
 import logging
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# The describer on this NVR (docker-compose.describe.yml): Ollama on the same
+# machine, usually on its CPU. It gets one picture at a time, smaller
+# pictures, more time, and only the summaries that are actually sent.
+LOCAL_DESCRIBER_URL = "http://ai-describe:11434"
+LOCAL_TIMEOUT_SECONDS = 180.0
+LOCAL_MAX_SIDE = 768  # less to send; reads a scene fine (the model resizes to its own grid anyway)
+LOCAL_MAX_WAITING = 2  # more than this queued and it has fallen behind: skip, don't pile up
+_local_gate = asyncio.Semaphore(1)
+_local_waiting = 0
+
+
+class DescriberBusy(RuntimeError):
+    """The local describer is still working through earlier pictures."""
+
+
+def is_local(settings) -> bool:
+    return (getattr(settings, "vlm_provider", "") == "ollama"
+            and (getattr(settings, "vlm_url", "") or "").rstrip("/") == LOCAL_DESCRIBER_URL)
+
+
+def timeout_for(settings) -> float:
+    """How long a caller should wait for one description."""
+    return LOCAL_TIMEOUT_SECONDS if is_local(settings) else 30.0
+
+
+def _shrink(jpeg: bytes, max_side: int) -> bytes:
+    import cv2
+    import numpy as np
+
+    img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    if img is None or max(img.shape[:2]) <= max_side:
+        return jpeg
+    scale = max_side / max(img.shape[:2])
+    img = cv2.resize(img, (round(img.shape[1] * scale), round(img.shape[0] * scale)), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    return buf.tobytes() if ok else jpeg
 
 # Local VLMs can take tens of seconds on their first call while the model
 # loads into RAM/VRAM; a short timeout would make the feature look broken
@@ -56,6 +94,8 @@ async def describe_frame(
     a logged warning (pipeline) or a surfaced error (the Test button).
     `prompt` overrides the default one-line-alert prompt (event summaries)."""
     prompt = prompt or _PROMPT.format(camera=camera_name, labels=", ".join(labels) or "none")
+    if is_local(settings):
+        return await _describe_local(settings, jpeg, prompt)
     b64 = base64.b64encode(jpeg).decode()
 
     provider = settings.vlm_provider
@@ -146,3 +186,36 @@ async def describe_frame(
     # rambling model must not turn either into an essay.
     text = " ".join(text.strip().split())
     return text[:300]
+
+
+async def _describe_local(settings, jpeg: bytes, prompt: str) -> str:
+    """This NVR's own describer: one at a time, and skipped rather than
+    queued without end when it falls behind."""
+    global _local_waiting
+    if not settings.vlm_model:
+        raise ValueError("No description model set up yet (Settings -> AI -> Describe what's happening)")
+    if _local_waiting >= LOCAL_MAX_WAITING:
+        raise DescriberBusy("the describer on this NVR is still busy with earlier visits - skipped this one")
+    _local_waiting += 1
+    try:
+        async with _local_gate:
+            jpeg = await asyncio.to_thread(_shrink, jpeg, LOCAL_MAX_SIDE)
+            async with httpx.AsyncClient(timeout=LOCAL_TIMEOUT_SECONDS) as client:
+                resp = await client.post(
+                    f"{LOCAL_DESCRIBER_URL}/api/chat",
+                    json={
+                        "model": settings.vlm_model,
+                        "stream": False,
+                        "think": False,  # a thinking pass would triple the time on a CPU
+                        "keep_alive": "5m",
+                        # 4096 holds a picture (~1100 tokens) and the answer; the
+                        # model's own 256K default would reserve gigabytes.
+                        "options": {"temperature": 0.2, "num_predict": 90, "num_ctx": 4096},
+                        "messages": [{"role": "user", "content": prompt,
+                                      "images": [base64.b64encode(jpeg).decode()]}],
+                    },
+                )
+                resp.raise_for_status()
+                return " ".join(resp.json().get("message", {}).get("content", "").split()).strip()
+    finally:
+        _local_waiting -= 1

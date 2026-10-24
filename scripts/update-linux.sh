@@ -177,6 +177,7 @@ fi
 # ---------------------------------------------------------------------------
 if $DRY_RUN; then
   log "[DRY RUN] Would detect GPUs and set the AI service's image/devices in .env."
+  log "[DRY RUN] Would add the describer (Ollama) if this machine has >= 4 cores and 8 GB RAM."
 else
   configure_ai_service
   if [[ -n "${AI_VARIANT_CHOSEN:-}" ]]; then
@@ -187,6 +188,11 @@ else
     if $HW_NVIDIA && ! $HW_NVIDIA_TOOLKIT; then gpu_note="NVIDIA GPU present but the NVIDIA Container Toolkit is missing"; fi
     log "AI service: ${AI_VARIANT_CHOSEN} image ($gpu_note). Choose CPU/GPU in Settings -> AI -> AI engine."
   fi
+  configure_describer
+  case "$DESCRIBER_STATE" in
+    on) log "Descriptions: can run on this machine (set them up in Settings -> AI -> Describe what's happening)." ;;
+    too_small) log "Descriptions: not added here ($DESCRIBER_WHY) - use another PC with Ollama instead." ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------

@@ -166,3 +166,44 @@ const modelAction = (name: string, action: "download" | "test" | "use") =>
 export const downloadDetectionModel = (name: string) => modelAction(name, "download");
 export const testDetectionModel = (name: string) => modelAction(name, "test");
 export const switchDetectionModel = (name: string) => modelAction(name, "use");
+
+// ── Descriptions on this NVR (the describer: Ollama + a small vision model) ──
+
+export const LOCAL_DESCRIBER_URL = "http://ai-describe:11434";
+export interface DescriberJob {
+  kind: "download" | "test";
+  status: "running" | "done" | "failed";
+  progress: number;
+  message: string;
+}
+export interface DescriberModel {
+  name: string;
+  label: string;
+  size_gb: number;
+  ram_gb: number;
+  about: string;
+  fit: "good" | "slow" | "no";
+  fit_note: string;
+  installed: boolean;
+  result: { ok: boolean; seconds?: number; first_seconds?: number; text?: string; picture?: string; error?: string } | null;
+  job: DescriberJob | null;
+}
+export interface DescriberStatus {
+  state: "ready" | "not_installed" | "too_small" | "off";
+  why: string;
+  machine: string;
+  gpu: boolean;
+  version: string;
+  license: string;
+  recommended: string | null;
+  in_use: string | null;
+  models: DescriberModel[];
+}
+export const getDescriber = () => apiFetch<DescriberStatus>("/ai/describer");
+const describerAction = (name: string, action: "download" | "test" | "delete") =>
+  apiFetch<unknown>(`/ai/describer/models/${encodeURIComponent(name)}/${action}`, { method: "POST" });
+export const downloadDescriberModel = (name: string) => describerAction(name, "download");
+export const testDescriberModel = (name: string) => describerAction(name, "test");
+export const deleteDescriberModel = (name: string) => describerAction(name, "delete");
+export const switchToLocalDescriber = (model: string) =>
+  apiFetch<AISettings>("/ai/describer/use", { method: "POST", body: JSON.stringify({ model }) });

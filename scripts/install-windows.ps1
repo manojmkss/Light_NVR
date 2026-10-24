@@ -244,7 +244,17 @@ if ($SkipFirewall) {
 
 # The AI service runs in its own container (CPU image on Windows: Docker Desktop
 # can't hand an Intel GPU to Linux containers). It idles until AI is turned on.
-Set-EnvVar "COMPOSE_FILE" "docker-compose.yml;docker-compose.ai.yml"
+# Descriptions on this PC (Ollama, idle until set up in Settings -> AI) when it
+# has the room: Docker Desktop's Linux VM gets about half the RAM, so 16 GB+.
+$composeFiles = "docker-compose.yml;docker-compose.ai.yml"
+$ramGb = [Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+if ([Environment]::ProcessorCount -ge 4 -and $ramGb -ge 16) {
+    $composeFiles += ";docker-compose.describe.yml"
+    Set-EnvVar "DESCRIBE_CPUS" "2"
+    Set-EnvVar "DESCRIBE_MEM_LIMIT" "5g"
+    Write-Step "Descriptions can run on this PC - set them up in Settings -> AI -> Describe what's happening."
+}
+Set-EnvVar "COMPOSE_FILE" $composeFiles
 Set-EnvVar "AI_WORKER_VARIANT" "cpu"
 Set-EnvVar "AI_CPUS" ([string][Math]::Max(1, [int]([Environment]::ProcessorCount / 2)))
 Set-EnvVar "AI_MEM_LIMIT" "1536m"

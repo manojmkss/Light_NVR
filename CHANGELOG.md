@@ -6,6 +6,28 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-10-24
+
+### Added
+- **Descriptions on the NVR itself** (Settings -> AI -> Describe what's
+  happening -> This NVR). The install/update scripts check the machine and,
+  with at least 4 cores and 8 GB of RAM, add a describer service (Ollama
+  0.40.2) that idles until it's used. The page shows what the machine is,
+  which vision models fit it (Qwen3-VL 2B instruct on a CPU; 4B and 8B with the
+  room or an NVIDIA GPU) and why the others don't, downloads one with progress, tests
+  it on one of your own camera pictures (time per description and the
+  sentence it wrote), and switches descriptions to it. "Another PC or
+  service" is the existing Ollama / LM Studio / cloud setup.
+- On this NVR the describer works for the summaries that are actually sent,
+  for people and vehicles only, one picture at a time (shrunk to 768px), and
+  skips rather than queues when it falls behind. It is capped to 2 cores at a
+  quarter of the normal CPU weight and 5 GB of memory, and unloads the model
+  after 5 idle minutes. `DESCRIBER=off` in .env leaves it out.
+
+### Changed
+- A camera's own summary is no longer described when it's part of a
+  multi-camera visit - the visit summary that is sent gets the description.
+
 ## [0.4.10] - 2026-10-23
 
 ### Added
