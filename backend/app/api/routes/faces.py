@@ -23,6 +23,7 @@ from app.db.session import AsyncSessionLocal, get_db
 from app.models.ai_settings import AISettings
 from app.models.detection import Detection
 from app.models.person import FaceSample, Person
+from app.services.incident_store import name_visits
 from app.models.user import User
 from app.schemas.common import UtcDatetime, serialize_utc
 from app.services.faces import (
@@ -479,9 +480,14 @@ async def assign_sample(sample_id: int, payload: AssignIn, db: AsyncSession = De
     r = await db.get(FaceSample, sample_id)
     if r is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sample not found")
-    if payload.person_id is not None and await db.get(Person, payload.person_id) is None:
+    person = await db.get(Person, payload.person_id) if payload.person_id is not None else None
+    if payload.person_id is not None and person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
+    previous = await db.get(Person, r.person_id) if r.person_id is not None else None
     r.person_id = payload.person_id
+    if person is not None or previous is not None:
+        # The visit it was seen in says who it was (or no longer does).
+        await name_visits(db, [r.id], person, previous_person=previous)
     await db.commit()
     await face_service.reload()
     return {"ok": True}
@@ -569,8 +575,11 @@ async def assign_group(payload: GroupAssignIn, db: AsyncSession = Depends(get_db
         await db.flush()
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose a person or describe a new one")
-    await db.execute(update(FaceSample).where(FaceSample.id.in_(payload.sample_ids), FaceSample.person_id.is_(None))
-                     .values(person_id=row.id))
+    named = (await db.execute(select(FaceSample.id).where(FaceSample.id.in_(payload.sample_ids),
+                                                          FaceSample.person_id.is_(None)))).scalars().all()
+    await db.execute(update(FaceSample).where(FaceSample.id.in_(named)).values(person_id=row.id))
+    # The visits these faces were seen in now say who it was.
+    await name_visits(db, list(named), row)
     await db.commit()
     await db.refresh(row)
     await face_service.reload()

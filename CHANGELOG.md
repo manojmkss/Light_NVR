@@ -6,6 +6,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-10-25
+
+### Fixed
+- **Visits now show the names of people you identify afterwards.** Most faces
+  aren't recognised at the moment they're seen - they go to "Who is this?" on
+  the People page, and naming them there only taught recognition for next
+  time. Now naming a face (one face, a group, "Looks most like X" or "Add
+  all") also adds the name to the visit it was seen in, exactly like a live
+  recognition, and taking a face back removes the name again unless that
+  person was recognised elsewhere in the visit. A visit still in progress
+  picks the name up straight away.
+
 ## [0.4.11] - 2026-10-24
 
 ### Added

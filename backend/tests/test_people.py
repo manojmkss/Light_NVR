@@ -331,3 +331,55 @@ def test_model_comparison_on_confirmed_faces():
     assert r["models"]["adaface"]["wrong"] == 0
     assert r["verdict"] == "adaface"
     assert compare_models(samples[:3], SimpleNamespace(face_threshold=60))["verdict"] == "not_enough"
+
+
+def test_naming_a_face_names_the_visits_it_was_seen_in(tmp_path, monkeypatch):
+    import app.models  # noqa: F401
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.api.routes import faces as route
+    from app.db.session import Base
+    from app.models.detection import Detection
+    from app.models.incident import Incident
+    from app.models.person import FaceSample, Person
+    from app.services.incidents import OpenIncident, incident_manager
+
+    async def noop(*a, **k):
+        return None
+
+    async def faces_on(db):
+        return None
+
+    monkeypatch.setattr(route.face_service, "reload", noop)
+    monkeypatch.setattr(route, "_require_faces", faces_on)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    live = OpenIncident(id=2, started=0.0)
+    monkeypatch.setattr(incident_manager, "open", [live])
+
+    async def go():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with maker() as db:
+            db.add(Person(id=1, name="Neeraj Agarwal", category="familiar"))
+            db.add_all([Incident(id=1, status="closed", identities=None),
+                        Incident(id=2, status="open", identities=["Monika Sharma"])])
+            db.add_all([Detection(camera_id=2, label="person", track_uid="t1", incident_id=1),
+                        Detection(camera_id=2, label="person", track_uid="t2", incident_id=2)])
+            db.add_all([FaceSample(id=10, person_id=None, embedding=b"x", track_uid="t1", source="capture"),
+                        FaceSample(id=11, person_id=None, embedding=b"x", track_uid="t2", source="capture")])
+            await db.commit()
+            await route.assign_group(route.GroupAssignIn(sample_ids=[10, 11], person_id=1), db=db, _=None)
+            named = [(await db.get(Incident, i)).identities for i in (1, 2)]
+            det = (await db.get(Detection, 1)).person_id
+            # Taken back: the visit no longer claims him.
+            await route.assign_sample(10, route.AssignIn(person_id=None), db=db, _=None)
+            db.expire_all()
+            after = [(await db.get(Incident, i)).identities for i in (1, 2)]
+        await engine.dispose()
+        return named, det, after
+
+    named, det, after = asyncio.run(go())
+    assert named == [["Neeraj Agarwal"], ["Monika Sharma", "Neeraj Agarwal"]] and det == 1
+    assert "Neeraj Agarwal" in live.identities  # an open visit won't write the old list back
+    assert after == [None, ["Monika Sharma", "Neeraj Agarwal"]]

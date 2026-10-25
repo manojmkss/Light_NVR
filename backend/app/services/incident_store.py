@@ -172,3 +172,55 @@ async def incident_loop() -> None:
             await incident_manager.sweep()
         except Exception:
             logger.exception("Incident sweep failed")
+
+
+async def name_visits(db, sample_ids: list[int], person, previous_person=None) -> list[int]:
+    """A face was named on the People page (or the name was taken back): the
+    visits that face came from say who it was, as if it had been recognised
+    there and then. Returns the visits changed. The caller commits."""
+    from sqlalchemy import select
+
+    from app.models.detection import Detection
+    from app.models.person import FaceSample
+
+    tracks = {t for t in (await db.execute(
+        select(FaceSample.track_uid).where(FaceSample.id.in_(sample_ids), FaceSample.track_uid.is_not(None))
+    )).scalars().all() if t}
+    if not tracks:
+        return []
+    dets = (await db.execute(select(Detection).where(Detection.track_uid.in_(tracks)))).scalars().all()
+    changed: set[int] = set()
+    for d in dets:
+        if person is not None:
+            if d.person_id is None:
+                d.person_id = person.id
+        elif previous_person is not None and d.person_id == previous_person.id:
+            d.person_id = None
+        if d.incident_id is not None:
+            changed.add(d.incident_id)
+    await db.flush()
+    out = []
+    for vid in sorted(changed):
+        row = await db.get(Incident, vid)
+        if row is None:
+            continue
+        names = set(row.identities or [])
+        if person is not None:
+            names.add(person.name)
+        elif previous_person is not None:
+            still = (await db.execute(select(Detection.id).where(
+                Detection.incident_id == vid, Detection.person_id == previous_person.id).limit(1))).first()
+            if still is None:
+                names.discard(previous_person.name)
+        if names != set(row.identities or []):
+            row.identities = sorted(names) or None
+            out.append(vid)
+        # A visit still open keeps its people in memory and would write the
+        # old list back when it next saves.
+        live = next((i for i in incident_manager.open if i.id == vid), None)
+        if live is not None:
+            if person is not None:
+                live.identities.add(person.name)
+            elif previous_person is not None and previous_person.name not in names:
+                live.identities.discard(previous_person.name)
+    return out
