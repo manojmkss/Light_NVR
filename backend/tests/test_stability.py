@@ -106,3 +106,97 @@ def test_one_camera_failing_to_start_does_not_stop_the_others(monkeypatch):
 
     asyncio.run(go())
     assert started == [2]
+
+
+def test_a_camera_back_from_a_long_outage_is_not_called_stalled():
+    import time as _time
+    from types import SimpleNamespace
+
+    from app.services.camera_worker import CameraWorker
+
+    now = _time.monotonic()
+    viewer = SimpleNamespace(thread_alive=True, last_activity=now, last_frame_at=now, connected_at=now - 30)
+    rec = SimpleNamespace(last_segment_at=now - 16 * 60, started_at=now - 3600)  # last file before a 15-min outage
+    worker = SimpleNamespace(_stream_viewer=viewer, _tasks=[], _stopping=False, _continuous_recorder=rec,
+                             _motion_recorder=None, VIEWER_STUCK_SECONDS=CameraWorker.VIEWER_STUCK_SECONDS)
+    assert CameraWorker.health(worker) == (True, "ok")  # back 30 s ago: give it time to save a segment
+    viewer.connected_at = now - 15 * 60  # pictures for 15 min, still nothing saved: really stalled
+    ok, reason = CameraWorker.health(worker)
+    assert not ok and "no recording saved" in reason
+
+
+def test_a_short_camera_drop_is_not_an_outage(monkeypatch):
+    import asyncio
+
+    from app.services import status_tracker as st
+
+    flips, events = [], []
+
+    async def set_offline(cid):
+        flips.append(cid)
+
+    async def no_db_online(cid):
+        st.heartbeat(cid)
+        pending = st._pending.pop(cid, None)
+        if pending:
+            pending.cancel()
+
+    monkeypatch.setattr(st, "OFFLINE_CONFIRM_SECONDS", 0.3)
+    monkeypatch.setattr(st, "_set_offline", set_offline)
+    monkeypatch.setattr(st, "mark_online", no_db_online)
+
+    async def go():
+        # Recorder drops, live view still gets pictures: not offline.
+        st.heartbeat(5)
+        await st.mark_offline(5)
+        for _ in range(4):
+            await asyncio.sleep(0.1)
+            st.heartbeat(5)
+        await asyncio.sleep(0.2)
+        assert flips == []
+        # Dropped and back within a few seconds: not offline either.
+        await st.mark_offline(6)
+        await asyncio.sleep(0.1)
+        await st.mark_online(6)
+        await asyncio.sleep(0.4)
+        assert flips == []
+        # Really gone: offline once, however many parts report it.
+        await st.mark_offline(7)
+        await st.mark_offline(7)
+        await asyncio.sleep(0.5)
+        assert flips == [7]
+
+    asyncio.run(go())
+
+
+def test_backend_messages_reach_docker_logs_and_a_file_scrubbed(tmp_path, monkeypatch):
+    import io
+    import logging
+
+    from app.core import log_buffer
+
+    monkeypatch.setattr(log_buffer, "LOG_DIR", str(tmp_path / "logs"))
+    out = io.StringIO()
+    monkeypatch.setattr(log_buffer.sys, "stdout", out)
+    root = logging.getLogger()
+    before = list(root.handlers)
+    uv = logging.getLogger("uvicorn.error")
+    uv_before = list(uv.handlers)
+    try:
+        log_buffer.install_log_buffer()
+        logging.getLogger("app.services.ffmpeg_recorder").warning(
+            "Continuous recording failed for camera 3: rtsp://admin:hunter2@192.168.68.203:554/stream1 timed out")
+        for h in root.handlers:
+            h.flush()
+    finally:
+        for h in uv.handlers[:]:
+            if h not in uv_before:
+                uv.removeHandler(h)
+        for h in root.handlers[:]:
+            if h not in before:
+                root.removeHandler(h)
+                h.close()
+    printed = out.getvalue()
+    saved = (tmp_path / "logs" / "lightnvr.log").read_text()
+    for text in (printed, saved):
+        assert "Continuous recording failed for camera 3" in text and "hunter2" not in text

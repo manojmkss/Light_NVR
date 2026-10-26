@@ -6,6 +6,46 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-10-26
+
+Stability release, from a review of the code and a week of production data.
+
+### Fixed
+- **A restart no longer throws away the minutes being recorded.** On every
+  update, camera edit or automatic restart, the segment in progress (up to 5
+  minutes per camera) was never saved, and the next start deleted it as
+  "incomplete" - although the file was perfectly playable. It is now saved
+  on the way down, and anything a crash or power cut leaves behind is
+  repaired and kept; only empty or unreadable files are removed. The
+  recording is now also the first thing a camera saves when stopping.
+- **A full disk can no longer stop recording.** The recordings limit only
+  counted recordings, so as other things filled the disk (each update left
+  ~3 GB of old images behind) the recorder would eventually pause every
+  camera. Now at least 15 GB (or 5%) is always kept free by removing the
+  oldest footage first - checked every 5 minutes and the moment space runs
+  short - and footage from the last 24 hours is never removed (you're told
+  instead). The update removes old LightNVR images after a healthy update,
+  and the describer is only added when the disk has room for it.
+- **No false "stalled" restart after a camera comes back.** After an outage
+  longer than ~12 minutes, the health check counted the outage as "no
+  recording saved" and restarted the camera seconds after it returned,
+  losing its new recording and sending a false camera error.
+- **A camera is "offline" only when nothing has seen it for 45 seconds.** The
+  recorder and the live view each reported offline/online on their own, so a
+  Wi-Fi camera dropping for a few seconds produced offline/online pairs (21
+  in two days on one camera).
+- **Alerts are retried.** A failed Telegram, WhatsApp or email send is tried
+  again after 5 and 30 seconds, channels are sent side by side, and an alert
+  that couldn't be delivered no longer starts the cooldown that would hold
+  back the next one.
+- **"Storage is low" is sent once**, then only if it gets 2 points worse or a
+  day has passed, plus a note when space recovers - instead of every 30
+  minutes.
+- **The backend's own warnings and errors now reach `docker logs`** - before,
+  only web requests did - and are also kept in /data/logs/lightnvr.log (5 x
+  10 MB), which survives updates. Camera passwords are scrubbed from both.
+  Docker's logs for every container are capped at 5 x 10 MB.
+
 ## [0.4.12] - 2026-10-25
 
 ### Fixed

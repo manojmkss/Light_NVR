@@ -17,6 +17,26 @@ logger = logging.getLogger(__name__)
 _DEFAULT_COOLDOWN_SECONDS = 1800
 _SUMMARY_COOLDOWN_SECONDS = 60
 _last_alert_at: dict[tuple[str, int | None], datetime] = {}
+# A send that fails (network blip, Telegram/WhatsApp hiccup) is tried again
+# after these pauses before giving up - a lost alert is the one failure an
+# NVR must not have.
+RETRY_DELAYS = (5, 30)
+
+
+async def _with_retries(label: str, send, *args) -> bool:
+    for attempt, pause in enumerate((0, *RETRY_DELAYS)):
+        if pause:
+            await asyncio.sleep(pause)
+        try:
+            success, detail = await send(*args)
+        except Exception as exc:  # a channel must never take the others down
+            success, detail = False, str(exc) or type(exc).__name__
+        if success:
+            if attempt:
+                logger.info("%s alert sent on try %d", label, attempt + 1)
+            return True
+        logger.warning("Failed to send %s alert (try %d): %s", label, attempt + 1, detail)
+    return False
 
 
 _SUBJECTS = {
@@ -94,6 +114,8 @@ async def maybe_send_alert(event: Event, escalation: bool = False) -> None:
     last = _last_alert_at.get(key)
     if not urgent and not escalation and last and (now - last).total_seconds() < cooldown:
         return
+    # Claimed now (so two events at once don't both go out), given back below
+    # if nothing could be delivered - a failed alert must not silence the next.
     _last_alert_at[key] = now
 
     subject = _SUBJECTS.get(event.type, f"LightNVR alert: {event.type.replace('_', ' ')}")
@@ -110,49 +132,37 @@ async def maybe_send_alert(event: Event, escalation: bool = False) -> None:
     if link:
         text_body = f"{event.message}\n{link}"
 
-    # Each channel is independent - one being misconfigured or down never
-    # blocks the others from delivering.
-    if alert_settings.smtp_host and alert_settings.alert_email_to:
-        success, detail = await send_email(alert_settings, subject, text_body, image_path=snapshot)
-        if not success:
-            logger.warning("Failed to send alert email: %s", detail)
-
+    # Each channel is independent and retried on its own - one being
+    # misconfigured or down never blocks the others from delivering. They run
+    # side by side, so one channel's retries don't delay the rest.
     caption = f"{subject}\n{text_body}"[:1024]
-    if alert_settings.telegram_enabled:
-        if snapshot:
-            success, detail = await send_telegram_photo(
-                alert_settings.telegram_bot_token, alert_settings.telegram_chat_id, snapshot, caption
-            )
-        else:
-            success, detail = await send_telegram_message(
-                alert_settings.telegram_bot_token, alert_settings.telegram_chat_id, caption
-            )
-        if not success:
-            logger.warning("Failed to send Telegram alert: %s", detail)
+    sends = []
+    if alert_settings.smtp_host and alert_settings.alert_email_to:
+        async def email():
+            return await send_email(alert_settings, subject, text_body, image_path=snapshot)
 
+        sends.append(_with_retries("email", email))
+    if alert_settings.telegram_enabled:
+        token, chat = alert_settings.telegram_bot_token, alert_settings.telegram_chat_id
+        sends.append(_with_retries("Telegram", send_telegram_photo, token, chat, snapshot, caption) if snapshot
+                     else _with_retries("Telegram", send_telegram_message, token, chat, caption))
     if alert_settings.whatsapp_enabled:
-        if snapshot:
-            success, detail = await send_whatsapp_image(
-                alert_settings.whatsapp_phone_number_id,
-                alert_settings.whatsapp_access_token,
-                alert_settings.whatsapp_recipient_number,
-                snapshot,
-                caption,
-            )
-        else:
-            success, detail = await send_whatsapp_message(
-                alert_settings.whatsapp_phone_number_id,
-                alert_settings.whatsapp_access_token,
-                alert_settings.whatsapp_recipient_number,
-                caption,
-            )
-        if not success:
-            logger.warning("Failed to send WhatsApp alert: %s", detail)
+        ids = (alert_settings.whatsapp_phone_number_id, alert_settings.whatsapp_access_token,
+               alert_settings.whatsapp_recipient_number)
+        sends.append(_with_retries("WhatsApp", send_whatsapp_image, *ids, snapshot, caption) if snapshot
+                     else _with_retries("WhatsApp", send_whatsapp_message, *ids, caption))
+    delivered = await asyncio.gather(*sends) if sends else []
 
     if decision.webhook_url:
         await _call_webhook(decision.webhook_url, event, urgent)
 
     await _maybe_send_push(event, subject, urgent=urgent)
+    if delivered and not any(delivered) and _last_alert_at.get(key) == now:
+        # Every messaging channel failed: don't let this hold back the next alert.
+        if last is None:
+            _last_alert_at.pop(key, None)
+        else:
+            _last_alert_at[key] = last
 
 
 async def _mark_priority(event: Event, priority: int) -> None:

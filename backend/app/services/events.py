@@ -45,7 +45,8 @@ async def _deliver(event: Event) -> None:
     from app.services.alerts import maybe_send_alert
 
     try:
-        await asyncio.wait_for(maybe_send_alert(event), timeout=180)
+        # Room for each channel's retries (5 s, then 30 s) on top of the sends.
+        await asyncio.wait_for(maybe_send_alert(event), timeout=300)
     except asyncio.TimeoutError:
         logger.warning("Alert delivery for event %s timed out", event.id)
     except Exception:

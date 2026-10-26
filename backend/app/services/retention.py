@@ -38,6 +38,24 @@ EVENT_RETENTION_DAYS = 90
 # main is kept for the entire retention period. Keep this >= the scrub window.
 PLAYBACK_COPY_KEEP_MINUTES = 60
 
+# Free space kept on every disk that holds recordings, whatever else shares it
+# (Docker images, the OS, other apps): the oldest footage is removed first, so
+# recording never has to pause for space. The GB cap above only counts
+# recordings and can't see the disk filling up from elsewhere.
+FREE_FLOOR_BYTES = int(float(os.environ.get("LIGHTNVR_MIN_FREE_GB", "15")) * 1024**3)
+FREE_FLOOR_PERCENT = 5.0
+FREE_HYSTERESIS_BYTES = 2 * 1024**3  # free a little extra, so it doesn't trim one file every check
+FREE_CHECK_SECONDS = 300
+# Footage newer than this is never removed to make room: if only recent
+# recordings are left, the disk is full of something else - say so instead.
+PROTECT_RECENT_HOURS = 24
+_free_lock = asyncio.Lock()
+_full_of_other_warned_at: datetime | None = None
+
+
+def free_floor(total_bytes: int) -> int:
+    return max(FREE_FLOOR_BYTES, int(total_bytes * FREE_FLOOR_PERCENT / 100))
+
 
 def _remove_files_sync(paths: list[str]) -> None:
     for path in paths:
@@ -323,7 +341,93 @@ async def _enforce_storage_cap(max_storage_gb: int) -> None:
             logger.info("Retention: removed %d recording(s) to stay under %dGB cap", removed, max_storage_gb)
 
 
+def _tier_dirs() -> dict[str, str]:
+    dirs = {"cache": storage_manager.cache_dir()}
+    if storage_manager.is_primary_available():
+        dirs["primary"] = storage_manager.primary_dir()
+    if storage_manager.is_backup_available():
+        dirs["backup"] = storage_manager.backup_dir()
+    return dirs
+
+
+def _device_groups(dirs: dict[str, str]) -> list[tuple[str, list[str]]]:
+    """[(a dir on the disk, [tiers stored on that disk])] - tiers on the same
+    disk (the usual single-disk install) are trimmed together."""
+    groups: dict[int, tuple[str, list[str]]] = {}
+    for tier, path in dirs.items():
+        try:
+            dev = os.stat(path).st_dev
+        except OSError:
+            continue
+        groups.setdefault(dev, (path, []))[1].append(tier)
+    return list(groups.values())
+
+
+async def ensure_free_space() -> int:
+    """Remove the oldest recordings on any recordings disk that has less than
+    the free-space floor left. Returns how many were removed. Safe to call
+    often (the retention loop, and the recorder the moment space runs short)."""
+    global _full_of_other_warned_at
+    removed = freed = 0
+    async with _free_lock:
+        for path, tiers in _device_groups(_tier_dirs()):
+            try:
+                usage = await asyncio.to_thread(shutil.disk_usage, path)
+            except OSError:
+                continue
+            floor = free_floor(usage.total)
+            if usage.free >= floor:
+                continue
+            need = floor + FREE_HYSTERESIS_BYTES - usage.free
+            protect = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=PROTECT_RECENT_HOURS)
+            async with AsyncSessionLocal() as db:
+                oldest = (await db.execute(
+                    select(Recording).where(Recording.storage_tier.in_(tiers))
+                    .order_by(Recording.started_at.asc()).limit(500)
+                )).scalars().all()
+                for rec in oldest:
+                    if need <= 0:
+                        break
+                    started = rec.started_at.replace(tzinfo=None) if rec.started_at.tzinfo else rec.started_at
+                    if started >= protect:
+                        now = datetime.now(timezone.utc)
+                        if _full_of_other_warned_at is None or now - _full_of_other_warned_at > timedelta(hours=6):
+                            _full_of_other_warned_at = now
+                            await emit_event(
+                                None, "system",
+                                f"The recordings disk is almost full ({usage.free // 1024**3} GB free) with only the "
+                                f"last {PROTECT_RECENT_HOURS} h of recordings left - something else is filling it. "
+                                "Free up space (e.g. 'docker image prune -a') or recording will pause.",
+                            )
+                        break
+                    size = rec.size_bytes or 0
+                    await purge_recording(db, rec)
+                    need -= size
+                    freed += size
+                    removed += 1
+                if removed:
+                    await db.commit()
+    if removed:
+        logger.warning("Retention: removed %d oldest recording(s) (%.1f GB) to keep the disk's free-space floor",
+                       removed, freed / 1024**3)
+    return removed
+
+
+async def free_space_loop() -> None:
+    """Every few minutes - a disk can fill much faster than the 30-minute
+    retention pass (an update pulling images, another app)."""
+    while True:
+        try:
+            await ensure_free_space()
+        except Exception:
+            logger.exception("Free-space check failed")
+        await asyncio.sleep(FREE_CHECK_SECONDS)
+
+
 async def _check_low_storage() -> None:
+    """Warn when the recordings disk runs low - once, then again only if it
+    gets 2 points worse or a day has passed, and once more when it recovers.
+    (It used to repeat on every 30-minute pass.)"""
     # Primary is the destination that matters long-term; fall back to cache
     # so the alert still reflects somewhere real if primary is unreachable
     # (storage_manager already alerts separately on that unavailability).
@@ -338,13 +442,30 @@ async def _check_low_storage() -> None:
 
     async with AsyncSessionLocal() as db:
         alert_settings = await db.get(AlertSettings, 1)
-
-    if alert_settings and alert_settings.low_storage_alerts_enabled and percent_free < alert_settings.low_storage_threshold_percent:
-        await emit_event(
-            None,
-            "low_storage",
-            f"Storage is low: {percent_free:.1f}% free ({usage.free // (1024**3)}GB remaining)",
-        )
+        last = (await db.execute(
+            select(Event).where(Event.type == "low_storage", Event.camera_id.is_(None))
+            .order_by(Event.id.desc()).limit(1)
+        )).scalars().first()
+    if not (alert_settings and alert_settings.low_storage_alerts_enabled):
+        return
+    threshold = alert_settings.low_storage_threshold_percent
+    facts = (last.payload or {}) if last is not None else {}
+    last_pct, cleared = facts.get("percent_free"), facts.get("cleared", False)
+    warned = last is not None and not cleared and last_pct is not None
+    if percent_free < threshold:
+        created = last.created_at.replace(tzinfo=None) if last is not None else None
+        stale = created is None or datetime.now(timezone.utc).replace(tzinfo=None) - created > timedelta(hours=24)
+        if not warned or stale or last_pct - percent_free >= 2:
+            floor_gb = free_floor(usage.total) // 1024**3
+            await emit_event(
+                None, "low_storage",
+                f"Storage is low: {percent_free:.1f}% free ({usage.free // (1024**3)}GB remaining). The oldest "
+                f"recordings are removed automatically to keep {floor_gb}GB free, so recording carries on.",
+                payload={"percent_free": round(percent_free, 1)},
+            )
+    elif warned and percent_free >= threshold + 2:
+        await emit_event(None, "low_storage", f"Storage is OK again: {percent_free:.1f}% free.",
+                         payload={"percent_free": round(percent_free, 1), "cleared": True})
 
 
 async def retention_loop() -> None:

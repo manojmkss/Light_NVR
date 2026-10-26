@@ -11,6 +11,12 @@ services:
   ai-describe:
     image: ollama/ollama:${DESCRIBER_OLLAMA_VERSION:-0.40.2}
     container_name: lightnvr-ai-describe
+    # Docker's own log for this container, capped (it otherwise grows forever).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     cpus: ${DESCRIBE_CPUS:-2}
     cpu_shares: 256  # a quarter of the default weight: recording comes first

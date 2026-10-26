@@ -219,6 +219,8 @@ configure_ai_service() {
 #   DESCRIBER=off   in .env: never add it
 
 DESCRIBE_COMPOSE_FILES="docker-compose.describe.yml docker-compose.describe.nvidia.yml"
+DESCRIBER_IMAGE="ollama/ollama:0.40.2"  # keep in step with docker-compose.describe.yml
+DESCRIBER_MIN_FREE_GB=25  # its image (~9 GB unpacked) + a model, and room to spare for recordings
 DESCRIBER_MIN_CORES=4
 DESCRIBER_MIN_RAM_MB=7500  # "8 GB" machines report a little under 8000
 
@@ -245,6 +247,11 @@ configure_describer() {
   elif [[ "$ram" -lt "$DESCRIBER_MIN_RAM_MB" ]]; then
     DESCRIBER_STATE="too_small"
     DESCRIBER_WHY="needs at least 8 GB of RAM; this machine has $(( (ram + 512) / 1024 )) GB"
+  elif ! _describer_has_disk; then
+    # Recordings come first: never let the describer's download eat the
+    # space they need. (Already installed = already paid for, so kept.)
+    DESCRIBER_STATE="too_small"
+    DESCRIBER_WHY="needs about 12 GB of disk; only ${DESCRIBER_FREE_GB} GB is free (recordings need it more)"
   else
     DESCRIBER_STATE="on"
     out="$out:docker-compose.describe.yml"
@@ -255,6 +262,37 @@ configure_describer() {
     [[ -n "$(env_get DESCRIBE_MEM_LIMIT)" ]] || env_set DESCRIBE_MEM_LIMIT "$([[ "$ram" -ge 14000 ]] && echo 8g || echo 5g)"
   fi
   if [[ "$out" == "docker-compose.yml" ]]; then env_unset COMPOSE_FILE; else env_set COMPOSE_FILE "$out"; fi
+}
+
+_describer_has_disk() {
+  local dk=("${DOCKER[@]:-docker}") root
+  if "${dk[@]}" image inspect "$DESCRIBER_IMAGE" >/dev/null 2>&1; then return 0; fi
+  root="$("${dk[@]}" info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [[ -d "$root" ]] || root="/"
+  DESCRIBER_FREE_GB="${LIGHTNVR_FREE_GB:-$(df -Pk "$root" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}')}"
+  [[ "${DESCRIBER_FREE_GB:-0}" -ge "$DESCRIBER_MIN_FREE_GB" ]]
+}
+
+# prune_old_images - after a healthy update: remove LightNVR (and describer)
+# images no container uses any more - each update otherwise leaves ~3 GB of
+# old versions behind on the disk recordings live on - plus dangling layers
+# and old build cache. Never touches an image a container uses.
+prune_old_images() {
+  local dk=("${DOCKER[@]:-docker}") in_use img before after removed=0
+  before="$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}')"
+  in_use="$("${dk[@]}" ps -a --format '{{.Image}}' 2>/dev/null | sort -u || true)"
+  while IFS= read -r img; do
+    [[ -n "$img" ]] || continue
+    if ! grep -qxF "$img" <<< "$in_use"; then
+      "${dk[@]}" image rm "$img" >/dev/null 2>&1 && removed=$((removed + 1))
+    fi
+  done < <("${dk[@]}" image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+           | grep -E '^(ghcr\.io/manojmkss/light_nvr-|ollama/ollama:)' || true)
+  "${dk[@]}" image prune -f >/dev/null 2>&1 || true
+  "${dk[@]}" builder prune -f --filter until=168h >/dev/null 2>&1 || true
+  after="$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}')"
+  PRUNED_IMAGES="$removed"
+  PRUNED_GB="$(( (${after:-0} - ${before:-0}) / 1048576 ))"
 }
 
 # write_hardware_report - what the scripts saw, for the AI engine card to

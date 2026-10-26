@@ -11,6 +11,12 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: lightnvr-backend
+    # Docker's own log for this container, capped (it otherwise grows forever).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     # A tiny init (tini) as PID 1: reaps ffmpeg/ffprobe children whose parent
     # died, so a long uptime can't pile up zombies, and forwards stop signals.
@@ -98,6 +104,12 @@ services:
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
     container_name: lightnvr-frontend
+    # Docker's own log for this container, capped (it otherwise grows forever).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     # Static file server - it only ever needs a few MB, so this is purely a
     # guard against something pathological.
@@ -110,6 +122,12 @@ services:
   nginx:
     image: nginx:1.27-alpine
     container_name: lightnvr-nginx
+    # Docker's own log for this container, capped (it otherwise grows forever).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     # Proxying is streamed, not buffered (see the nginx config), so this stays
     # small however many viewers are connected.

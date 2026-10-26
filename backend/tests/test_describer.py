@@ -159,13 +159,14 @@ def test_local_describer_is_spent_on_people_and_vehicles_only():
 # ── the update script ────────────────────────────────────────────────────────
 
 
-def _describer(tmp_path, env_text, cores, ram_mb, nvidia=False):
+def _describer(tmp_path, env_text, cores, ram_mb, nvidia=False, free_gb=100):
     env = tmp_path / ".env"
     env.write_text(env_text)
     script = textwrap.dedent(f"""
         set -euo pipefail
         ENV_FILE="{env}"
-        export LIGHTNVR_CORES={cores} LIGHTNVR_RAM_MB={ram_mb}
+        export LIGHTNVR_CORES={cores} LIGHTNVR_RAM_MB={ram_mb} LIGHTNVR_FREE_GB={free_gb}
+        DOCKER=(false)  # no describer image already pulled
         HW_NVIDIA={str(nvidia).lower()} HW_NVIDIA_TOOLKIT={str(nvidia).lower()}
         source "{LIB_ENV}"
         configure_describer
@@ -201,3 +202,10 @@ def test_update_respects_describer_off_and_gives_it_the_nvidia_gpu(tmp_path):
     env, _ = _describer(tmp_path, "", cores=8, ram_mb=32000, nvidia=True)
     assert env["COMPOSE_FILE"].endswith("docker-compose.describe.yml:docker-compose.describe.nvidia.yml")
     assert env["DESCRIBE_MEM_LIMIT"] == "8g"
+
+
+@needs_bash
+def test_update_never_lets_the_describer_take_the_space_recordings_need(tmp_path):
+    env, out = _describer(tmp_path, "COMPOSE_FILE=docker-compose.yml" + chr(10), cores=4, ram_mb=14000, free_gb=18)
+    assert "STATE=too_small" in out and "only 18 GB is free" in out
+    assert "describe" not in env.get("COMPOSE_FILE", "")

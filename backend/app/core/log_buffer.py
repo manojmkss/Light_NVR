@@ -1,5 +1,8 @@
 import logging
+import logging.handlers
+import os
 import re
+import sys
 from collections import deque
 
 # Ring buffer of recent formatted log lines, served by /api/system/logs so an
@@ -44,17 +47,53 @@ class _BufferHandler(logging.Handler):
             pass
 
 
+class _ScrubbingFormatter(logging.Formatter):
+    """Credentials and tokens never reach a log, whichever logger wrote it."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return scrub_credentials(super().format(record))
+
+
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_DIR = os.environ.get("LIGHTNVR_LOG_DIR", "/data/logs")
+
+
 def install_log_buffer() -> None:
-    """Attach the ring-buffer handler to the root logger. Called from main.py
-    at import time - which runs AFTER uvicorn applies its own logging config,
-    so this handler survives instead of being wiped by that dictConfig.
+    """Where the backend's own messages go. Called from main.py at import
+    time - which runs AFTER uvicorn applies its own logging config, so these
+    handlers survive instead of being wiped by that dictConfig.
+
+    - the in-memory ring buffer (Settings -> System logs);
+    - stdout, so `docker logs` shows them (before this, only uvicorn's own
+      lines ever reached it: every warning and error was invisible there);
+    - a rotating file in the data volume (5 x 10 MB) that survives updates,
+      which replace the container and its Docker log with it.
     """
+    root = logging.getLogger()
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
     handler = _BufferHandler()
     handler.setLevel(logging.INFO)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    )
-    logging.getLogger().addHandler(handler)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+    root.addHandler(handler)
+
+    out = logging.StreamHandler(sys.stdout)
+    out.setLevel(logging.INFO)
+    out.setFormatter(_ScrubbingFormatter(LOG_FORMAT))
+    root.addHandler(out)
+
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        to_file = logging.handlers.RotatingFileHandler(
+            os.path.join(LOG_DIR, "lightnvr.log"), maxBytes=10 * 1024 * 1024, backupCount=4, encoding="utf-8"
+        )
+        to_file.setLevel(logging.INFO)
+        to_file.setFormatter(_ScrubbingFormatter(LOG_FORMAT))
+        root.addHandler(to_file)
+        # uvicorn's own errors don't reach the root logger; keep them too.
+        logging.getLogger("uvicorn.error").addHandler(to_file)
+    except OSError:
+        pass  # no writable data dir (tests, a read-only dev checkout): stdout still has it all
     logging.getLogger("uvicorn.access").addFilter(_AccessLogScrubber())
 
 

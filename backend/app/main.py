@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
     from app.services.config_backup import backup_loop
     from app.services.db_maintenance import db_maintenance_loop
     from app.services.recovery import cleanup_orphaned_files
-    from app.services.retention import retention_loop
+    from app.services.retention import free_space_loop, retention_loop
     from app.services.storage_manager import storage_manager
     from app.services.storage_mover import storage_mover_loop
     from app.services.tls_manager import cert_expiry_check_loop, ensure_cert_exists, letsencrypt_renewal_loop
@@ -106,11 +106,14 @@ async def lifespan(app: FastAPI):
     ensure_cert_exists()
 
     await storage_manager.start()
-    await cleanup_orphaned_files(storage_manager.cache_dir())
+    # Lists what a crash left in the cache before any recorder starts, then
+    # repairs and keeps those recordings in the background.
+    salvage_task = await cleanup_orphaned_files(storage_manager.cache_dir())
     from app.services.transcode_cache import cleanup_on_startup as cleanup_transcode_cache
     cleanup_transcode_cache()  # regenerable browser-playback transcodes; clear stale ones
     await supervisor.start_all()
     retention_task = asyncio.create_task(retention_loop())
+    free_space_task = asyncio.create_task(free_space_loop())
     mover_task = asyncio.create_task(storage_mover_loop())
     backup_task = asyncio.create_task(backup_loop())
     optimize_task = asyncio.create_task(db_maintenance_loop())
@@ -149,6 +152,7 @@ async def lifespan(app: FastAPI):
 
     background_tasks = [
         retention_task,
+        free_space_task,
         mover_task,
         backup_task,
         optimize_task,
@@ -159,7 +163,7 @@ async def lifespan(app: FastAPI):
         mode_task,
         incident_task,
         face_backfill_task,
-    ]
+    ] + ([salvage_task] if salvage_task else [])
     for task in background_tasks:
         task.cancel()
     await asyncio.gather(*background_tasks, return_exceptions=True)
@@ -176,7 +180,7 @@ async def lifespan(app: FastAPI):
     await hq_stream_manager.shutdown()
 
 
-app = FastAPI(title="LightNVR API", version="0.4.12", lifespan=lifespan)
+app = FastAPI(title="LightNVR API", version="0.4.13", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

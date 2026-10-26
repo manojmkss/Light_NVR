@@ -5,7 +5,7 @@ import shutil
 import time
 from dataclasses import dataclass
 
-from app.services.status_tracker import mark_offline
+from app.services.status_tracker import heartbeat, mark_offline
 from app.services.storage_manager import storage_manager
 
 logger = logging.getLogger(__name__)
@@ -227,6 +227,7 @@ class SegmentBuffer:
                 if not line:
                     break
                 self.last_segment_at = time.monotonic()
+                heartbeat(self.camera_id)
                 arrived = time.time()
                 parsed = self._parse_line(line)
                 if parsed is None:

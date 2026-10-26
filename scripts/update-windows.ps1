@@ -170,7 +170,18 @@ if (-not $DryRun) {
         if ($LASTEXITCODE -eq 0) { $ready = $true; break }
         Start-Sleep -Seconds 3
     }
-    if ($ready) { Write-Step "Update complete - backend healthy." }
+    if ($ready) {
+        Write-Step "Update complete - backend healthy."
+        # Old LightNVR images no container uses any more (each update leaves
+        # ~3 GB behind otherwise), dangling layers and old build cache.
+        $inUse = @(docker ps -a --format '{{.Image}}')
+        $old = @(docker image ls --format '{{.Repository}}:{{.Tag}}' | Where-Object {
+            $_ -match '^(ghcr\.io/manojmkss/light_nvr-|ollama/ollama:)' -and $inUse -notcontains $_ })
+        foreach ($img in $old) { docker image rm $img *> $null }
+        docker image prune -f *> $null
+        docker builder prune -f --filter until=168h *> $null
+        if ($old.Count) { Write-Step "Removed $($old.Count) old image(s) to free disk space." }
+    }
     else { Write-Warn2 "Health check didn't pass within 2 minutes - check 'docker compose logs backend'." }
 }
 

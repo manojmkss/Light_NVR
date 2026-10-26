@@ -273,6 +273,7 @@ class ContinuousRecorder:
         # supervisor's "recording stalled" check.
         self.started_at = time.monotonic()
         self.last_segment_at = 0.0
+        self._exited = asyncio.Event()  # run() has returned (stop() waits for it)
 
     async def _resolve_audio_mode(self) -> str:
         if self._audio_mode is None:
@@ -308,6 +309,12 @@ class ContinuousRecorder:
             pass
 
     async def run(self) -> None:
+        try:
+            await self._run()
+        finally:
+            self._exited.set()
+
+    async def _run(self) -> None:
         backoff = 2
         while not self._stop.is_set():
             try:
@@ -326,7 +333,7 @@ class ContinuousRecorder:
                     await mark_offline(self.camera_id)
                 except Exception:
                     logger.exception("mark_offline also failed for camera %s", self.camera_id)
-                await asyncio.sleep(backoff)
+                await self._pause(backoff)
                 backoff = min(backoff * 2, 60)
 
     async def _run_one_segment(self, backoff: int) -> int:
@@ -334,10 +341,20 @@ class ContinuousRecorder:
         reset to the base value on success, doubled (capped) on failure."""
         has_room, detail = await storage_manager.cache_has_room()
         if not has_room:
+            # Old footage goes before new footage stops: trim to the
+            # free-space floor and look again before pausing.
+            from app.services.retention import ensure_free_space
+
+            try:
+                if await ensure_free_space():
+                    has_room, detail = await storage_manager.cache_has_room()
+            except Exception:
+                logger.exception("Could not make room for camera %s", self.camera_id)
+        if not has_room:
             if not self._paused_for_space:
                 self._paused_for_space = True
                 await emit_event(self.camera_id, "low_storage", f"Recording paused: {detail}")
-            await asyncio.sleep(30)
+            await self._pause(30)
             return backoff
         if self._paused_for_space:
             self._paused_for_space = False
@@ -363,6 +380,12 @@ class ContinuousRecorder:
             self._proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
             )
+            if self._stop.is_set():
+                # stop() ran while this was starting: it has already looked
+                # for processes to end, so end this one here.
+                for proc in (self._proc, self._sub_proc):
+                    if proc and proc.returncode is None:
+                        proc.terminate()
             _, stderr = await asyncio.wait_for(self._proc.communicate(), timeout=SEGMENT_SECONDS + 30)
         except asyncio.TimeoutError:
             if self._proc:
@@ -376,7 +399,13 @@ class ContinuousRecorder:
         ended_at = datetime.now(timezone.utc)
 
         if self._stop.is_set():
-            active_segment_registry.clear(self.camera_id)
+            # Stopped part-way (an update, a restart, a camera edit): the
+            # minutes recorded so far are a valid file - keep them. Quick path
+            # (no remux): the container only has seconds left.
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                self._track(self._finalize_segment(output_path, sub_path, started_at, ended_at, quick=True))
+            else:
+                active_segment_registry.clear(self.camera_id)
             return backoff
 
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
@@ -388,9 +417,7 @@ class ContinuousRecorder:
             # remux here would insert a multi-second gap into continuous
             # coverage every segment. The fragmented file is already valid, so
             # nothing is lost if the process dies before it finishes.
-            task = asyncio.create_task(self._finalize_segment(output_path, sub_path, started_at, ended_at))
-            self._finalize_tasks.add(task)
-            task.add_done_callback(self._finalize_tasks.discard)
+            self._track(self._finalize_segment(output_path, sub_path, started_at, ended_at))
             return 2
 
         active_segment_registry.clear(self.camera_id)
@@ -400,16 +427,35 @@ class ContinuousRecorder:
         # (401 Unauthorized, Connection refused, timeout...). mark_offline
         # scrubs any embedded credentials before storing it.
         await mark_offline(self.camera_id, f"Recording failed: {stderr_tail[-200:]}" if stderr_tail else None)
-        await asyncio.sleep(backoff)
+        await self._pause(backoff)
         return min(backoff * 2, 60)
 
-    async def _finalize_segment(self, path: str, sub_path: str | None, started_at: datetime, ended_at: datetime) -> None:
+    async def _pause(self, seconds: float) -> None:
+        """Sleep, but wake at once on stop - a stop must not wait out a backoff."""
+        try:
+            await asyncio.wait_for(self._stop.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+
+    def _track(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._finalize_tasks.add(task)
+        task.add_done_callback(self._finalize_tasks.discard)
+
+    async def _finalize_segment(self, path: str, sub_path: str | None, started_at: datetime, ended_at: datetime,
+                                quick: bool = False) -> None:
         """Make the just-closed segment seekable, finalize its H.264 playback
         copy, then register it. Runs off the recording loop so it never delays
-        the next segment."""
+        the next segment. `quick` (stopping): register the file as it is -
+        playable, just not seekable until the next start repairs it."""
         try:
-            await _remux_to_seekable(path)
-            playback_path = await _finalize_playback_copy(sub_path)
+            if quick:
+                if sub_path:
+                    _remove_quietly(sub_path)
+                playback_path = None
+            else:
+                await _remux_to_seekable(path)
+                playback_path = await _finalize_playback_copy(sub_path)
             started_at = footage_start(started_at, ended_at, await probe_duration(path))
             await register_recording(
                 self.camera_id, path, "continuous", started_at, ended_at, playback_path=playback_path
@@ -421,19 +467,24 @@ class ContinuousRecorder:
 
     async def stop(self) -> None:
         self._stop.set()
-        active_segment_registry.clear(self.camera_id)
         for proc in (self._proc, self._sub_proc):
             if proc and proc.returncode is None:
-                proc.terminate()
+                proc.terminate()  # ffmpeg closes the file cleanly on SIGTERM
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except asyncio.TimeoutError:
                     proc.kill()
-        # Let any in-flight finalizations finish so a stop/restart doesn't drop
-        # the segment that was just recorded (its DB row would otherwise never
-        # be written).
+        # The loop saves the part-recorded segment on its way out - wait for
+        # it to get that far, then for every save in flight, so a stop or
+        # restart never drops footage (its DB row would otherwise never be
+        # written, and the next start would treat the file as debris).
+        try:
+            await asyncio.wait_for(self._exited.wait(), timeout=8)
+        except asyncio.TimeoutError:
+            logger.warning("Camera %s: recorder loop slow to stop", self.camera_id)
         if self._finalize_tasks:
             await asyncio.gather(*self._finalize_tasks, return_exceptions=True)
+        active_segment_registry.clear(self.camera_id)
 
 
 class MotionRecorder:

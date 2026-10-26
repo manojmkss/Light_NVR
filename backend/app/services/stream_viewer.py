@@ -9,7 +9,7 @@ import cv2
 
 from app.services.frame_bus import frame_bus
 from app.services.motion_detector import MotionDetector, MotionSample
-from app.services.status_tracker import mark_offline, mark_online
+from app.services.status_tracker import heartbeat, mark_offline, mark_online
 from app.services.stream_stats import stream_stats
 from app.services.tamper import TamperDetector
 
@@ -72,6 +72,10 @@ class StreamViewer:
         # stopped making progress.
         self.last_activity = time.monotonic()
         self.last_frame_at = 0.0
+        # When pictures started flowing again after the last (re)connect: the
+        # health check measures "nothing recorded" from here, not from before
+        # an outage.
+        self.connected_at = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
@@ -230,10 +234,12 @@ class StreamViewer:
 
                 if not marked_online:
                     marked_online = True
+                    self.connected_at = time.monotonic()
                     self._schedule(mark_online(self.camera_id))
 
                 frame_bus.set_raw(self.camera_id, frame, captured_at)
                 self.last_activity = self.last_frame_at = time.monotonic()
+                heartbeat(self.camera_id)
 
                 if self._detector is not None:
                     sample = self._detector.process(frame, captured_at)

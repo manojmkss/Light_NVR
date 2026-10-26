@@ -194,13 +194,15 @@ class CameraWorker:
         if rec is not None and v is not None and now - v.last_frame_at < 60:
             # Camera is delivering pictures, so recording should be producing
             # segments too: a full segment + generous slack without one = stalled.
-            since = now - (rec.last_segment_at or rec.started_at)
+            # Counted from when the camera came back, if later: after an outage
+            # the recorder needs a full segment before it has saved anything.
+            since = now - max(rec.last_segment_at or rec.started_at, getattr(v, "connected_at", 0.0))
             if since > SEGMENT_SECONDS * 2 + 120:
                 return False, f"no recording saved for {int(since // 60)} min while the camera is online"
         mr = self._motion_recorder
         if mr is not None and v is not None and now - v.last_frame_at < 60:
             buf = mr.buffer
-            since = now - (buf.last_segment_at or buf.started_at)
+            since = now - max(buf.last_segment_at or buf.started_at, getattr(v, "connected_at", 0.0))
             if since > self.BUFFER_STALL_SECONDS:
                 return False, f"recording buffer idle for {int(since)}s while the camera is online"
         return True, "ok"
@@ -217,6 +219,10 @@ class CameraWorker:
             except Exception as exc:
                 logger.warning("Camera %s: stopping %s failed (%s)", self.camera_id, name, exc or type(exc).__name__)
 
+        # Saving the part-recorded continuous segment matters most, and the
+        # container only allows ~45 s in all: start it now, alongside the rest.
+        rec_stop = (asyncio.create_task(step("continuous recorder", self._continuous_recorder.stop(), 20))
+                    if self._continuous_recorder else None)
         if self._stream_viewer:
             await step("live stream", self._stream_viewer.stop(), 10)
         if self._session_grace is not None:
@@ -237,8 +243,8 @@ class CameraWorker:
                 logger.warning("Timed out finalising motion event for camera %s on stop", self.camera_id)
         if self._announce_tasks:
             await asyncio.wait(list(self._announce_tasks), timeout=10)
-        if self._continuous_recorder:
-            await step("continuous recorder", self._continuous_recorder.stop(), 20)
+        if rec_stop is not None:
+            await rec_stop
         self._release_face_stream()
         for task in self._tasks:
             task.cancel()

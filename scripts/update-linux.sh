@@ -244,7 +244,14 @@ if ! $DRY_RUN; then
   done
   $ready && log "Update complete - backend healthy." \
          || warn "Health check didn't pass within 2 minutes - check '${DOCKER[*]} compose logs backend'."
-  if $ready; then write_hardware_report; fi
+  if $ready; then
+    write_hardware_report
+    # Only after a healthy update - until then the old images are the way back.
+    prune_old_images
+    if [[ "${PRUNED_IMAGES:-0}" -gt 0 ]]; then
+      log "Removed ${PRUNED_IMAGES} old image(s), freeing about ${PRUNED_GB} GB for recordings."
+    fi
+  fi
 fi
 
 echo
