@@ -326,6 +326,11 @@ if ! $DRY_RUN; then
   done
   $ready || warn "Health check didn't succeed within 2 minutes - check 'docker compose logs backend'."
   if $ready; then write_hardware_report; fi
+  install_guardian "$REPO_ROOT"
+  case "$GUARDIAN_STATE" in
+    on) log "Guardian: running (restarts what hangs, keeps the disk from filling)." ;;
+    unsupported) warn "Guardian: not installed - $GUARDIAN_WHY." ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------

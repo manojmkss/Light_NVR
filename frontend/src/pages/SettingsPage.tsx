@@ -51,6 +51,7 @@ import type {
 import { AISettingsTab } from "../components/AISettingsTab";
 import { SecurityModesTab } from "../components/SecurityModesTab";
 import { StorageHealthCards } from "../components/StorageHealthCards";
+import { HealthStorageCard } from "../components/HealthStorageCard";
 import { useAuth } from "../context/AuthContext";
 import { useSettings } from "../context/SettingsContext";
 
@@ -586,6 +587,7 @@ export function StorageTab() {
         cache_max_gb: config.cache_max_gb,
         default_retention_days: config.default_retention_days,
         max_storage_gb: config.max_storage_gb,
+        snapshot_retention_days: config.snapshot_retention_days,
         primary_type: config.primary_type,
         primary_remote_spec: config.primary_remote_spec,
         primary_username: config.primary_username,
@@ -681,6 +683,20 @@ export function StorageTab() {
           <p style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 6, marginBottom: 0 }}>
             Safety backstop across all cameras combined - oldest recordings are deleted first if exceeded, regardless
             of individual retention settings.
+          </p>
+        </div>
+        <div className="field">
+          <label>Keep alert pictures for (days)</label>
+          <input
+            type="number"
+            min={1}
+            max={3650}
+            value={config.snapshot_retention_days}
+            onChange={(e) => update("snapshot_retention_days", Math.max(1, Number(e.target.value) || 30))}
+          />
+          <p style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 6, marginBottom: 0 }}>
+            The pictures attached to events and visits. The event history itself (what happened, when) is kept for 90
+            days; recordings follow the retention above.
           </p>
         </div>
       </div>
@@ -1972,6 +1988,8 @@ function SystemTab() {
           </div>
         )}
       </div>
+
+      <HealthStorageCard />
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Logs & diagnostics</h3>

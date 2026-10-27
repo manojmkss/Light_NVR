@@ -592,9 +592,10 @@ class CameraWorker:
             inc, member = incident_manager.current(getattr(session, "incident", None)), getattr(session, "member", None)
             summary = None
             if s is None or getattr(s, "event_summary_enabled", True) is not False:
-                # Already a multi-camera visit: its visit summary gets the description.
-                multi = inc is not None and len(inc.camera_ids) > 1
-                summary = await session.build_summary(clip, clip_parts=parts, describe=not multi)
+                # Sent straight away, without the (slow) AI description: the
+                # visit review describes the whole visit, from the main
+                # recording, once the system is quiet (visit_review.py).
+                summary = await session.build_summary(clip, clip_parts=parts, describe=False)
             own_summary = True
             names = [i["name"] for i in session.identities()]
             if inc is not None and member is not None:

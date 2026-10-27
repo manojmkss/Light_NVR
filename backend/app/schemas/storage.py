@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 StorageType = str  # "local" | "smb" | "nfs"
 
@@ -8,6 +8,7 @@ class StorageConfigOut(BaseModel):
     cache_max_gb: int
     default_retention_days: int
     max_storage_gb: int
+    snapshot_retention_days: int = 30
 
     primary_type: StorageType
     primary_path: str
@@ -29,6 +30,7 @@ class StorageConfigUpdate(BaseModel):
     cache_max_gb: int | None = None
     default_retention_days: int | None = None
     max_storage_gb: int | None = None
+    snapshot_retention_days: int | None = Field(default=None, ge=1, le=3650)
 
     primary_type: StorageType | None = None
     primary_remote_spec: str | None = None

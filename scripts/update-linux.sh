@@ -204,6 +204,12 @@ fi
 # tags, so an image can match this checkout only when HEAD *is* such a tag.
 # Blindly pulling would otherwise "succeed" against a stale `:latest` and
 # silently restart the OLD build over the new source, with no error to notice.
+# The guardian must not "recover" containers this update is replacing.
+if ! $DRY_RUN; then
+  guardian_pause "$REPO_ROOT" 1800
+  trap 'guardian_resume "$REPO_ROOT"' EXIT
+fi
+
 pinned="$(env_get LIGHTNVR_VERSION)"
 tag_at_head="$(git tag --points-at HEAD 2>/dev/null | grep -E '^v[0-9]' | sort -V | tail -1 || true)"
 
@@ -252,6 +258,16 @@ if ! $DRY_RUN; then
       log "Removed ${PRUNED_IMAGES} old image(s), freeing about ${PRUNED_GB} GB for recordings."
     fi
   fi
+  # Healthy or not: from here the guardian looks after it (and recovers it
+  # if this update left it broken).
+  guardian_resume "$REPO_ROOT"
+  install_guardian "$REPO_ROOT"
+  case "$GUARDIAN_STATE" in
+    on) log "Guardian: running (restarts what hangs, keeps the disk from filling) - status in Settings -> System." ;;
+    unsupported) warn "Guardian: not installed - $GUARDIAN_WHY." ;;
+  esac
+else
+  log "[DRY RUN] Would install/update the lightnvr-guardian service (GUARDIAN=off in .env to skip)."
 fi
 
 echo

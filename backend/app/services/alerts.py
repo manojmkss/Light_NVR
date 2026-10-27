@@ -49,6 +49,7 @@ _SUBJECTS = {
     "arrival": "LightNVR: person arrived",
     "incident_summary": "LightNVR: visit summary",
     "package": "LightNVR: package",
+    "guardian": "LightNVR guardian",
 }
 # Urgent alerts not acknowledged within this long are sent again (once).
 ESCALATE_AFTER_SECONDS = 120
@@ -94,8 +95,10 @@ async def maybe_send_alert(event: Event, escalation: bool = False) -> None:
     elif event.type == "camera_error":
         if not alert_settings.offline_alerts_enabled:
             return
-    elif event.type == "system":
-        pass  # rare and always high-value (DB corruption, backup failure, cert expiry) - no setting gates this
+    elif event.type in ("system", "guardian"):
+        # Rare and always high-value (DB corruption, backup failure, cert
+        # expiry, the host guardian recovering something) - no setting gates this.
+        cooldown = _SUMMARY_COOLDOWN_SECONDS
     else:
         return
 
@@ -109,7 +112,9 @@ async def maybe_send_alert(event: Event, escalation: bool = False) -> None:
         cooldown = decision.cooldown_s
     urgent = decision.urgent or (event.priority or 0) >= 2
 
-    key = (event.type, event.camera_id)
+    # One visit message per visit: visits reviewed one after another must not
+    # hold each other back.
+    key = (event.type, f"visit:{event.incident_id}" if event.type == "incident_summary" else event.camera_id)
     now = datetime.now(timezone.utc)
     last = _last_alert_at.get(key)
     if not urgent and not escalation and last and (now - last).total_seconds() < cooldown:

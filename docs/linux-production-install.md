@@ -339,15 +339,58 @@ containers, so a crash or host reboot brings everything back automatically
 sudo systemctl enable docker
 ```
 
-That's the entire "make it survive a reboot" story — no custom systemd unit
-needed on top of Compose's own restart policy.
+Compose's restart policy brings back a container that *crashes*. It does
+nothing for one that is still running but hung: Docker only labels it
+"unhealthy". That's the guardian's job.
 
-On top of that, the app has its own startup recovery: it checks SQLite
-integrity, cleans up any recording file left behind by an unclean shutdown
-(power loss mid-write), and resumes normal operation — you'll see lines
-like `Recovery: removed N orphaned recording file(s)` in
-`docker compose logs backend` after a hard power-cycle. That's expected
-self-healing, not an error.
+On top of that, the app has its own startup recovery. It checks SQLite
+integrity, then repairs and keeps any recording a power cut left half-written
+(only empty or unreadable files are removed), and resumes normal operation.
+
+### The guardian (`lightnvr-guardian.service`)
+
+The install and update scripts add a small systemd service: a Python script
+from `scripts/guardian/` that uses only the standard library and runs on the
+host, outside Docker. Every minute it checks the containers, the backend, the
+Docker service, that continuous cameras are still recording, and the disks.
+
+**Recovery, one step at a time:**
+- It restarts a container that has been hung, stopped or not answering for 3
+  minutes.
+- After 3 restarts in an hour it recreates the stack.
+- It restarts Docker if Docker stops answering.
+- It **never reboots** the machine. If nothing helps, it says so and keeps
+  retrying every 15 minutes.
+
+**Telling you:**
+- When the NVR has been down for 5 minutes, it sends Telegram directly, using
+  the bot set in Settings -> Alerts.
+
+**Cleaning up:**
+- Daily at 03:30, and whenever a disk passes 90%, it removes:
+  - the systemd journal beyond 200 MB or 14 days;
+  - the apt cache;
+  - LightNVR images no container uses;
+  - `/tmp` files older than 7 days.
+- If the NVR is down *and* the recordings disk passes 97%, it deletes the
+  oldest recordings. It never touches the last 24 hours.
+
+What it is doing shows in Settings -> System -> Health & storage, and here:
+
+```bash
+systemctl status lightnvr-guardian
+journalctl -u lightnvr-guardian -n 50
+cat storage/guardian/status.json   # its latest check
+```
+
+**To stop the NVR on purpose** (maintenance) without the guardian starting it
+again, stop the guardian first: `sudo systemctl stop lightnvr-guardian`. Start
+it again afterwards. Updates pause it automatically.
+
+**To leave it out**, set `GUARDIAN=off` in `.env`. The next update removes it.
+
+Note: the guardian runs as root from the repository folder. Anyone who can
+edit that folder can already control Docker, which is root-equivalent anyway.
 
 ## 9. Backups
 

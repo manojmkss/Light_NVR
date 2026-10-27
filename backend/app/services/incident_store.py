@@ -49,9 +49,14 @@ async def persist(inc: OpenIncident, closed: bool = False) -> int | None:
         row.counts = counts or None
         row.identities = sorted(inc.identities) or None
         if closed:
+            from app.services.ai.digest import _display_tz
+
             row.status = "closed"
             row.ended_at = _dt(inc.last_end)
-            row.summary = incident_manager.describe(inc)[0]
+            # The quick summary from the live checks; the visit review
+            # (visit_review.py) replaces it from the main recording.
+            row.summary = incident_manager.describe(inc, tz=await _display_tz())[0]
+            row.review_status = "pending"
             if inc.snapshot and not row.snapshot_path:
                 row.snapshot_path = await asyncio.to_thread(_write_snapshot, inc.snapshot)
         await db.commit()
@@ -93,14 +98,39 @@ async def _narrative(message: str, snapshot: bytes | None) -> str:
 
 
 async def emit_incident(kind, message, snapshot, payload, camera_id, inc) -> None:
+    """The visit message when a visit closes - now only when it won't be
+    reviewed (the review sends one message per visit, from the main
+    recording, with its description). See visit_review._finish."""
     from app.services.events import emit_event
 
+    if kind == "incident_summary":
+        return
+    path = await asyncio.to_thread(_write_snapshot, snapshot) if snapshot else None
+    await emit_event(camera_id, kind, message, snapshot_path=path, payload=payload, incident_id=inc.id)
+
+
+async def send_unreviewed_summary(incident_id: int) -> None:
+    """A visit the review couldn't do (no recording, AI off): send the quick
+    visit summary instead, as before - for visits over several cameras, with
+    one picture-description from the live snapshot."""
+    from app.services.events import emit_event
+
+    async with AsyncSessionLocal() as db:
+        row = await db.get(Incident, incident_id)
+        if row is None or len(row.camera_ids or []) < 2 or not row.counts:
+            return
+        message, path = row.summary or "", row.snapshot_path
+        payload = {"incident_id": row.id, "cameras": row.camera_ids, "areas": row.areas_path, "counts": row.counts,
+                   "objects": sorted(row.counts), "names": row.identities or []}
+    snapshot = None
+    if path and os.path.exists(path):
+        with open(path, "rb") as f:
+            snapshot = f.read()
     sentence = await _narrative(message, snapshot)
     if sentence:
         first, _, rest = message.partition("\n")
         message = f"{first}\n{sentence}\n{rest}" if rest else f"{first}\n{sentence}"
-    path = await asyncio.to_thread(_write_snapshot, snapshot) if snapshot else None
-    await emit_event(camera_id, kind, message, snapshot_path=path, payload=payload, incident_id=inc.id)
+    await emit_event(None, "incident_summary", message, snapshot_path=path, payload=payload, incident_id=incident_id)
 
 
 async def merge_rows(src_id: int, dst_id: int) -> None:
@@ -156,7 +186,9 @@ async def incident_loop() -> None:
         async with AsyncSessionLocal() as db:
             await db.execute(
                 update(Incident).where(Incident.status == "open").values(
-                    status="closed", summary="Visit interrupted by a restart of the NVR."
+                    status="closed", summary="Visit interrupted by a restart of the NVR.",
+                    # Its recording is on disk: the review can still finish it.
+                    review_status="pending",
                 )
             )
             await db.commit()

@@ -27,7 +27,7 @@ const KINDS: { key: string; label: string }[] = [
   { key: "loitering", label: "Loitering" },
   { key: "line_cross", label: "Line crossed" },
   { key: "arrival", label: "Known person arrived" },
-  { key: "incident_summary", label: "Visit summary (all cameras)" },
+  { key: "incident_summary", label: "Visit summary (after the AI review)" },
   { key: "tamper", label: "Camera tampered / covered" },
 ];
 const ACTIONS: { key: RuleAction; label: string }[] = [

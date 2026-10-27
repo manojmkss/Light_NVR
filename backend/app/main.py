@@ -23,6 +23,7 @@ from app.api.routes import (
     ai,
     ai_engine,
     describer,
+    housekeeping,
     auth,
     backup,
     cameras,
@@ -114,6 +115,10 @@ async def lifespan(app: FastAPI):
     await supervisor.start_all()
     retention_task = asyncio.create_task(retention_loop())
     free_space_task = asyncio.create_task(free_space_loop())
+    # Alert pictures, reconciling files and rows, debris, and the host guardian's messages.
+    from app.services.housekeeping import housekeeping_loop
+
+    housekeeping_task = asyncio.create_task(housekeeping_loop())
     mover_task = asyncio.create_task(storage_mover_loop())
     backup_task = asyncio.create_task(backup_loop())
     optimize_task = asyncio.create_task(db_maintenance_loop())
@@ -132,6 +137,11 @@ async def lifespan(app: FastAPI):
     from app.services.incident_store import incident_loop
 
     incident_task = asyncio.create_task(incident_loop())
+    # Goes over each finished visit's main recording at 10 frames a second,
+    # when the system is quiet: names, strangers, description, pictures.
+    from app.services.visit_review import review_loop
+
+    review_task = asyncio.create_task(review_loop())
     # Finish giving saved faces an AdaFace embedding if a restart interrupted
     # it (no-op unless AdaFace was downloaded).
     from app.services.faces import face_service
@@ -153,6 +163,7 @@ async def lifespan(app: FastAPI):
     background_tasks = [
         retention_task,
         free_space_task,
+        housekeeping_task,
         mover_task,
         backup_task,
         optimize_task,
@@ -162,6 +173,7 @@ async def lifespan(app: FastAPI):
         relocator_task,
         mode_task,
         incident_task,
+        review_task,
         face_backfill_task,
     ] + ([salvage_task] if salvage_task else [])
     for task in background_tasks:
@@ -180,7 +192,7 @@ async def lifespan(app: FastAPI):
     await hq_stream_manager.shutdown()
 
 
-app = FastAPI(title="LightNVR API", version="0.4.13", lifespan=lifespan)
+app = FastAPI(title="LightNVR API", version="0.4.14", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -197,6 +209,7 @@ app.add_middleware(
 app.include_router(ai.router)
 app.include_router(ai_engine.router)
 app.include_router(describer.router)
+app.include_router(housekeeping.router)
 app.include_router(auth.router)
 app.include_router(backup.router)
 app.include_router(cameras.router)

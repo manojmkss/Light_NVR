@@ -98,3 +98,57 @@ export function getSystemLogs(limit = 200): Promise<{ lines: string[] }> {
 export function getDiagnostics(): Promise<Record<string, unknown>> {
   return apiFetch<Record<string, unknown>>("/system/diagnostics");
 }
+
+// ── Health & storage (Settings -> System) ───────────────────────────────────
+
+export interface GuardianRecovery {
+  at: number; // epoch seconds
+  what: string;
+  why: string;
+  ok: boolean;
+}
+
+export interface GuardianDisk {
+  path: string;
+  roles: string[];
+  percent: number;
+  total: number;
+  free: number;
+}
+
+export interface GuardianStatus {
+  at: number;
+  fresh: boolean;
+  paused: boolean;
+  docker: boolean;
+  backend: boolean;
+  problems: string[];
+  disks: GuardianDisk[];
+  recoveries: GuardianRecovery[];
+  last_clean: { at: number; reason: string; freed_bytes: number; done: string[] } | null;
+  down_since: number | null;
+}
+
+export interface HousekeepingResult {
+  reason?: string;
+  freed_bytes?: number;
+  seconds?: number;
+  pictures?: { files?: number; bytes?: number; error?: string };
+  debris?: { files?: number; bytes?: number; error?: string };
+  reconcile?: { dropped?: number; registered?: number; error?: string };
+  recordings_removed_for_space?: number;
+}
+
+export interface HealthStorage {
+  disk: { total?: number; used?: number; free?: number; recordings?: number; pictures?: number; logs?: number };
+  housekeeping: { last_run: string | null; last: HousekeepingResult };
+  guardian: GuardianStatus | null;
+}
+
+export function getHealthStorage(): Promise<HealthStorage> {
+  return apiFetch<HealthStorage>("/system/health-storage");
+}
+
+export function cleanUpNow(): Promise<HousekeepingResult> {
+  return apiFetch<HousekeepingResult>("/system/health-storage/clean", { method: "POST" });
+}

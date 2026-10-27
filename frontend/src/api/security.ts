@@ -94,6 +94,20 @@ export interface Incident {
   summary: string | null;
   snapshot_path: string | null;
   mode: string | null;
+  // From the visit review (the main recording, after the visit).
+  people: VisitPerson[] | null;
+  strangers: number;
+  description: string | null;
+  review_status: "pending" | "done" | "skipped" | "failed" | null;
+  reviewed_at: string | null;
+}
+
+export interface VisitPerson {
+  kind: "known" | "probable" | "stranger" | "unseen";
+  name: string | null;
+  camera_id: number;
+  at: number; // epoch seconds
+  photo: boolean;
 }
 
 export interface CameraGroups {

@@ -4,7 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -251,6 +251,26 @@ class IncidentOut(BaseModel):
     summary: str | None = None
     snapshot_path: str | None = None
     mode: str | None = None
+    # From the visit review (main recording, 10 frames/s): who was there.
+    people: list[dict] | None = None
+    strangers: int = 0
+    description: str | None = None
+    review_status: str | None = None
+    reviewed_at: UtcDatetime | None = None
+
+    @field_validator("people", mode="before")
+    @classmethod
+    def _no_paths(cls, v):
+        # File paths stay on the server; the photos are served by index.
+        if not v:
+            return v
+        return [{k: x.get(k) for k in ("kind", "name", "camera_id", "at")} | {"photo": bool(x.get("photo"))}
+                for x in v]
+
+    @field_validator("strangers", mode="before")
+    @classmethod
+    def _zero(cls, v):
+        return v or 0
 
     class Config:
         from_attributes = True
@@ -388,6 +408,19 @@ async def get_incident(incident_id: int, db: AsyncSession = Depends(get_db), _: 
     )).scalars().all()
     return {"incident": IncidentOut.model_validate(row).model_dump(mode="json"),
             "events": [EventOut.model_validate(e).model_dump(mode="json") for e in events]}
+
+
+@router.get("/incidents/{incident_id}/people/{index}.jpg")
+async def incident_person_photo(incident_id: int, index: int, full: bool = False, db: AsyncSession = Depends(get_db),
+                                _: User = Depends(get_current_user_flexible)):
+    """A person's photo from the visit review: the crop, or (full=true) the
+    whole main-stream frame they were clearest in."""
+    row = await db.get(Incident, incident_id)
+    people = (row.people or []) if row is not None else []
+    path = (people[index].get("full" if full else "photo") if 0 <= index < len(people) else None)
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @router.get("/incidents/{incident_id}/snapshot.jpg")

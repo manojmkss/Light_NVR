@@ -23,6 +23,9 @@ class StorageConfig(Base):
     # Global retention defaults (per-camera override lives on Camera.retention_days)
     default_retention_days: Mapped[int] = mapped_column(Integer, default=14)
     max_storage_gb: Mapped[int] = mapped_column(Integer, default=0)  # 0 = unlimited, age-based retention only
+    # Event and visit pictures (the alert snapshots) - kept apart from the
+    # footage, set by the user. The event history itself (text) stays longer.
+    snapshot_retention_days: Mapped[int] = mapped_column(Integer, default=30)
 
     # primary/backup _path is always a local mountpoint inside the container -
     # for type=smb/nfs the backend mounts the share there itself at runtime;

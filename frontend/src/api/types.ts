@@ -275,6 +275,7 @@ export interface StorageConfig {
   cache_max_gb: number;
   default_retention_days: number;
   max_storage_gb: number;
+  snapshot_retention_days: number;
   primary_type: StorageType;
   primary_path: string;
   primary_remote_spec: string | null;
@@ -290,6 +291,7 @@ export interface StorageConfigUpdate {
   cache_max_gb?: number;
   default_retention_days?: number;
   max_storage_gb?: number;
+  snapshot_retention_days?: number;
   primary_type?: StorageType;
   primary_remote_spec?: string | null;
   primary_username?: string | null;

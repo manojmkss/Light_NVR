@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { listCameras } from "../api/cameras";
 import { buildMediaUrl } from "../api/client";
-import { listIncidentsWithEvents, type IncidentWithEvents } from "../api/security";
+import { listIncidentsWithEvents, type IncidentWithEvents, type VisitPerson } from "../api/security";
 import { CameraGroupsCard } from "../components/CameraGroupsCard";
 import { PlaybackPopup } from "../components/PlaybackPopup";
 import { updateSystemSettings } from "../api/system";
@@ -58,6 +58,7 @@ export function VisitsPage() {
   const [loaded, setLoaded] = useState(false);
   const [playAt, setPlayAt] = useState<{ cameraId: number; at: number; title?: string } | null>(null);
   const [showGroups, setShowGroups] = useState(false);
+  const [photo, setPhoto] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -108,7 +109,8 @@ export function VisitsPage() {
       }
       const h = String(hourOf(i.started_at));
       hours[h] = (hours[h] ?? 0) + 1;
-      if (i.events.some((e) => (e.payload as { unknown_faces?: boolean } | null)?.unknown_faces)) unknownFaces += 1;
+      if (i.strangers > 0 || i.events.some((e) => (e.payload as { unknown_faces?: boolean } | null)?.unknown_faces))
+        unknownFaces += 1;
     }
     const top = (rec: Record<string, number>) => Object.entries(rec).sort((a, b) => b[1] - a[1]);
     return { objects: top(objects), people: top(people), cameras: top(cameras), busiest: top(hours)[0], unknownFaces };
@@ -225,13 +227,18 @@ export function VisitsPage() {
           const events = i.events.filter((e) => VISIT_EVENT_TYPES.has(e.type));
           const open = expanded.has(i.id);
           const list = open ? events : events.slice(0, 4);
-          const summary = (i.summary ?? "").split("\n").filter(Boolean);
+          // The description and the people have their own lines above.
+          const summary = (i.summary ?? "")
+            .split("\n")
+            .filter((l) => l && l !== i.description && !(i.people?.length && l.startsWith("People: ")));
           return (
             <div key={i.id} className="card">
               <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
                 {i.snapshot_path && (
                   <img
-                    src={buildMediaUrl(`/security/incidents/${i.id}/snapshot.jpg`)}
+                    src={buildMediaUrl(
+                      `/security/incidents/${i.id}/snapshot.jpg${i.reviewed_at ? `?v=${encodeURIComponent(i.reviewed_at)}` : ""}`,
+                    )}
                     alt=""
                     title={i.camera_ids?.length ? "Play this visit" : undefined}
                     style={{ width: 140, borderRadius: 6, cursor: i.camera_ids?.length ? "pointer" : undefined }}
@@ -250,8 +257,16 @@ export function VisitsPage() {
                   <div style={{ fontSize: 13 }}>{(i.areas_path ?? []).join(" → ") || "—"}</div>
                   <div style={{ fontSize: 13 }}>
                     {counts || <span style={{ color: "var(--text-dim)" }}>motion only - nothing recognised</span>}
-                    {i.identities?.length ? <strong> · {i.identities.join(", ")}</strong> : ""}
+                    {!i.people?.length && i.identities?.length ? <strong> · {i.identities.join(", ")}</strong> : ""}
                   </div>
+                  <VisitPeople visit={i} onOpen={setPhoto} />
+                  {i.description && <div style={{ fontSize: 13, marginTop: 4 }}>{i.description}</div>}
+                  {(i.status === "open" || i.review_status === "pending") && isReal(i) && (
+                    <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4, fontStyle: "italic" }}>
+                      AI review pending - names, description and photos from the main recording follow once the
+                      system is quiet.
+                    </div>
+                  )}
                   {summary.length > 0 && (
                     <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4, whiteSpace: "pre-wrap" }}>
                       {(open ? summary : summary.slice(0, 3)).join("\n")}
@@ -291,6 +306,15 @@ export function VisitsPage() {
             </div>
           );
         })}
+        {photo && (
+          <div
+            onClick={() => setPhoto(null)}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 1000, display: "flex",
+                     alignItems: "center", justifyContent: "center", padding: 16, cursor: "zoom-out" }}
+          >
+            <img src={photo} alt="" style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 6 }} />
+          </div>
+        )}
         {playAt && (
           <PlaybackPopup
             cameraId={playAt.cameraId}
@@ -306,6 +330,51 @@ export function VisitsPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+const KIND_STYLE: Record<VisitPerson["kind"], React.CSSProperties> = {
+  known: { fontWeight: 600 },
+  probable: { fontStyle: "italic" },
+  stranger: { color: "#d29922" },
+  unseen: { color: "var(--text-dim)" },
+};
+
+function personLabel(p: VisitPerson): string {
+  if (p.kind === "known") return p.name ?? "Known person";
+  if (p.kind === "probable") return p.name ? `possibly ${p.name}` : "face unclear";
+  if (p.kind === "stranger") return "Stranger";
+  return "face not visible";
+}
+
+/** Who was there, from the visit review: each person with their clearest
+ *  main-stream photo (click for the whole frame). */
+function VisitPeople({ visit, onOpen }: { visit: IncidentWithEvents; onOpen: (url: string) => void }) {
+  const people = visit.people ?? [];
+  if (!people.length) return null;
+  // ?v= : a new review replaces the files under the same address.
+  const v = encodeURIComponent(visit.reviewed_at ?? "");
+  const url = (n: number, full = false) =>
+    buildMediaUrl(`/security/incidents/${visit.id}/people/${n}.jpg?v=${v}${full ? "&full=true" : ""}`);
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
+      {people.map((p, n) => (
+        <div
+          key={n}
+          title={p.photo ? "Show the whole picture" : undefined}
+          onClick={() => p.photo && onOpen(url(n, true))}
+          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "2px 8px 2px 2px",
+                   border: "1px solid var(--border)", borderRadius: 16, cursor: p.photo ? "zoom-in" : undefined }}
+        >
+          {p.photo ? (
+            <img src={url(n)} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: "50%" }} />
+          ) : (
+            <span style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--border)" }} />
+          )}
+          <span style={KIND_STYLE[p.kind]}>{personLabel(p)}</span>
+        </div>
+      ))}
     </div>
   );
 }

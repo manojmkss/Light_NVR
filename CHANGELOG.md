@@ -6,6 +6,96 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-10-27
+
+### Added
+- **Visits are finished by an AI review of the main recording.** Once a visit
+  is over and the system is quiet, the AI goes over its main-stream recording
+  at **10 frames a second** (100 ms), at full resolution. Live checks keep
+  running every 500 ms for instant alerts. The review:
+  - reads at 10 frames/s where the live check saw a person or vehicle, and
+    at 2 frames/s over the rest of the visit, to catch anyone it missed;
+  - searches faces on the full-resolution frames;
+  - **names the people it knows**, shows "possibly X" for a near match, and
+    tells a **stranger** (a clear face that matches nobody) from someone
+    whose face never showed;
+  - counts a person seen on two cameras, or who walked out of view and back,
+    once;
+  - **replaces every picture of the visit with a main-stream one**: the
+    visit's snapshot, its alert and summary pictures, and each detected
+    object;
+  - keeps the best main-stream face for "Who is this?";
+  - writes **one AI description per visit**, telling the describer who is in
+    it;
+  - sends **one visit message** (Telegram etc.) with the people, the
+    description and the best photo. Alert rules ("someone unknown",
+    "Manoj arrived") apply to it as to a live alert.
+
+  It waits while someone is in view on any camera (live checks come first)
+  and while the machine is busy. After 30 minutes it goes ahead anyway, at
+  the lowest priority, so a visit is usually finished within a few minutes
+  and at most about half an hour later. A visit cut off by a restart is
+  still reviewed. With no recording (recording off) the old quick summary is
+  sent instead.
+- **Visits page:**
+  - each person as a chip with their main-stream photo (click for the whole
+    frame): names in bold, "possibly X", "Stranger" in amber, "face not
+    visible";
+  - the visit's description;
+  - "AI review pending" until the review is done.
+  - The day's summary counts strangers.
+- **The guardian: a service on the host that watches the NVR from outside
+  Docker.** Installed by the Linux install and update scripts
+  (`lightnvr-guardian.service`; `GUARDIAN=off` in `.env` to leave it out).
+  Every minute it checks each container, the backend, the Docker service,
+  that continuous cameras are still making recordings, and the disks.
+  - **It recovers, one step at a time.** A container that is unhealthy, has
+    stopped or doesn't answer for 3 minutes is restarted. Docker itself
+    never restarts an "unhealthy" one, so a hung backend stayed hung. After 3
+    restarts in an hour it recreates the stack, on the version that's
+    running. If the Docker service stops answering, it restarts that. It
+    **never reboots the machine**: when nothing helps it tells you and keeps
+    retrying every 15 minutes. It stands aside while an update runs.
+  - **It tells you when the NVR can't.** If the NVR has been down for 5
+    minutes, it sends Telegram itself, using the NVR's own Telegram settings.
+    It sends a reminder every 6 hours and a message when the NVR is back.
+    Everything else it does shows up as a normal event and alert.
+  - **It cleans the host daily (03:30), and whenever a disk passes 90%.** It
+    removes:
+    - systemd journal entries beyond 200 MB or 14 days (it also caps the
+      journal permanently);
+    - the apt cache;
+    - LightNVR images no container uses, and old build cache;
+    - `/tmp` files older than 7 days.
+  - **A last resort for a full disk.** If the NVR is down *and* the
+    recordings disk passes 97%, it deletes the oldest recordings until the
+    disk is back under 95%. It never touches the last 24 hours. The NVR drops
+    those recordings from its list when it's back. While the NVR is running,
+    its own free-space floor handles this.
+- **Settings -> System -> Health & storage.** One card shows:
+  - what's using the disk (recordings, alert pictures, logs, everything else);
+  - each disk the guardian watches;
+  - the last clean-ups;
+  - recent recoveries and why they happened;
+  - a **Clean up now** button.
+- **Alert pictures have their own retention** (Settings -> Storage, default
+  30 days). Before this they were kept 90 days, long after their footage was
+  gone. The events themselves are still kept for 90 days.
+- **The NVR's clean-up in one place, every 6 hours.** It removes:
+  - old alert pictures, rotated logs older than 14 days and clip-export
+    leftovers;
+  - the folders of deleted cameras;
+  - recordings whose file has gone.
+  It also adds recordings found on disk back to the list. If a disk looks
+  unmounted rather than emptied, it touches nothing and says so.
+
+### Changed
+- **The instant per-camera summary no longer waits for the AI description.**
+  It still goes out the moment the motion ends, with its picture and what
+  was seen. The description (about 80 s on a CPU, and skipped when the
+  describer was busy) now goes to the visit, once.
+- Visit summaries use the NVR's timezone instead of UTC.
+
 ## [0.4.13] - 2026-10-26
 
 Stability release, from a review of the code and a week of production data.

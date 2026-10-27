@@ -1,0 +1,22 @@
+# LightNVR guardian - installed by scripts/install-linux.sh and update-linux.sh
+# (lib-env.sh install_guardian), which fill in @REPO@ and @PYTHON@. See
+# lightnvr_guardian.py.
+[Unit]
+Description=LightNVR guardian (health, recovery, disk clean-up)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@PYTHON@ "@REPO@/scripts/guardian/lightnvr_guardian.py" --repo "@REPO@"
+Restart=always
+RestartSec=30
+StateDirectory=lightnvr-guardian
+# Small and quiet: it must never be what slows recording down.
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

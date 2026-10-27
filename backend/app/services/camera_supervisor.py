@@ -101,6 +101,23 @@ class CameraSupervisor:
     def get_active_camera_ids(self) -> list[int]:
         return list(self._workers.keys())
 
+    def events_in_progress(self) -> int:
+        """Cameras where someone (or something real) is in view right now -
+        the visit review waits for these: live checks come first. Motion with
+        nothing in it (swaying plants, shadows) doesn't count, or a windy
+        garden would hold the review back all day."""
+        n = 0
+        for w in self._workers.values():
+            session = getattr(w, "_session", None)
+            if session is None:
+                continue
+            try:
+                if any(t.left_at is None and not t.parked for t in session.tracker.confirmed()):
+                    n += 1
+            except Exception:
+                n += 1
+        return n
+
     def health(self) -> dict[int, dict]:
         out = {}
         for cid, w in self._workers.items():

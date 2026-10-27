@@ -36,3 +36,11 @@ class Incident(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     snapshot_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     mode: Mapped[str | None] = mapped_column(String(16), nullable=True)  # security mode when it started
+    # Filled by the visit review (services/visit_review.py), which goes over
+    # the main-stream recording after the visit, when the system is quiet:
+    # [{"kind": known|probable|stranger|unseen, "name", "camera_id", "at", "photo"}]
+    people: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    strangers: Mapped[int] = mapped_column(Integer, default=0)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # pending | done | skipped | failed
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -315,3 +315,69 @@ write_hardware_report() {
     "$(env_get DESCRIBE_MEM_LIMIT)" \
     | "${dk[@]}" compose exec -T backend sh -c 'cat > /data/hardware.json' 2>/dev/null || true
 }
+
+# --- Host guardian (every install and update) ------------------------------
+#
+# lightnvr-guardian.service (scripts/guardian/) watches the containers and the
+# disks from outside Docker: restarts what hangs (Docker never restarts an
+# "unhealthy" container), cleans host waste (journal, apt cache, unused images,
+# old /tmp), and sends Telegram itself when the NVR is down. It never reboots.
+# Linux with systemd only.
+#
+#   GUARDIAN=off   in .env: don't install it (and remove it if it was)
+
+GUARDIAN_UNIT="${LIGHTNVR_GUARDIAN_UNIT:-/etc/systemd/system/lightnvr-guardian.service}"
+GUARDIAN_JOURNALD="${LIGHTNVR_JOURNALD_CONF:-/etc/systemd/journald.conf.d/lightnvr.conf}"
+
+_as_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
+
+# install_guardian REPO_ROOT - installs/updates and (re)starts it, so it runs
+# the code this update brought. Sets GUARDIAN_STATE (on | off | unsupported)
+# and GUARDIAN_WHY. Never fails the install or update.
+install_guardian() {
+  local repo="$1" unit python
+  GUARDIAN_WHY=""
+  if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d "${LIGHTNVR_SYSTEMD_RUN:-/run/systemd/system}" ]]; then
+    GUARDIAN_STATE="unsupported"; GUARDIAN_WHY="this machine doesn't run systemd"; return 0
+  fi
+  if [[ "$(env_get GUARDIAN)" == "off" ]]; then
+    if [[ -f "$GUARDIAN_UNIT" ]]; then
+      _as_root systemctl disable --now lightnvr-guardian >/dev/null 2>&1 || true
+      _as_root rm -f "$GUARDIAN_UNIT" || true
+      _as_root systemctl daemon-reload || true
+    fi
+    GUARDIAN_STATE="off"; return 0
+  fi
+  python="$(command -v python3 || true)"
+  if [[ -z "$python" ]]; then
+    GUARDIAN_STATE="unsupported"; GUARDIAN_WHY="python3 isn't installed (sudo apt install python3)"; return 0
+  fi
+  unit="$(<"$repo/scripts/guardian/lightnvr-guardian.service")"
+  unit="${unit//@REPO@/"$repo"}"
+  unit="${unit//@PYTHON@/"$python"}"
+  if [[ "$(cat "$GUARDIAN_UNIT" 2>/dev/null || true)" != "$unit" ]]; then
+    printf '%s\n' "$unit" | _as_root tee "$GUARDIAN_UNIT" >/dev/null || true
+    _as_root systemctl daemon-reload || true
+  fi
+  if ! cmp -s "$repo/scripts/guardian/journald-lightnvr.conf" "$GUARDIAN_JOURNALD" 2>/dev/null; then
+    _as_root mkdir -p "$(dirname "$GUARDIAN_JOURNALD")" || true
+    _as_root cp "$repo/scripts/guardian/journald-lightnvr.conf" "$GUARDIAN_JOURNALD" || true
+    _as_root systemctl restart systemd-journald >/dev/null 2>&1 || true
+  fi
+  _as_root systemctl enable lightnvr-guardian >/dev/null 2>&1 || true
+  if _as_root systemctl restart lightnvr-guardian; then
+    GUARDIAN_STATE="on"
+  else
+    GUARDIAN_STATE="unsupported"; GUARDIAN_WHY="it didn't start - see: journalctl -u lightnvr-guardian"
+  fi
+}
+
+# guardian_pause REPO_ROOT SECONDS / guardian_resume REPO_ROOT - while the
+# stack is deliberately restarted (an update), the guardian must not "recover"
+# it. A marker a crashed run leaves behind expires on its own (at most 2 h).
+guardian_pause() {
+  local dir="$1/storage/guardian"
+  _as_root mkdir -p "$dir" 2>/dev/null || true
+  echo "$(( $(date +%s) + $2 ))" | _as_root tee "$dir/paused-until" >/dev/null 2>&1 || true
+}
+guardian_resume() { _as_root rm -f "$1/storage/guardian/paused-until" 2>/dev/null || true; }

@@ -640,6 +640,30 @@ class ObjectTracker:
         ]
 
 
+FACE_CLEAR_EXTRA = 0.08  # one sighting this far above the threshold is enough on its own
+
+
+def vote_face(t: Track, face, match, threshold: float, wall: float) -> bool:
+    """One face look at a person track: keeps its best face and counts who it
+    matched. A track is named after 2 agreeing "known" looks, or 1 clear one.
+    Returns True when this look named it. (Used live and by the visit review,
+    so both name people the same way.)"""
+    if t.best_face is None or face.quality > t.best_face.quality:
+        t.best_face, t.best_face_score, t.best_face_at = face, match.score, wall
+    if match.band == "known":
+        t.face_votes[match.person_id] += 1
+        if t.identity is None and (t.face_votes[match.person_id] >= 2 or match.score >= threshold + FACE_CLEAR_EXTRA):
+            t.identity = {"id": match.person_id, "name": match.name, "note": match.note,
+                          "category": match.category, "score": round(match.score, 3)}
+            t.unknown_face = False
+            return True
+    elif match.band == "probable":
+        t.possibly = match.name
+    elif not t.face_votes:
+        t.unknown_face = True
+    return False
+
+
 def draw_boxes(frame: np.ndarray, boxes: list[tuple[str, float, tuple]]) -> np.ndarray:
     """Copy of `frame` with labelled boxes; boxes are normalised (x, y, w, h)."""
     out = frame.copy()
@@ -713,7 +737,6 @@ class MotionEventSession:
     # they're in view (face search is cheap: only the top of each person box).
     FACE_RETRY = 1.5  # seconds between face attempts on one person
     FACE_MAX_TRIES = 40
-    FACE_CLEAR_EXTRA = 0.08
     PRESENCE_HOLD_WITH_AI = 20.0  # background-model hold while AI is answering
     PRESENCE_HOLD_WITHOUT_AI = 120.0
 
@@ -1004,25 +1027,13 @@ class MotionEventSession:
         thr = threshold_for(self.settings)
         for idx, face, match in results:
             t = tracks[idx]
-            if t.best_face is None or face.quality > t.best_face.quality:
-                t.best_face, t.best_face_score = face, match.score
-                t.best_face_at = wall or time.time()
-            if match.band == "known":
-                t.face_votes[match.person_id] += 1
-                if t.face_votes[match.person_id] >= 2 or match.score >= thr + self.FACE_CLEAR_EXTRA:
-                    t.identity = {"id": match.person_id, "name": match.name, "note": match.note,
-                                  "category": match.category, "score": round(match.score, 3)}
-                    t.unknown_face = False
-                    self.tracker.timeline.append((t.last_wall or time.time(), f"{t.label} #{t.id} is {match.name}"))
-                    if self._on_identity is not None:
-                        try:
-                            await self._on_identity(t)
-                        except Exception:
-                            logger.exception("Arrival handling failed")
-            elif match.band == "probable":
-                t.possibly = match.name
-            elif not t.face_votes:
-                t.unknown_face = True
+            if vote_face(t, face, match, thr, wall or time.time()):
+                self.tracker.timeline.append((t.last_wall or time.time(), f"{t.label} #{t.id} is {match.name}"))
+                if self._on_identity is not None:
+                    try:
+                        await self._on_identity(t)
+                    except Exception:
+                        logger.exception("Arrival handling failed")
 
     def identities(self) -> list[dict]:
         return [t.identity for t in self.tracker.confirmed() if t.identity]
