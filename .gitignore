@@ -34,3 +34,6 @@ frontend/tsconfig.tsbuildinfo
 .claude/
 .DS_Store
 Thumbs.db
+
+# Python bytecode anywhere (e.g. scripts/guardian when its tests import it)
+__pycache__/
