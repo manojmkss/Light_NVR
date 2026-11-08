@@ -46,6 +46,10 @@ export default defineConfig({
       "/api": {
         target: process.env.VITE_DEV_API_TARGET || "http://localhost:8000",
         changeOrigin: true,
+        // Live video is a websocket; and pointing the dev server at a full
+        // stack's nginx (https, self-signed) must work too.
+        ws: true,
+        secure: false,
       },
     },
   },

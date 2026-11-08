@@ -6,6 +6,35 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-11-08
+
+### Added
+- **Live view plays the cameras' own video - smooth over mobile data and
+  Tailscale.**
+  - Live tiles used to receive a JPEG for every frame: 5-10 Mbit/s per tile
+    and 17-33 Mbit/s full screen. That's fine on home Wi-Fi, but over mobile
+    data through Tailscale the picture froze, and rewinding stalled because
+    the other tiles used up the bandwidth.
+  - A small relay, **go2rtc**, now passes each camera's own H.264/H.265
+    video to the browser: about 0.5-2 Mbit/s per tile, a fraction of a
+    second behind live, and kept at the live edge after a slow patch.
+  - Full screen plays the main stream. A browser that can't decode H.265
+    gets the sub stream's video instead.
+  - It runs as one more container with no ports of its own. The browser
+    reaches it only through nginx, after the NVR has checked the login, and
+    only for the NVR's own camera streams; go2rtc's own settings and API
+    stay internal.
+  - Camera passwords are never written to disk: the streams are registered
+    in go2rtc's memory, and again whenever it restarts.
+  - If the relay isn't there, or a stream fails, the tile falls back to
+    pictures as before and tries video again two minutes later. The kiosk
+    display keeps using pictures.
+
+### Fixed
+- The Live View's stream readout and the motion-status API
+  (`/api/cameras/stream-stats`, `/api/cameras/motion-status`) always
+  failed: the request was taken for a camera number.
+
 ## [0.4.14] - 2026-10-27
 
 ### Added

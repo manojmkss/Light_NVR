@@ -54,6 +54,38 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
+    # Live video (go2rtc, see backend/app/services/live_relay.py): only its
+    # MSE websocket, only for one of the NVR's own camera streams, only for
+    # a signed-in user. go2rtc's API (which can list camera passwords and add
+    # any source) is never reachable from outside, and the login token isn't
+    # passed on to it.
+    location = /api/live/ws {
+        if ($arg_src !~ "^cam[0-9]+(_main)?$") {
+            return 403;
+        }
+        auth_request /_live_auth;
+        set $go2rtc_upstream go2rtc:1984;
+        proxy_pass http://$go2rtc_upstream/api/ws?src=$arg_src;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    location = /_live_auth {
+        internal;
+        set $backend_upstream backend:8000;
+        proxy_pass http://$backend_upstream/api/cameras/live-video/auth;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        # A plain HTTP check, not the websocket upgrade it's guarding.
+        proxy_set_header Upgrade "";
+        proxy_set_header Connection "";
+        proxy_set_header X-Original-URI $request_uri;
+    }
+
     location /api/ {
         # A variable (not a literal hostname) forces nginx to re-resolve via
         # the resolver in nginx.conf on each cache expiry instead of caching

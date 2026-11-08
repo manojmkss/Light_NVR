@@ -9,6 +9,7 @@ import {
 import { recordingNeedsTranscode } from "../api/recordings";
 import type { StreamStat } from "../api/types";
 import { useSettings } from "../context/SettingsContext";
+import { LiveVideo, liveVideoSupported } from "./LiveVideo";
 import { StatusBadge } from "./StatusBadge";
 
 // How far back the live tile's scrub bar reaches. Not a retention/deletion
@@ -32,6 +33,9 @@ const TIMELINE_POLL_MS = 15000;
 // connection, a wedged decoder. A dropped connection raises onerror and is
 // already retried within seconds, so nothing depends on this being frequent.
 const STREAM_WATCHDOG_MS = 15 * 60 * 1000;
+// A live video stream that failed (codec the browser lacks, relay down) is
+// tried again after this long; pictures in the meantime.
+const VIDEO_RETRY_MS = 2 * 60 * 1000;
 
 function fmtDuration(seconds: number | null): string {
   if (!seconds) return "";
@@ -185,6 +189,32 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   // Live tiles use the substream; a maximised / fullscreen tile upgrades to the
   // main stream for full detail.
   const activeQuality: "sub" | "main" = isFullscreen ? "main" : quality;
+
+  // Live video (the camera's own H.264/H.265, ~1 Mbit/s) where the NVR offers
+  // it; the picture stream (a JPEG per frame, 5-30 Mbit/s) otherwise or if it
+  // fails. The main stream falls back to the sub stream's video first.
+  const [videoReady, setVideoReady] = useState(false);
+  const [videoFailed, setVideoFailed] = useState<{ sub: boolean; main: boolean }>({ sub: false, main: false });
+  useEffect(() => {
+    let cancelled = false;
+    if (endpoints.liveVideoUrl && endpoints.liveVideoAvailable && liveVideoSupported()) {
+      endpoints.liveVideoAvailable().then((ok) => !cancelled && setVideoReady(ok));
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [endpoints]);
+  const videoQuality: "sub" | "main" | null = !videoReady
+    ? null
+    : activeQuality === "main" && !videoFailed.main
+      ? "main"
+      : !videoFailed.sub
+        ? "sub"
+        : null;
+  const videoFailedFor = (q: "sub" | "main") => {
+    setVideoFailed((f) => ({ ...f, [q]: true }));
+    setTimeout(() => setVideoFailed((f) => ({ ...f, [q]: false })), VIDEO_RETRY_MS);
+  };
 
   // Where footage exists in the window (shaded on the scrub bar).
   useEffect(() => {
@@ -460,11 +490,13 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   const streamInfo =
     view === "playback"
       ? `recording${source && playbackRes ? ` · ${playbackRes}` : ""}`
-      : stat && stat.width > 0
-        ? `${activeQuality === "main" ? "main" : "sub"} · ${stat.width}×${stat.height}`
-        : activeQuality === "main"
-          ? "main"
-          : "sub";
+      : videoQuality
+        ? `${videoQuality} · video`
+        : stat && stat.width > 0
+          ? `${activeQuality === "main" ? "main" : "sub"} · ${stat.width}×${stat.height}`
+          : activeQuality === "main"
+            ? "main"
+            : "sub";
 
   const sliderValue = playbackTs ?? now;
   const isLive = view === "live";
@@ -548,6 +580,14 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
         gapMessage()
       ) : view === "paused" ? (
         <img src={snapshotSrc} alt={camera.name} className="tile-frozen" />
+      ) : videoQuality && endpoints.liveVideoUrl ? (
+        <LiveVideo
+          key={`${videoQuality}-${streamKey}`}
+          url={endpoints.liveVideoUrl(camera.id, videoQuality)}
+          className="tile-video"
+          onPlaying={() => setErrorCount(0)}
+          onFail={() => videoFailedFor(videoQuality)}
+        />
       ) : (
         <img src={streamUrl} alt={camera.name} onError={handleError} onLoad={() => setErrorCount(0)} />
       )}

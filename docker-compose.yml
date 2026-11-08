@@ -119,6 +119,27 @@ services:
     networks:
       - lightnvr
 
+  go2rtc:
+    # Live video relay: plays the cameras' own H.264/H.265 in the browser
+    # (~1 Mbit/s a tile) instead of a JPEG per frame (5-30 Mbit/s) - what
+    # makes live view usable over mobile data / Tailscale. No ports: reached
+    # only through nginx, after the backend checks the login (see
+    # backend/app/services/live_relay.py). If it's missing, live view simply
+    # falls back to pictures.
+    image: alexxit/go2rtc:1.9.14
+    container_name: lightnvr-go2rtc
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    restart: unless-stopped
+    mem_limit: ${GO2RTC_MEM_LIMIT:-256m}
+    volumes:
+      - ./docker/go2rtc/go2rtc.yaml:/config/go2rtc.yaml:ro
+    networks:
+      - lightnvr
+
   nginx:
     image: nginx:1.27-alpine
     container_name: lightnvr-nginx

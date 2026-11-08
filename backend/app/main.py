@@ -142,6 +142,10 @@ async def lifespan(app: FastAPI):
     from app.services.visit_review import review_loop
 
     review_task = asyncio.create_task(review_loop())
+    # Keeps go2rtc's streams in step with the cameras (live video).
+    from app.services.live_relay import live_relay
+
+    relay_task = asyncio.create_task(live_relay.loop())
     # Finish giving saved faces an AdaFace embedding if a restart interrupted
     # it (no-op unless AdaFace was downloaded).
     from app.services.faces import face_service
@@ -174,6 +178,7 @@ async def lifespan(app: FastAPI):
         mode_task,
         incident_task,
         review_task,
+        relay_task,
         face_backfill_task,
     ] + ([salvage_task] if salvage_task else [])
     for task in background_tasks:
@@ -192,7 +197,7 @@ async def lifespan(app: FastAPI):
     await hq_stream_manager.shutdown()
 
 
-app = FastAPI(title="LightNVR API", version="0.4.14", lifespan=lifespan)
+app = FastAPI(title="LightNVR API", version="0.4.15", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -212,9 +217,12 @@ app.include_router(describer.router)
 app.include_router(housekeeping.router)
 app.include_router(auth.router)
 app.include_router(backup.router)
+# live before cameras: its fixed paths (/api/cameras/stream-stats,
+# /motion-status, /live-video) would otherwise be taken for a camera id by
+# cameras' /api/cameras/{camera_id} and fail with 422.
+app.include_router(live.router)
 app.include_router(cameras.router)
 app.include_router(faces.router)
-app.include_router(live.router)
 app.include_router(push.router)
 app.include_router(recordings.router)
 app.include_router(remote_access.router)

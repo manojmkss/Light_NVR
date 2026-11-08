@@ -1,0 +1,22 @@
+# go2rtc - LightNVR's live video relay (see backend/app/services/live_relay.py).
+#
+# Only its HTTP API is on, on the internal Docker network: nginx forwards the
+# browser's live video websocket (/api/ws, after the backend has checked the
+# login) and the backend registers the camera streams at runtime - so no
+# camera password is ever written here. Nothing else listens.
+api:
+  listen: ":1984"
+  # Requests only ever come through nginx, which checks the login; the
+  # Origin the browser sends is the NVR's own address, whatever it is
+  # (LAN IP, Tailscale name, a domain).
+  origin: "*"
+rtsp:
+  listen: ""
+webrtc:
+  listen: ""
+srtp:
+  listen: ""
+rtmp:
+  listen: ""
+log:
+  level: warn

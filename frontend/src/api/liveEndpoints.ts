@@ -19,6 +19,10 @@ export interface CameraTileEndpoints {
   /** Which parts of the window have footage, plus the NVR's clock. */
   timeline(cameraId: number, startSeconds: number): Promise<TimelineAnswer>;
   snapshotVideoUrl(cameraId: number, snapshotId: string): string;
+  /** The camera's own video over a websocket (go2rtc), when this surface has
+   *  it - otherwise live view shows the picture stream (streamUrl). */
+  liveVideoUrl?(cameraId: number, quality: "sub" | "main"): string;
+  liveVideoAvailable?(): Promise<boolean>;
 }
 
 export interface PlaybackAnswer {
@@ -72,4 +76,18 @@ export const authenticatedEndpoints: CameraTileEndpoints = {
   resolvePlayback: (cameraId, at) => apiFetch<PlaybackAnswer>(`/cameras/${cameraId}/playback?at=${at}`),
   timeline: (cameraId, start) => apiFetch<TimelineAnswer>(`/cameras/${cameraId}/timeline?start=${start}`),
   snapshotVideoUrl: (cameraId, snap) => buildMediaUrl(`/cameras/${cameraId}/playback/snap/${snap}.mp4`),
+  liveVideoUrl: (cameraId, quality) => {
+    const url = new URL(buildMediaUrl(`/live/ws?src=cam${cameraId}${quality === "main" ? "_main" : ""}`), window.location.href);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return url.toString();
+  },
+  liveVideoAvailable: () => {
+    liveVideo ??= apiFetch<{ available: boolean }>("/cameras/live-video")
+      .then((r) => r.available)
+      .catch(() => false);
+    return liveVideo;
+  },
 };
+
+// Asked once per page load; a stream that fails later falls back on its own.
+let liveVideo: Promise<boolean> | null = null;

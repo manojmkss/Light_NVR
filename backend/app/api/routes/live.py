@@ -1,6 +1,6 @@
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, get_current_user_flexible
@@ -36,6 +36,37 @@ async def get_stream_stats(_: User = Depends(get_current_user)):
     the bitrate readout in each live tile's overlay.
     """
     return {"stats": stream_stats.snapshot()}
+
+
+@router.get("/live-video")
+async def get_live_video(_: User = Depends(get_current_user)):
+    """Whether live view can play the cameras' own video (go2rtc relay, see
+    services/live_relay.py) instead of a picture per frame."""
+    from app.services.live_relay import live_relay
+
+    return {"available": live_relay.available}
+
+
+@router.get("/live-video/auth", include_in_schema=False)
+async def live_video_auth(request: Request, db: AsyncSession = Depends(get_db)):
+    """nginx's check before it opens a live video websocket to go2rtc
+    (auth_request): a signed-in user, asking for one of the NVR's own camera
+    streams. The original request comes in X-Original-URI."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from app.core.deps import _resolve_user
+    from app.services.live_relay import camera_of
+
+    query = parse_qs(urlsplit(request.headers.get("X-Original-URI", "")).query)
+    token = (query.get("token") or [""])[0]
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    await _resolve_user(token, db)
+    camera_id = camera_of((query.get("src") or [""])[0])
+    camera = await db.get(Camera, camera_id) if camera_id is not None else None
+    if camera is None or not camera.enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unknown stream")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/motion-status", response_model=dict[int, MotionStatusOut])
