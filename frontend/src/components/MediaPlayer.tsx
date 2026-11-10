@@ -442,9 +442,14 @@ export const MediaPlayer = forwardRef<MediaPlayerHandle, Props>(function MediaPl
     if (!v) return;
     v.muted = props.muted;
     if (!props.muted && !v.paused) {
-      v.play().catch(() => {
-        v.muted = true;
-        propsRef.current.onSoundBlocked?.();
+      v.play().catch((e: unknown) => {
+        // Only the browser's "not allowed" means sound was blocked. Going
+        // full screen also switches to the main stream, whose reload
+        // interrupts this play() (AbortError) - that's not a reason to mute.
+        if (e instanceof DOMException && e.name === "NotAllowedError") {
+          v.muted = true;
+          propsRef.current.onSoundBlocked?.();
+        }
       });
     }
   }, [props.muted]);

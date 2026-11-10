@@ -6,6 +6,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-11-10
+
+### Fixed
+- **Full screen had no sound.** Going full screen unmutes the tile and
+  switches it to the main stream; the switch reloads the video, which
+  interrupts the unmuted play request. That interruption was taken for "the
+  browser blocks sound", so the video was muted straight away, leaving only a
+  small 🔇 button to show for it. Now only the browser's real refusal mutes.
+- If a browser does want a tap before playing sound, full screen shows a
+  clear "Tap for sound" button over the picture.
+
 ## [0.4.17] - 2026-11-10
 
 ### Fixed

@@ -140,6 +140,8 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   const [videoRes, setVideoRes] = useState("");
   const [spans, setSpans] = useState<[number, number][]>([]);
   const [soundOn, setSoundOn] = useState(true);
+  // The browser refused sound without a tap: shown big, not just as the icon.
+  const [soundBlocked, setSoundBlocked] = useState(false);
 
   const [showPicker, setShowPicker] = useState(false);
   const [pickerRecs, setPickerRecs] = useState<TileRecording[] | null>(null);
@@ -249,6 +251,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
       const fs = document.fullscreenElement === tileRef.current;
       setIsFullscreen(fs);
       if (fs) setSoundOn(true); // the tap that went full screen allows sound
+      setSoundBlocked(false);
     };
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
@@ -474,9 +477,24 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
             onFail={onFail}
             onGap={onGap}
             onTime={onTime}
-            onSoundBlocked={() => setSoundOn(false)}
+            onSoundBlocked={() => {
+              setSoundOn(false);
+              setSoundBlocked(true);
+            }}
           />
           {view === "playback" && gapMessage()}
+          {isFullscreen && soundBlocked && (
+            <button
+              className="tile-sound-tap"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSoundBlocked(false);
+                setSoundOn(true);
+              }}
+            >
+              🔇 Tap for sound
+            </button>
+          )}
         </>
       ) : view === "playback" ? (
         gapMessage()
@@ -567,6 +585,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
               title={soundOn ? "Mute" : "Sound on"}
               onClick={(e) => {
                 e.stopPropagation();
+                setSoundBlocked(false);
                 setSoundOn((s) => !s);
               }}
             >
