@@ -195,12 +195,17 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   // downloading. Playback picks up where it was when the page is shown again.
   const [pageHidden, setPageHidden] = useState(document.visibilityState === "hidden");
   useEffect(() => {
+    let wasHidden = document.visibilityState === "hidden";
     const onChange = () => {
       const hidden = document.visibilityState === "hidden";
       setPageHidden(hidden);
-      if (!hidden && playbackTsRef.current != null) {
+      // Only after it really was hidden (the player was closed): a
+      // visibility event that leaves the page visible must not restart a
+      // playback that's running fine.
+      if (!hidden && wasHidden && playbackTsRef.current != null) {
         setPlayFrom({ at: playbackTsRef.current, nonce: Date.now() });
       }
+      wasHidden = hidden;
     };
     document.addEventListener("visibilitychange", onChange);
     return () => document.removeEventListener("visibilitychange", onChange);

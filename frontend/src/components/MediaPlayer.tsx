@@ -332,7 +332,7 @@ export const MediaPlayer = forwardRef<MediaPlayerHandle, Props>(function MediaPl
     // A dropped connection mid-playback resumes from the frame on screen, not
     // from the moment first asked for.
     const noteResume = () => {
-      if (mode.kind === "play" && origin && seekTo == null) resumeAt = origin + video.currentTime;
+      if (mode.kind === "play" && origin && seekTo == null && video.readyState >= 2) resumeAt = origin + video.currentTime;
     };
 
     const reconnect = () => {
@@ -376,7 +376,11 @@ export const MediaPlayer = forwardRef<MediaPlayerHandle, Props>(function MediaPl
     }, 1000);
 
     const onTimeUpdate = () => {
-      if (mode.kind === "play" && origin && seekTo == null) propsRef.current.onTime?.((origin + video.currentTime) * 1000);
+      // Only real positions: not while a new source has no picture yet
+      // (currentTime 0) or a jump is under way.
+      if (mode.kind === "play" && origin && seekTo == null && video.readyState >= 2 && !video.seeking) {
+        propsRef.current.onTime?.((origin + video.currentTime) * 1000);
+      }
     };
     video.addEventListener("timeupdate", onTimeUpdate);
 
