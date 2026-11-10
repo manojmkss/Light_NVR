@@ -250,15 +250,25 @@ class LiveSource:
                 if produced:
                     backoff = 1.0
                     self.audio_fails = 0
+                    if has_audio and not audio:
+                        # Played without sound after sound failed - for this
+                        # run. Next time the stream (re)starts, sound gets
+                        # another chance.
+                        self.audio_ok = True
                 else:
                     if audio:
                         self.audio_fails += 1
                         if self.audio_fails >= 2:
-                            # The camera's sound is what stops the stream from
-                            # starting: carry on without it.
-                            logger.warning("Live camera %s: no picture with sound - continuing without",
+                            # Two failed starts with sound: try once without, to
+                            # see whether the sound is what stops it.
+                            logger.warning("Live camera %s: no picture with sound - trying without",
                                            self.camera_id)
                             self.audio_ok = False
+                    elif has_audio and not self.audio_ok:
+                        # Without sound it didn't start either: the camera was
+                        # busy or offline, not its sound. Keep the sound.
+                        self.audio_ok = True
+                        self.audio_fails = 0
                     backoff = min(backoff * 2, 30.0)
                 if self._idle():
                     break

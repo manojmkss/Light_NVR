@@ -6,6 +6,19 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-11-10
+
+### Fixed
+- **Full-screen live sound no longer goes missing after a camera hiccup.**
+  - If the main stream twice failed to start with sound, the live view
+    carried on without sound until everyone closed it - even when the sound
+    wasn't the reason. Seen on the NVR right after the v0.4.16 update, while
+    all the recorders were reconnecting to the cameras at once.
+  - Now it tries once without sound to find out. If that fails too, the
+    camera was busy or offline, so the next attempt includes sound again.
+    If it plays without sound, that view stays silent, and sound gets
+    another chance the next time the stream reconnects.
+
 ## [0.4.16] - 2026-11-10
 
 ### Added

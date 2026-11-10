@@ -376,3 +376,58 @@ def test_audio_is_copied_converted_or_dropped_by_what_actually_records(tmp_path,
 
     asyncio.run(scenario())
 
+
+
+# ── live: sound is given up only when it's really the sound ─────────────────
+
+
+def _attempts(monkeypatch, outcomes):
+    """Run a LiveSource against scripted start results; returns the audio flag
+    of each attempt. outcomes: callables (audio) -> produced."""
+    monkeypatch.setattr(media_engine.asyncio, "sleep", _no_sleep)
+    hub = media_engine.LiveHub()
+    src = media_engine.LiveSource(hub, 1, "main")
+    tried = []
+
+    async def fake_camera(self):
+        return "rtsp://x", True
+
+    async def fake_stream(self, url, audio):
+        tried.append(audio)
+        produced = outcomes[len(tried) - 1](audio)
+        if len(tried) == len(outcomes):  # script done: last viewer leaves
+            self.subs.clear()
+            self.empty_since = -1e9
+        return produced
+
+    monkeypatch.setattr(media_engine.LiveSource, "_camera", fake_camera)
+    monkeypatch.setattr(media_engine.LiveSource, "_stream_once", fake_stream)
+
+    async def go():
+        src.subs.add(media_engine.Subscriber("main"))
+        await src._run()
+
+    asyncio.run(go())
+    return tried
+
+
+_real_sleep = asyncio.sleep
+
+
+async def _no_sleep(_s=0, *a, **k):
+    await _real_sleep(0)
+
+
+def test_a_camera_that_was_busy_keeps_its_sound(monkeypatch):
+    down = lambda audio: False  # noqa: E731
+    up = lambda audio: True  # noqa: E731
+    # Camera refuses everything for a while (busy right after an update), then works.
+    tried = _attempts(monkeypatch, [down, down, down, up])
+    assert tried == [True, True, False, True]  # one try without sound, then sound again - and it plays with sound
+
+
+def test_sound_that_stops_the_stream_is_dropped_for_that_run_only(monkeypatch):
+    needs_silence = lambda audio: not audio  # noqa: E731
+    tried = _attempts(monkeypatch, [needs_silence] * 6)
+    # with sound x2, plays without; the stream ends; sound gets another chance, x2, without...
+    assert tried == [True, True, False, True, True, False]
