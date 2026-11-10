@@ -95,6 +95,7 @@ export const MediaPlayer = forwardRef<MediaPlayerHandle, Props>(function MediaPl
     let lastData = Date.now();
     let liveDeadline = 0;
     let failed = false;
+    let resumeAt: number | null = null; // playback: carry on from here after a reconnect
 
     const fail = (why: string) => {
       if (failed || disposed) return;
@@ -264,7 +265,8 @@ export const MediaPlayer = forwardRef<MediaPlayerHandle, Props>(function MediaPl
         send({ op: "live", camera: mode.camera, quality: mode.quality, audio: mode.audio });
       } else {
         liveDeadline = 0;
-        send({ op: "play", camera: mode.camera, at: mode.at, audio: mode.audio });
+        send({ op: "play", camera: mode.camera, at: resumeAt ?? mode.at, audio: mode.audio });
+        resumeAt = null;
       }
     };
 
@@ -320,13 +322,21 @@ export const MediaPlayer = forwardRef<MediaPlayerHandle, Props>(function MediaPl
       };
       sock.onclose = () => {
         if (ws !== sock || disposed) return;
+        noteResume();
         ws = null;
         reconnectTimer = setTimeout(connect, backoff);
         backoff = Math.min(backoff * 2, 10_000);
       };
     };
 
+    // A dropped connection mid-playback resumes from the frame on screen, not
+    // from the moment first asked for.
+    const noteResume = () => {
+      if (mode.kind === "play" && origin && seekTo == null) resumeAt = origin + video.currentTime;
+    };
+
     const reconnect = () => {
+      noteResume();
       const sock = ws;
       ws = null;
       if (sock) {
@@ -373,6 +383,7 @@ export const MediaPlayer = forwardRef<MediaPlayerHandle, Props>(function MediaPl
     engine.current = {
       setMode: (m) => {
         mode = m;
+        resumeAt = null;
         pendingInit = null;
         // Playback of a new moment: the old picture stops now, not when the
         // new one arrives (seekTo != null also keeps timeupdate quiet).

@@ -58,6 +58,10 @@ SUB_QUEUE_BYTES = {"sub": 1 * 1024 * 1024, "main": 3 * 1024 * 1024}  # then skip
 AHEAD_SECONDS = 20.0  # playback runs this far ahead of what's on screen
 SMALL_GAP = 15.0  # gaps up to this long are played straight across
 MAX_PLAYBACKS = 12  # FFmpeg playback processes at once, NVR-wide
+# What may wait in memory between FFmpeg and a viewer. A playback that's far
+# enough ahead stops reading; with a small pipe buffer FFmpeg then simply
+# waits, instead of up to 2x this sitting in the NVR's memory per viewer.
+PIPE_LIMIT = 256 * 1024
 
 
 def _ts(dt: datetime | None) -> float | None:
@@ -276,7 +280,7 @@ class LiveSource:
     async def _stream_once(self, url: str, audio: bool) -> bool:
         self.proc = proc = await asyncio.create_subprocess_exec(
             *live_cmd(url, audio), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            limit=4 * 1024 * 1024,
+            limit=PIPE_LIMIT,
         )
         err = asyncio.create_task(_drain(proc.stderr))
         reader = FragmentReader(proc.stdout)
@@ -671,6 +675,10 @@ class MediaSession:
                     nxt = await next_footage(camera_id, t)
                     if nxt is not None and nxt - t <= SMALL_GAP and nxt < time.time():
                         t = nxt + 0.05
+                        # The viewer's picture jumps the gap too: pace from there,
+                        # or the footage after it would wait for a position the
+                        # viewer can't reach without it.
+                        self.client_wall = max(self.client_wall, t)
                         continue
                     await self.send_json({"type": "gap", "at": t, "next_at": nxt})
                     return
@@ -697,7 +705,7 @@ class MediaSession:
         """Stream one file from wall time t. Returns (wall time reached, codecs)."""
         proc = await asyncio.create_subprocess_exec(
             *playback_cmd(piece.path, t - piece.origin, audio),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=8 * 1024 * 1024,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=PIPE_LIMIT,
         )
         err = asyncio.create_task(_drain(proc.stderr))
         reader = FragmentReader(proc.stdout)

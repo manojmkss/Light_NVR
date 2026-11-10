@@ -215,6 +215,29 @@ def test_playback_runs_ahead_only_so_far_then_follows_the_viewer_across_files(en
 
 
 @needs_ffmpeg
+def test_footage_after_a_skipped_gap_is_sent_without_waiting_for_the_viewer(env, monkeypatch):
+    """Pacing is against the viewer's position; a gap the engine plays across
+    moves that position too - else the footage after it waits for a position
+    the viewer can't reach without it (seen in the soak: no picture)."""
+    tmp, reg, maker = env
+    monkeypatch.setattr(media_engine, "AHEAD_SECONDS", 4.0)
+    t0 = time.time() - 3600
+    _add_recording(maker, _clip(tmp / "a.mp4", 4), t0, 4)
+    _add_recording(maker, _clip(tmp / "b.mp4", 10), t0 + 14, 10)  # 10 s gap: played across
+
+    async def scenario():
+        ws = FakeWS()
+        session = media_engine.MediaSession(ws, media_engine.Access())
+        await session.handle({"op": "play", "camera": 1, "at": t0 + 1, "audio": False})  # no position reports
+        await wait_for(lambda: any(w >= t0 + 14 for w in ws.frag_walls()), timeout=10)
+        await asyncio.sleep(1)
+        assert max(ws.frag_walls()) <= t0 + 14 + 4.0 + 1.1  # and still paced from there
+        await session._cancel_job()
+
+    asyncio.run(scenario())
+
+
+@needs_ffmpeg
 def test_playback_follows_the_segment_still_being_recorded(env, monkeypatch):
     tmp, reg, maker = env
     path = tmp / "growing.mp4"
