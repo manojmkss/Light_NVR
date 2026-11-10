@@ -6,6 +6,31 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-11-10
+
+### Fixed
+- **The guardian restarted a healthy backend every 16 minutes**, and
+  recreated all the NVR's containers every hour, on installs with LAN camera
+  scanning (macvlan).
+  - On those installs Docker makes the LAN network the backend's gateway and
+    silently drops its `127.0.0.1:8000` port, which is where the guardian
+    asked "are you answering?". It never got an answer, so it restarted the
+    backend, interrupting recording and live view, and sent "LightNVR is
+    down" messages.
+  - When the port doesn't answer, the guardian now asks from inside the
+    container, as Docker's own health check does. It acts only if that
+    fails too.
+- **Times were in UTC instead of the chosen time zone** when that zone has
+  an old name, such as Asia/Calcutta, which Windows browsers still report
+  for India.
+  - The backend's Debian 13 base dropped those names. The evening digest
+    came at 1:30 am IST, and dashboard days, alerts and visit summaries used
+    UTC.
+  - The old names are now included.
+- The Live View's stream readout and the motion-status API
+  (`/api/cameras/stream-stats`, `/api/cameras/motion-status`) always
+  failed: the request was taken for a camera number.
+
 ## [0.4.14] - 2026-10-27
 
 ### Added

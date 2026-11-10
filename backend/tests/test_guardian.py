@@ -21,7 +21,8 @@ class Host:
 
     def __init__(self):
         self.docker = True
-        self.backend = True
+        self.backend = True  # /api/health on the host's published port
+        self.backend_inside = None  # ... from inside the container (None: same as above)
         self.percent = 50.0
         self.containers = {
             "lightnvr-backend": ["running", HEALTHY, "ghcr.io/manojmkss/light_nvr-backend:0.4.14"],
@@ -38,6 +39,9 @@ class Host:
             return (0, "/nonexistent-docker-root") if self.docker else (1, "Cannot connect")
         if not self.docker and args[0] == "docker":
             return 1, "Cannot connect"
+        if args[:3] == ["docker", "exec", "lightnvr-backend"] and "curl" in args:
+            inside = self.backend if self.backend_inside is None else self.backend_inside
+            return (0, "") if inside else (7, "Failed to connect")
         if args[:3] == ["docker", "ps", "-a"] and "--filter" in args:
             return 0, "\n".join(f"{n}|{s}|{st}|{img}" for n, (s, st, img) in self.containers.items())
         if args[:3] == ["docker", "compose", "config"]:
@@ -97,6 +101,23 @@ def test_a_hung_backend_is_restarted_after_three_minutes_and_then_left_to_settle
     assert msgs and "restarted lightnvr-backend" in msgs[0]["message"]
     status = json.loads((tmp_path / "repo" / "storage" / "guardian" / "status.json").read_text())
     assert status["backend"] is False and status["recoveries"]
+
+
+def test_a_backend_without_a_published_port_is_asked_from_inside_and_left_alone(tmp_path):
+    """Production with the LAN-scan (macvlan) network: Docker drops the
+    127.0.0.1:8000 publish, so the host can't reach a perfectly healthy
+    backend. v0.4.14 restarted it every 16 minutes over that."""
+    g, host, clock = _make(tmp_path)
+    host.backend, host.backend_inside = False, True
+    _minutes(g, clock, 60)
+    assert host.actions() == []
+    assert host.telegrams == []
+    status = json.loads((tmp_path / "repo" / "storage" / "guardian" / "status.json").read_text())
+    assert status["backend"] is True and not status["problems"]
+    # Really hung (no answer from inside either): restarted as before.
+    host.backend_inside = False
+    _minutes(g, clock, 3)
+    assert host.actions() == [["docker", "restart", "-t", "45", "lightnvr-backend"]]
 
 
 def test_restarts_that_dont_help_escalate_to_recreating_on_the_running_version(tmp_path):

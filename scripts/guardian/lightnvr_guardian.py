@@ -242,6 +242,20 @@ class Guardian:
     def backend_url(self) -> str:
         return f"http://127.0.0.1:{self.env().get('BACKEND_PORT') or 8000}/api/health"
 
+    def backend_answers(self, running: bool) -> bool:
+        """/api/health from the host's published port - or, when that doesn't
+        answer, from inside the container (what Docker's own health check
+        does). With the LAN-scan (macvlan) network Docker makes that network
+        the container's gateway and silently drops the 127.0.0.1 port, so the
+        host-side check alone fails forever on a perfectly healthy backend."""
+        if self.http_ok(self.backend_url()):
+            return True
+        if not running:
+            return False
+        rc, _ = self.run(["docker", "exec", "lightnvr-backend", "curl", "-fsS", "-m", "5", "-o", "/dev/null",
+                          "http://localhost:8000/api/health"], timeout=20)
+        return rc == 0
+
     def problem(self, name: str, info: dict | None, backend_ok: bool) -> str | None:
         if info is None:
             return "missing"
@@ -555,7 +569,8 @@ class Guardian:
             self.fails.pop("docker", None)
 
         containers = self.containers() if docker_up else {}
-        backend_ok = self.http_ok(self.backend_url())
+        backend_ok = self.backend_answers(
+            (containers.get("lightnvr-backend") or {}).get("state") == "running")
         status["backend"] = backend_ok
         acted = False
         if docker_up:
