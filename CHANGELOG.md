@@ -6,6 +6,52 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-11-10
+
+### Added
+- **One media engine for live view and playback**: the cameras' own
+  H.264/H.265 video, never re-encoded, smooth over mobile data and Tailscale.
+  - Live tiles used to receive a JPEG for every frame: 5-10 Mbit/s per tile,
+    17-33 Mbit/s full screen. Over mobile data through Tailscale the picture
+    froze, and rewinding stalled.
+  - The NVR now sends the camera's own compressed video to the browser
+    (fragmented MP4 over one websocket per tile): about 0.5 Mbit/s for the
+    grid, 1.5-2 Mbit/s full screen, a fraction of a second behind live.
+  - **Live**: one connection to each camera stream however many people watch,
+    opened only while someone is watching. A new viewer gets a picture at
+    once, and a connection that can't keep up skips ahead to the next
+    keyframe instead of falling further behind.
+  - **Rewind / playback**: starts within about half a second at any moment.
+    The NVR sends only about 20 s ahead of what's on screen, never a whole
+    file. It plays straight across from one recording into the next,
+    including the one still being recorded.
+  - Part of the backend: no extra service, nothing new to install. The
+    kiosk display uses it too (its cameras, its rewind window).
+- **Sound in full screen**: a full-screen tile plays the main stream with the
+  camera's sound (G.711 is converted for the browser), with a mute button.
+  The grid stays silent.
+- Live and playback stop while the page is hidden (phone locked, app in the
+  background), so nothing downloads unseen. Playback resumes where it was.
+
+### Changed
+- **Recordings are played as recorded, H.265 included** - every current phone
+  and browser decodes it. The NVR no longer converts recordings to H.264 for
+  playback, and no longer records an extra H.264 copy of H.265 cameras' sub
+  stream (one camera connection and its disk space saved). Exports can still
+  be converted to H.264 for sharing.
+- H.265 recordings are labelled `hvc1`, which Safari and iPhones need to play
+  them.
+
+### Fixed
+- **A camera set to AAC sound stopped recording.** The NVR copied AAC sound
+  as it was, and some cameras' AAC is rejected by the MP4 writer - and since
+  sound and picture share the file, the picture was lost too.
+  - The sound is now tried before it's trusted: copied if that works,
+    otherwise converted, otherwise recorded without sound. Video is never lost
+    over sound.
+  - It's tried again if recording fails, so changing the camera's sound
+    setting while the NVR runs just works.
+
 ## [0.4.15] - 2026-11-10
 
 ### Fixed

@@ -528,6 +528,15 @@ tr:last-child td {
   font-size: 13px;
 }
 
+/* "No footage" / errors over the player (it stays, paused at the last frame). */
+.camera-tile .tile-empty.tile-over {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.72);
+  color: #e5e7eb;
+}
+
 .tile-video {
   width: 100%;
   height: 100%;

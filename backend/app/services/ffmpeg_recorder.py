@@ -94,10 +94,14 @@ async def _remux_to_seekable(path: str) -> None:
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return
     tmp = f"{path}.seek.tmp"
+    # H.265 labelled hvc1 (FFmpeg's default for a copied camera stream is
+    # hev1): Safari and iPhones only play hvc1 - with it, a recording plays
+    # as it is on every current phone and browser.
+    tag = ["-tag:v", "hvc1"] if await _probe_video_codec(path) == "hevc" else []
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", path,
-        "-c", "copy",
+        "-c", "copy", *tag,
         "-movflags", "+faststart",
         "-f", "mp4",
         tmp,
@@ -207,20 +211,60 @@ async def _probe_audio_codec(rtsp_url: str) -> str | None:
     return out.decode(errors="ignore").strip() or None
 
 
-async def _resolve_audio_mode(camera_id: int, rtsp_url: str, has_audio: bool) -> str:
-    """"copy" only when the camera's own audio is already AAC - the one codec
-    that's both valid inside MP4 and something cameras actually send, so a
-    stream-copy costs zero CPU. Anything else (G.711/G.726, which MP4 can't
-    hold directly, or a probe that failed) falls back to re-encoding to AAC -
-    the previous universal behavior - rather than risk `-c:a copy` producing a
-    file ffmpeg's MP4 muxer rejects outright, which would silently kill video
-    recording too since it's the same output file."""
+def _input_args(url: str) -> list[str]:
+    if url.startswith(("rtsp://", "rtsps://")):
+        return ["-rtsp_transport", "tcp", "-timeout", "10000000", "-i", url]
+    return ["-i", url]  # a local file (tests)
+
+
+async def _audio_trial(url: str, mode: str) -> bool:
+    """Three seconds recorded into nowhere with this audio mode: does the MP4
+    writer accept it? Audio and video share the file, so an audio track it
+    rejects would stop the video being recorded too."""
+    audio = {"copy": ["-map", "0:a:0?", "-c:a", "copy"], "aac": ["-map", "0:a:0?", "-c:a", "aac"]}.get(mode, ["-an"])
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", *_input_args(url), "-t", "3",
+           "-map", "0:v:0", "-c:v", "copy", *audio,
+           "-f", "mp4", "-movflags", "+frag_keyframe+empty_moov", "-y", os.devnull]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+        )
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=25)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return False
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        logger.info("Audio trial (%s) failed: %s", mode, err.decode(errors="ignore").strip()[-200:])
+    return proc.returncode == 0
+
+
+async def _resolve_audio_mode(camera_id: int, rtsp_url: str, has_audio: bool) -> str | None:
+    """How to record the camera's sound - tried, not assumed:
+
+    - "copy": the camera already sends AAC (zero CPU), and the MP4 writer
+      takes it as it is. Some cameras' AAC it doesn't (no audio config in the
+      stream): then
+    - "aac": convert it (G.711 / G.726, which MP4 can't hold, always are);
+    - "none": video only, when the sound can't be recorded either way -
+      never lose the picture over the sound.
+
+    None: the camera couldn't be reached to try - undecided, ask again later.
+    """
     if not has_audio:
         return "none"
     codec = await _probe_audio_codec(rtsp_url)
-    mode = "copy" if codec == "aac" else "aac"
-    logger.info("Camera %s audio: %s -> recording as %s", camera_id, codec or "unknown", mode)
-    return mode
+    for mode in (["copy", "aac"] if codec == "aac" else ["aac"]):
+        if await _audio_trial(rtsp_url, mode):
+            logger.info("Camera %s audio: %s -> recording as %s", camera_id, codec or "unknown", mode)
+            return mode
+    if await _audio_trial(rtsp_url, "none"):
+        logger.warning("Camera %s audio (%s) can't be recorded - recording video only", camera_id,
+                       codec or "unknown")
+        return "none"
+    return None
 
 
 async def _finalize_playback_copy(sub_path: str | None) -> str | None:
@@ -278,7 +322,8 @@ class ContinuousRecorder:
     async def _resolve_audio_mode(self) -> str:
         if self._audio_mode is None:
             self._audio_mode = await _resolve_audio_mode(self.camera_id, self.rtsp_url, self.has_audio)
-        return self._audio_mode
+        # Undecided (camera unreachable): the old default for this attempt.
+        return self._audio_mode or "aac"
 
     async def _start_sub(self, sub_path: str | None) -> asyncio.subprocess.Process | None:
         """Launch the best-effort parallel sub-stream copy. A separate process
@@ -423,6 +468,10 @@ class ContinuousRecorder:
         active_segment_registry.clear(self.camera_id)
         stderr_tail = stderr.decode(errors="ignore")[-300:].strip()
         logger.warning("Continuous recording failed for camera %s: %s", self.camera_id, stderr_tail)
+        # The camera's sound may have changed (G.711 <-> AAC in its settings):
+        # try the audio again before the next segment.
+        if self._audio_mode != "none":
+            self._audio_mode = None
         # The ffmpeg error tail is the most specific "why" we ever get
         # (401 Unauthorized, Connection refused, timeout...). mark_offline
         # scrubs any embedded credentials before storing it.

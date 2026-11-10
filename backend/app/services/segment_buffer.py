@@ -196,9 +196,11 @@ class SegmentBuffer:
     async def _run_once(self) -> bool:
         if self._audio_mode is None:
             self._audio_mode = await self._audio_mode_resolver() if self._audio_mode_resolver else "none"
+        # None: undecided (camera unreachable) - the old default this time.
+        audio_mode = self._audio_mode or "aac"
         self._run_no += 1
         pattern = os.path.join(self.directory, f"r{self._run_no:04d}_%06d.ts")
-        cmd = build_segment_cmd(self.input_url, pattern, self._audio_mode, self.SEGMENT_SECONDS)
+        cmd = build_segment_cmd(self.input_url, pattern, audio_mode, self.SEGMENT_SECONDS)
         self._proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
@@ -274,6 +276,8 @@ class SegmentBuffer:
             )
             if self.report_offline and not produced:
                 await mark_offline(self.camera_id, f"Recording failed: {tail[-200:]}" if tail else None)
+        if not produced and self._audio_mode_resolver and self._audio_mode != "none":
+            self._audio_mode = None  # the camera's sound may have changed: try it again
         return produced
 
     @staticmethod

@@ -48,11 +48,11 @@ export const browserPlaysHevc: boolean = (() => {
   }
 })();
 
-/** True when this recording won't play natively here and needs server-side
- *  transcoding (it's H.265 and the browser can't do HEVC). Accepts any object
- *  carrying a codec (full Recording or the narrower TileRecording). */
-export function recordingNeedsTranscode(rec: { codec?: string | null }): boolean {
-  return rec.codec === "h265" && !browserPlaysHevc;
+/** Recordings are played as recorded - H.265 included, which every current
+ *  phone and browser decodes - never converted on the NVR for playback (the
+ *  export's "H.264" option still converts, for sharing a file). */
+export function recordingNeedsTranscode(_rec: { codec?: string | null }): boolean {
+  return false;
 }
 
 /** Playback URL for a recording: the raw file when the browser can play it, or

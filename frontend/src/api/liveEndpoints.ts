@@ -19,6 +19,16 @@ export interface CameraTileEndpoints {
   /** Which parts of the window have footage, plus the NVR's clock. */
   timeline(cameraId: number, startSeconds: number): Promise<TimelineAnswer>;
   snapshotVideoUrl(cameraId: number, snapshotId: string): string;
+  /** The media engine's websocket (live + playback), with this surface's
+   *  credentials - a fresh one for every connection. */
+  mediaUrl?(): string;
+}
+
+/** ws(s):// form of an API path. */
+export function wsUrl(path: string): string {
+  const url = new URL(path, window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }
 
 export interface PlaybackAnswer {
@@ -72,4 +82,5 @@ export const authenticatedEndpoints: CameraTileEndpoints = {
   resolvePlayback: (cameraId, at) => apiFetch<PlaybackAnswer>(`/cameras/${cameraId}/playback?at=${at}`),
   timeline: (cameraId, start) => apiFetch<TimelineAnswer>(`/cameras/${cameraId}/timeline?start=${start}`),
   snapshotVideoUrl: (cameraId, snap) => buildMediaUrl(`/cameras/${cameraId}/playback/snap/${snap}.mp4`),
+  mediaUrl: () => wsUrl(buildMediaUrl("/media/ws")),
 };

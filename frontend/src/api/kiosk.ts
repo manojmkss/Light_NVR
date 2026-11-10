@@ -1,5 +1,5 @@
 import { apiFetch } from "./client";
-import type { CameraTileEndpoints, PlaybackAnswer, TileRecording, TimelineAnswer } from "./liveEndpoints";
+import { wsUrl, type CameraTileEndpoints, type PlaybackAnswer, type TileRecording, type TimelineAnswer } from "./liveEndpoints";
 import type { KioskPublicView, KioskView, LiveSegmentInfo, StreamStat } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -72,5 +72,7 @@ export function createKioskEndpoints(token: string): CameraTileEndpoints {
     resolvePlayback: (cameraId, at) => publicJson<PlaybackAnswer>(`${base}/cameras/${cameraId}/playback?at=${at}`),
     timeline: (cameraId, start) => publicJson<TimelineAnswer>(`${base}/cameras/${cameraId}/timeline?start=${start}`),
     snapshotVideoUrl: (cameraId, snap) => `${base}/cameras/${cameraId}/playback/snap/${snap}.mp4`,
+    // The kiosk link's own token: its cameras and its rewind window only.
+    mediaUrl: () => wsUrl(`${API_BASE}/media/ws?kiosk=${encodeURIComponent(token)}`),
   };
 }

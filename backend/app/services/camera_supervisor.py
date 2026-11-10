@@ -15,6 +15,14 @@ FIRST_RESTART_DELAY = 60.0  # minimum gap between automatic restarts of one came
 MAX_RESTART_DELAY = 3600.0
 
 
+def _live_restart(camera_id: int) -> None:
+    """Live viewers reconnect with the camera's new settings (or are told
+    it's gone)."""
+    from app.services.media_engine import live_hub
+
+    live_hub.restart_camera(camera_id)
+
+
 class CameraSupervisor:
     """Owns the set of running CameraWorkers and is the single place that
     starts/stops them - on app boot (recovery), on camera create/update/delete,
@@ -56,6 +64,7 @@ class CameraSupervisor:
             self._health_task = asyncio.create_task(self._health_loop())
 
     async def sync_camera(self, camera: Camera) -> None:
+        _live_restart(camera.id)
         async with self._lock(camera.id):
             await self._remove_locked(camera.id)
             if camera.enabled:
@@ -69,6 +78,7 @@ class CameraSupervisor:
             worker.area = getattr(camera, "area", None)
 
     async def remove_camera(self, camera_id: int) -> None:
+        _live_restart(camera_id)
         async with self._lock(camera_id):
             await self._remove_locked(camera_id)
 

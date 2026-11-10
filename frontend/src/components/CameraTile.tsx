@@ -2,13 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   authenticatedEndpoints,
   type CameraTileEndpoints,
-  type PlaybackAnswer,
   type TileCamera,
   type TileRecording,
 } from "../api/liveEndpoints";
-import { recordingNeedsTranscode } from "../api/recordings";
 import type { StreamStat } from "../api/types";
 import { useSettings } from "../context/SettingsContext";
+import { MediaPlayer, type MediaMode, type MediaPlayerHandle, mediaEngineSupported } from "./MediaPlayer";
 import { StatusBadge } from "./StatusBadge";
 
 // How far back the live tile's scrub bar reaches. Not a retention/deletion
@@ -19,9 +18,6 @@ const LIVE_EDGE_MS = 3000; // within 3s of "now" counts as live
 // Playback that catches up to within this of "now" hands over to live (the
 // newest few seconds are still inside ffmpeg's current fragment).
 const CATCH_UP_MS = 8000;
-// A scrub or a finished clip that lands in a gap this short (the second or
-// two between continuous segments) just carries on from the next footage.
-const SMALL_GAP_MS = 15000;
 const RESOLVE_DEBOUNCE_MS = 200;
 const TIMELINE_POLL_MS = 15000;
 
@@ -32,6 +28,9 @@ const TIMELINE_POLL_MS = 15000;
 // connection, a wedged decoder. A dropped connection raises onerror and is
 // already retried within seconds, so nothing depends on this being frequent.
 const STREAM_WATCHDOG_MS = 15 * 60 * 1000;
+// A live stream this device couldn't play (no H.265 decoder, say) is tried
+// again after this long; pictures in the meantime.
+const VIDEO_RETRY_MS = 2 * 60 * 1000;
 
 function fmtDuration(seconds: number | null): string {
   if (!seconds) return "";
@@ -120,40 +119,27 @@ interface CameraTileProps {
 
 type View = "live" | "paused" | "playback";
 
-/** What the <video> is playing: a file plus the wall time of its first frame. */
-interface Source {
-  url: string;
-  key: string;
-  originMs: number;
-  endMs: number;
-  growing: boolean; // a snapshot of the segment still being recorded
-}
-
 /** Why nothing is playing in playback view. */
-type Gap = { kind: "loading" } | { kind: "none"; nextAt: number | null } | { kind: "error"; message: string };
+type Gap = { kind: "none"; nextAt: number | null } | { kind: "error"; message: string };
 
 export function CameraTile({ camera, quality = "sub", stat, endpoints = authenticatedEndpoints }: CameraTileProps) {
   const { fmtTime } = useSettings();
   const tileRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const pendingSeek = useRef(0);
-  // True from the moment a new scrub target is set until the element's
-  // currentTime actually reaches it - while true we ignore timeupdate so the
-  // pre-seek position (the recording's start) can't drag the slider backward.
-  const seeking = useRef(false);
+  const playerRef = useRef<MediaPlayerHandle>(null);
 
   const [errorCount, setErrorCount] = useState(0);
-  const [streamKey, setStreamKey] = useState(0);
+  const [streamKey, setStreamKey] = useState(0); // picture-stream reconnects
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [view, setView] = useState<View>("live");
   const [playbackTs, setPlaybackTs] = useState<number | null>(null);
-  const [source, setSource] = useState<Source | null>(null);
+  const [playFrom, setPlayFrom] = useState<{ at: number; nonce: number } | null>(null);
   const [gap, setGap] = useState<Gap | null>(null);
   const [videoPaused, setVideoPaused] = useState(false);
   const [snapshotSrc, setSnapshotSrc] = useState("");
-  const [playbackRes, setPlaybackRes] = useState("");
+  const [videoRes, setVideoRes] = useState("");
   const [spans, setSpans] = useState<[number, number][]>([]);
+  const [soundOn, setSoundOn] = useState(true);
 
   const [showPicker, setShowPicker] = useState(false);
   const [pickerRecs, setPickerRecs] = useState<TileRecording[] | null>(null);
@@ -176,15 +162,62 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   }, []);
   const windowStart = now - SCRUB_WINDOW_MS;
 
-  const sourceRef = useRef<Source | null>(null);
-  sourceRef.current = source;
-  const resolveSeq = useRef(0);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const videoErrors = useRef(0);
+  const lastScrub = useRef(0);
+  const playbackTsRef = useRef<number | null>(null);
+  playbackTsRef.current = playbackTs;
 
-  // Live tiles use the substream; a maximised / fullscreen tile upgrades to the
-  // main stream for full detail.
+  // Live tiles use the substream; a full-screen tile the main stream, with
+  // its sound.
   const activeQuality: "sub" | "main" = isFullscreen ? "main" : quality;
+
+  // The media engine plays everything: live and recordings, the cameras' own
+  // video. Where a device can't play a stream (no H.265 decoder, say), live
+  // falls back to the picture stream for a while; main falls back to sub.
+  const engineOk = !!endpoints.mediaUrl && mediaEngineSupported();
+  const [liveFailed, setLiveFailed] = useState<{ sub: boolean; main: boolean }>({ sub: false, main: false });
+  const retryTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => retryTimers.current.forEach(clearTimeout), []);
+  const liveQuality: "sub" | "main" | null = !engineOk
+    ? null
+    : activeQuality === "main" && !liveFailed.main
+      ? "main"
+      : !liveFailed.sub
+        ? "sub"
+        : null;
+  const liveFailedFor = (q: "sub" | "main") => {
+    setLiveFailed((f) => ({ ...f, [q]: true }));
+    retryTimers.current.push(setTimeout(() => setLiveFailed((f) => ({ ...f, [q]: false })), VIDEO_RETRY_MS));
+  };
+
+  // Nothing plays while the page is hidden (phone locked, app in the
+  // background): nobody sees it, and on mobile data it would keep
+  // downloading. Playback picks up where it was when the page is shown again.
+  const [pageHidden, setPageHidden] = useState(document.visibilityState === "hidden");
+  useEffect(() => {
+    const onChange = () => {
+      const hidden = document.visibilityState === "hidden";
+      setPageHidden(hidden);
+      if (!hidden && playbackTsRef.current != null) {
+        setPlayFrom({ at: playbackTsRef.current, nonce: Date.now() });
+      }
+    };
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+
+  const mode: MediaMode | null =
+    !engineOk
+      ? null
+      : view === "playback" && playFrom
+        ? // Sound comes along (it's small); the player is muted unless full screen.
+          { kind: "play", camera: camera.id, at: playFrom.at / 1000, audio: true, nonce: playFrom.nonce }
+        : view === "live" && liveQuality
+          ? { kind: "live", camera: camera.id, quality: liveQuality, audio: liveQuality === "main" }
+          : null;
+  const muted = !(isFullscreen && soundOn);
+
+  const mediaUrl = useCallback(() => endpoints.mediaUrl!(), [endpoints]);
 
   // Where footage exists in the window (shaded on the scrub bar).
   useEffect(() => {
@@ -207,7 +240,11 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   }, [camera.id, endpoints]);
 
   useEffect(() => {
-    const onFsChange = () => setIsFullscreen(document.fullscreenElement === tileRef.current);
+    const onFsChange = () => {
+      const fs = document.fullscreenElement === tileRef.current;
+      setIsFullscreen(fs);
+      if (fs) setSoundOn(true); // the tap that went full screen allows sound
+    };
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
@@ -218,106 +255,24 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   }, []);
 
   const goLive = useCallback(() => {
-    resolveSeq.current += 1; // drop any answer still on its way
     if (debounce.current) clearTimeout(debounce.current);
     setView("live");
     setPlaybackTs(null);
-    setSource(null);
+    setPlayFrom(null);
     setGap(null);
     setSnapshotSrc("");
+    setVideoPaused(false);
   }, []);
 
-  /** Seek the element already showing `src` (no reload) to wall time `ts`. */
-  const seekWithin = (src: Source, ts: number) => {
-    const want = Math.max(0, (ts - src.originMs) / 1000);
-    pendingSeek.current = want;
-    const v = videoRef.current;
-    if (v && v.readyState >= 1) {
-      seeking.current = true;
-      try {
-        v.currentTime = want;
-      } catch {
-        /* not ready - onLoadedMetadata applies pendingSeek */
-      }
-      if (v.paused && !videoPaused) v.play().catch(() => {});
-    }
-  };
-
-  /** Ask the NVR what plays at `ts` and start it. `continuing`: called because
-   *  the previous file ended, so small gaps are skipped and the live edge
-   *  hands over to live instead of showing "no footage". */
-  const resolveAt = useCallback(
-    async (ts: number, continuing = false) => {
-      const seq = ++resolveSeq.current;
-      if (!sourceRef.current) setGap({ kind: "loading" });
-      let answer: PlaybackAnswer;
-      try {
-        answer = await endpoints.resolvePlayback(camera.id, ts / 1000);
-      } catch (e) {
-        if (seq !== resolveSeq.current) return;
-        setSource(null);
-        setGap({ kind: "error", message: "Couldn't reach the NVR - retrying…" });
-        setTimeout(() => seq === resolveSeq.current && resolveAt(ts, continuing), 3000);
-        return;
-      }
-      if (seq !== resolveSeq.current) return;
-      noteServerClock(answer.server_now);
-      const nowMs = answer.server_now * 1000;
-
-      if (!answer.found || answer.origin == null || answer.end == null) {
-        const nextAt = answer.next_at != null ? answer.next_at * 1000 : null;
-        if (nextAt != null && nextAt - ts <= SMALL_GAP_MS && nextAt < nowMs - LIVE_EDGE_MS) {
-          setPlaybackTs(nextAt);
-          resolveAt(nextAt + 250, continuing);
-          return;
-        }
-        if (continuing && ts >= nowMs - CATCH_UP_MS * 2) {
-          goLive();
-          return;
-        }
-        setSource(null);
-        setGap({ kind: "none", nextAt });
-        return;
-      }
-
-      const next: Source =
-        answer.kind === "recording"
-          ? {
-              // H.265 recordings need the on-demand H.264 copy on browsers that
-              // can't play HEVC; segment snapshots prefer the H.264 sub already.
-              url: endpoints.recordingVideoUrl(answer.recording_id!, recordingNeedsTranscode({ codec: answer.codec })),
-              key: `rec-${answer.recording_id}`,
-              originMs: answer.origin * 1000,
-              endMs: answer.end * 1000,
-              growing: false,
-            }
-          : {
-              url: endpoints.snapshotVideoUrl(camera.id, answer.snapshot!),
-              key: `snap-${answer.snapshot}`,
-              originMs: answer.origin * 1000,
-              endMs: answer.end * 1000,
-              growing: !!answer.growing,
-            };
-      // Past the end of what's been written so far: start a little before it.
-      const target = Math.min(ts, next.endMs - 1500);
-      if (continuing && next.growing && target >= nowMs - CATCH_UP_MS) {
-        goLive();
-        return;
-      }
-      setGap(null);
-      setPlaybackTs(target);
-      if (sourceRef.current?.key === next.key) {
-        seekWithin(sourceRef.current, target);
-      } else {
-        pendingSeek.current = Math.max(0, (target - next.originMs) / 1000);
-        seeking.current = true;
-        setPlaybackRes("");
-        setSource(next);
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [camera.id, endpoints, goLive],
-  );
+  /** Play the recordings from wall time `ts` (ms). */
+  const playAt = useCallback((ts: number) => {
+    setGap(null);
+    setView("playback");
+    setPlaybackTs(ts);
+    setVideoPaused(false);
+    lastScrub.current = Date.now();
+    setPlayFrom({ at: ts, nonce: Date.now() });
+  }, []);
 
   // Move to a point in the window; snapping to the live edge resumes live.
   const scrubTo = useCallback(
@@ -326,23 +281,16 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
         goLive();
         return;
       }
-      setView("playback");
+      lastScrub.current = Date.now();
       setPlaybackTs(ts);
-      setVideoPaused(false);
-      videoErrors.current = 0;
-      // Inside what's already loaded: just seek, no round trip.
-      const cur = sourceRef.current;
-      if (cur && ts >= cur.originMs && ts <= cur.endMs - 500) {
-        if (debounce.current) clearTimeout(debounce.current);
-        resolveSeq.current += 1;
-        seekWithin(cur, ts);
-        return;
-      }
       if (debounce.current) clearTimeout(debounce.current);
-      debounce.current = setTimeout(() => resolveAt(ts), RESOLVE_DEBOUNCE_MS);
+      // Inside what's already loaded: just jump, no round trip.
+      if (view === "playback" && !gap && playerRef.current?.seekLocal(ts)) return;
+      if (view !== "playback") setView("playback");
+      debounce.current = setTimeout(() => playAt(ts), RESOLVE_DEBOUNCE_MS);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [goLive, resolveAt],
+    [goLive, playAt, view, gap],
   );
 
   useEffect(() => () => {
@@ -357,44 +305,41 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
     } else if (view === "paused") {
       goLive();
     } else {
-      const v = videoRef.current;
-      if (!v) return;
-      if (v.paused) {
-        v.play().catch(() => {});
-        setVideoPaused(false);
-      } else {
-        v.pause();
-        setVideoPaused(true);
-      }
+      setVideoPaused((p) => !p);
     }
   }, [view, camera.id, endpoints, goLive]);
 
-  /** The file finished: carry on with whatever comes next. */
-  const onEnded = () => {
-    const s = sourceRef.current;
-    const v = videoRef.current;
-    if (!s) return;
-    const reached = s.originMs + (v && isFinite(v.duration) ? v.duration * 1000 : s.endMs - s.originMs);
-    // A growing segment's snapshot ends where the recording had got to: ask
-    // again for a fresher one from here. A finished file: the next one.
-    resolveAt(s.growing ? reached : Math.max(reached, s.endMs) + 250, true);
-  };
+  const onTime = useCallback(
+    (wallMs: number) => {
+      if (Date.now() - lastScrub.current < 1500) return; // the slider leads while it's being moved
+      setPlaybackTs(wallMs);
+      if (wallMs >= serverNow() - LIVE_EDGE_MS) goLive();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [goLive],
+  );
 
-  /** The file failed to load (moved by the storage mover, expired, ...):
-   *  ask again rather than leave a dead tile; give up after a couple of tries. */
-  const onVideoError = () => {
-    const s = sourceRef.current;
-    if (!s) return;
-    videoErrors.current += 1;
-    const at = playbackTs ?? s.originMs;
-    if (videoErrors.current <= 2) {
-      setSource(null);
-      setTimeout(() => resolveAt(at), 1000);
-    } else {
-      setSource(null);
-      setGap({ kind: "error", message: "This recording couldn't be played." });
-    }
-  };
+  const onGap = useCallback(
+    (at: number, nextAt: number | null) => {
+      // Played up to the present: carry on live.
+      if (nextAt == null && at * 1000 >= serverNow() - CATCH_UP_MS * 2) {
+        goLive();
+        return;
+      }
+      setGap({ kind: "none", nextAt: nextAt != null ? nextAt * 1000 : null });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [goLive],
+  );
+
+  const onFail = useCallback(
+    (why: string) => {
+      if (view === "playback") setGap({ kind: "error", message: why });
+      else if (liveQuality) liveFailedFor(liveQuality);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [view, liveQuality],
+  );
 
   const openPicker = useCallback(
     async (e: React.MouseEvent) => {
@@ -423,18 +368,17 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
 
   const streamUrl = endpoints.streamUrl(camera.id, activeQuality, streamKey);
   const offline = camera.status === "offline" || errorCount > 2;
+  const showsPictures = view === "live" && !mode;
 
-  // Stream watchdog.
+  // Picture-stream watchdog (only when live view falls back to pictures; the
+  // media engine's player watches its own stream).
   //
   // An <img> gives no per-frame signal, and a stream that simply stops - a
   // proxy dropping an idle connection, a wedged decoder, a tab that was
-  // backgrounded - ends without firing onerror, so nothing above ever learns
-  // the picture is dead. Rather than leave a tile frozen until someone walks
-  // past and notices, re-request the stream on a timer: it's one cheap HTTP
-  // request and it guarantees any stall self-heals within the interval.
-  // Reconnecting on tab-visible covers the common case of a display waking up.
+  // backgrounded - ends without firing onerror. Re-request it on a timer, and
+  // when the page is shown again.
   useEffect(() => {
-    if (view !== "live" || offline) return;
+    if (!showsPictures || offline) return;
     const reconnect = () => setStreamKey((k) => k + 1);
     // Spread tiles out so a full wall doesn't reconnect in lockstep.
     const jitter = (camera.id % 7) * 1500;
@@ -447,7 +391,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [view, offline, camera.id]);
+  }, [showsPictures, offline, camera.id]);
 
   const liveState =
     offline
@@ -459,19 +403,22 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   // Stream / resolution readout.
   const streamInfo =
     view === "playback"
-      ? `recording${source && playbackRes ? ` · ${playbackRes}` : ""}`
-      : stat && stat.width > 0
-        ? `${activeQuality === "main" ? "main" : "sub"} · ${stat.width}×${stat.height}`
-        : activeQuality === "main"
-          ? "main"
-          : "sub";
+      ? `recording${videoRes ? ` · ${videoRes}` : ""}`
+      : mode?.kind === "live"
+        ? `${mode.quality} · video${videoRes ? ` · ${videoRes}` : ""}`
+        : stat && stat.width > 0
+          ? `${activeQuality === "main" ? "main" : "sub"} · ${stat.width}×${stat.height}`
+          : activeQuality === "main"
+            ? "main"
+            : "sub";
 
   const sliderValue = playbackTs ?? now;
   const isLive = view === "live";
 
   const gapMessage = () => {
-    if (!gap || gap.kind === "loading") return <div className="tile-empty">Loading recording…</div>;
-    if (gap.kind === "error") return <div className="tile-empty">{gap.message}</div>;
+    if (!engineOk) return <div className="tile-empty">Playing recordings needs a current browser.</div>;
+    if (!gap) return null;
+    if (gap.kind === "error") return <div className="tile-empty tile-over">{gap.message}</div>;
     const why =
       camera.recording_mode === "motion"
         ? "This camera only records when there's motion."
@@ -479,7 +426,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
           ? "Recording is turned off for this camera."
           : "The camera wasn't recording then (offline or restarting).";
     return (
-      <div className="tile-empty" style={{ flexDirection: "column", gap: 8, textAlign: "center" }}>
+      <div className="tile-empty tile-over" style={{ flexDirection: "column", gap: 8, textAlign: "center" }}>
         <div>No footage at this moment.</div>
         <div style={{ fontSize: 12, opacity: 0.8 }}>{why}</div>
         {gap.nextAt != null && gap.nextAt < now - LIVE_EDGE_MS && (
@@ -487,8 +434,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
             className="tile-ctrl-btn"
             onClick={(e) => {
               e.stopPropagation();
-              setPlaybackTs(gap.nextAt!);
-              resolveAt(gap.nextAt! + 250);
+              playAt(gap.nextAt! + 250);
             }}
           >
             Jump to next footage ({fmtTime(gap.nextAt)})
@@ -501,53 +447,34 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
   return (
     <div ref={tileRef} className="camera-tile" onDoubleClick={enterFullscreen}>
       {/* ── Media ── */}
-      {offline ? (
+      {offline && view !== "playback" ? (
         <div className="tile-empty">{camera.name}: offline</div>
-      ) : view === "playback" && source ? (
-        <video
-          key={source.key}
-          ref={videoRef}
-          autoPlay
-          className="tile-video"
-          src={source.url}
-          onLoadedMetadata={() => {
-            const v = videoRef.current;
-            if (!v) return;
-            videoErrors.current = 0;
-            setPlaybackRes(`${v.videoWidth}×${v.videoHeight}`);
-            try {
-              v.currentTime = pendingSeek.current;
-            } catch {
-              /* ignore */
-            }
-          }}
-          onTimeUpdate={() => {
-            const v = videoRef.current;
-            if (!v) return;
-            // Until the requested seek actually lands, don't let the element's
-            // (stale) position write back to the slider - that's what made a
-            // click jump backward to the clip's start.
-            if (seeking.current) {
-              if (Math.abs(v.currentTime - pendingSeek.current) < 0.4) seeking.current = false;
-              return;
-            }
-            if (!v.paused) {
-              const ts = source.originMs + v.currentTime * 1000;
-              setPlaybackTs(ts);
-              if (ts >= serverNow() - LIVE_EDGE_MS) goLive();
-            }
-          }}
-          onSeeked={() => {
-            const v = videoRef.current;
-            if (v && Math.abs(v.currentTime - pendingSeek.current) < 0.4) seeking.current = false;
-          }}
-          onEnded={onEnded}
-          onError={onVideoError}
-        />
-      ) : view === "playback" ? (
-        gapMessage()
       ) : view === "paused" ? (
         <img src={snapshotSrc} alt={camera.name} className="tile-frozen" />
+      ) : pageHidden && engineOk ? (
+        <div className="tile-video" />
+      ) : mode ? (
+        <>
+          <MediaPlayer
+            ref={playerRef}
+            url={mediaUrl}
+            mode={mode}
+            muted={muted}
+            paused={view === "playback" && videoPaused}
+            className="tile-video"
+            onPlaying={(w, h) => {
+              setErrorCount(0);
+              if (w && h) setVideoRes(`${w}×${h}`);
+            }}
+            onFail={onFail}
+            onGap={onGap}
+            onTime={onTime}
+            onSoundBlocked={() => setSoundOn(false)}
+          />
+          {view === "playback" && gapMessage()}
+        </>
+      ) : view === "playback" ? (
+        gapMessage()
       ) : (
         <img src={streamUrl} alt={camera.name} onError={handleError} onLoad={() => setErrorCount(0)} />
       )}
@@ -562,7 +489,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
           {camera.name}
         </span>
         <span className="tile-topbar-right">
-          {!offline && stat && stat.kbps > 0 && view !== "playback" && (
+          {!offline && stat && stat.kbps > 0 && view !== "playback" && showsPictures && (
             <span className="tile-bitrate">{fmtBitrate(stat.kbps)}</span>
           )}
           <button className="tile-ctrl-btn" title="Browse older recordings" onClick={openPicker}>
@@ -573,7 +500,7 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
       </div>
 
       {/* ── Permanent control bar (below the video) ── */}
-      {!offline && (
+      {(!offline || view === "playback") && (
         <div className="tile-controls" onDoubleClick={(e) => e.stopPropagation()}>
           <button
             className="tile-ctrl-btn tile-play"
@@ -629,6 +556,19 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
             ⏭ Live
           </button>
 
+          {isFullscreen && mode && (
+            <button
+              className="tile-ctrl-btn"
+              title={soundOn ? "Mute" : "Sound on"}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSoundOn((s) => !s);
+              }}
+            >
+              {soundOn ? "🔊" : "🔇"}
+            </button>
+          )}
+
           <button
             className="tile-ctrl-btn"
             title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
@@ -660,12 +600,8 @@ export function CameraTile({ camera, quality = "sub", stat, endpoints = authenti
                   key={rec.id}
                   className="tile-rec-item"
                   onClick={() => {
-                    const ts = recStartMs(rec) + 250;
-                    setView("playback");
-                    setPlaybackTs(ts);
-                    setVideoPaused(false);
                     setShowPicker(false);
-                    resolveAt(ts);
+                    playAt(recStartMs(rec) + 250);
                   }}
                 >
                   <span>{fmtTime(rec.started_at)}</span>

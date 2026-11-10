@@ -105,11 +105,11 @@ class CameraWorker:
         self.name = camera.name
         self.rtsp_main_url = camera.rtsp_main_url
         self.rtsp_sub_url = camera.rtsp_sub_url or camera.rtsp_main_url
-        # Record the H.264 sub-stream as a browser-playback copy only when the
-        # main is H.265 (what browsers can't decode) - an H.264 main already
-        # plays directly, so a copy would just waste a stream + disk. The
-        # recorders further require the sub to be a distinct URL from the main.
-        self._playback_sub_url = self.rtsp_sub_url if camera.codec == "h265" else None
+        # No H.264 "playback copy" of the sub stream any more: recordings are
+        # played as recorded (H.265 included - every current phone and browser
+        # decodes it), through the media engine. That saves a camera
+        # connection and its disk space for every H.265 camera.
+        self._playback_sub_url = None
         self.has_audio = camera.has_audio
         self.recording_mode = camera.recording_mode
         self.motion_enabled = camera.motion_enabled or camera.recording_mode == "motion"

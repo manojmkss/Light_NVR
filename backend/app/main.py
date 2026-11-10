@@ -30,6 +30,7 @@ from app.api.routes import (
     faces,
     kiosk,
     live,
+    media,
     push,
     recordings,
     remote_access,
@@ -191,8 +192,12 @@ async def lifespan(app: FastAPI):
 
     await hq_stream_manager.shutdown()
 
+    from app.services.media_engine import live_hub
 
-app = FastAPI(title="LightNVR API", version="0.4.15", lifespan=lifespan)
+    await live_hub.shutdown()
+
+
+app = FastAPI(title="LightNVR API", version="0.4.16", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -216,6 +221,7 @@ app.include_router(backup.router)
 # /motion-status) would otherwise be taken for a camera id by cameras'
 # /api/cameras/{camera_id} and fail with 422.
 app.include_router(live.router)
+app.include_router(media.router)
 app.include_router(cameras.router)
 app.include_router(faces.router)
 app.include_router(push.router)

@@ -78,6 +78,12 @@ async def export_clip(segs: list[tuple[str, float, float, float]], out_path: str
         timeout = 1800
     else:
         codec_args = ["-c", "copy"]
+        # H.265 labelled hvc1, which Safari / iPhones need to play it (a copied
+        # camera stream is otherwise hev1).
+        from app.services.ffmpeg_recorder import _probe_video_codec
+
+        if segs and await _probe_video_codec(segs[0][0]) == "hevc":
+            codec_args += ["-tag:v", "hvc1"]
         timeout = EXPORT_TIMEOUT_SECONDS
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
