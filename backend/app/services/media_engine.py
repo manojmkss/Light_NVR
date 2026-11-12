@@ -46,6 +46,7 @@ from app.db.session import AsyncSessionLocal
 from app.models.camera import Camera
 from app.models.recording import Recording
 from app.services.active_segment import active_segment_registry
+from app.services.camera_gate import camera_gate
 from app.services.fmp4 import Fmp4Error, FragmentReader, InitInfo, boxes, first, parse_fragment, parse_init
 
 logger = logging.getLogger(__name__)
@@ -246,7 +247,16 @@ class LiveSource:
                     return
                 url, has_audio = cam
                 audio = has_audio and self.audio_ok
+                # Optional: wait while the camera is resting from failures.
+                while camera_gate.wait_seconds(self.camera_id, essential=False) > 0:
+                    if self._idle():
+                        return
+                    await asyncio.sleep(1)
                 produced = await self._stream_once(url, audio)
+                if produced:
+                    camera_gate.ok(self.camera_id)
+                elif not self._idle():
+                    camera_gate.failed(self.camera_id, "live stream did not start")
                 if produced:
                     backoff = 1.0
                     self.audio_fails = 0

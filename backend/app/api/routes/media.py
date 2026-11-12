@@ -60,4 +60,6 @@ async def media_stats(_: User = Depends(require_admin)):
     """Live streams in use: viewers, data in, restarts, skips (slow viewers)."""
     from app.services import media_engine
 
-    return {"live": live_hub.stats(), "playbacks": media_engine._playbacks}
+    from app.services.camera_gate import camera_gate
+
+    return {"live": live_hub.stats(), "playbacks": media_engine._playbacks, "camera_rest": camera_gate.status()}

@@ -7,6 +7,7 @@ from typing import Awaitable, Callable
 
 import cv2
 
+from app.services.camera_gate import camera_gate
 from app.services.frame_bus import frame_bus
 from app.services.motion_detector import MotionDetector, MotionSample
 from app.services.status_tracker import heartbeat, mark_offline, mark_online
@@ -129,11 +130,16 @@ class StreamViewer:
         while not self._stop_event.is_set():
             self.last_activity = time.monotonic()
             try:
+                # A camera refusing connections (403) rests from all of ours.
+                if not camera_gate.wait_thread(self.camera_id, essential=True, stop=self._stop_event):
+                    break
+                self.last_activity = time.monotonic()
                 cap = cv2.VideoCapture(self.stream_url)
                 self.last_activity = time.monotonic()
                 if not cap.isOpened():
                     logger.warning("Could not open stream for camera %s", self.camera_id)
                     cap.release()
+                    camera_gate.failed(self.camera_id, "could not open")
                     # OpenCV gives no reason for the failure; name the likely
                     # causes so the Cameras page shows something actionable.
                     self._schedule(mark_offline(
@@ -146,6 +152,7 @@ class StreamViewer:
                     continue
 
                 backoff = 2
+                camera_gate.ok(self.camera_id)
                 self._decode_loop(cap)  # releases cap
                 frame_bus.clear(self.camera_id)
 

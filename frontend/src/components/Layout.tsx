@@ -8,7 +8,7 @@ import { usePolling } from "../hooks/usePolling";
 import { formatUptime } from "./SystemStatsCard";
 
 // Bumped with every release (see CHANGELOG.md).
-const APP_VERSION = "0.4.20";
+const APP_VERSION = "0.4.21";
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", icon: "▦" },

@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from app.services.active_segment import active_segment_registry
+from app.services.camera_gate import camera_gate, looks_like_connection_problem
 from app.services.clip_exporter import export_clip
 from app.services.events import emit_event
 from app.services.recording_registry import register_recording
@@ -211,6 +212,9 @@ async def _probe_audio_codec(rtsp_url: str) -> str | None:
     return out.decode(errors="ignore").strip() or None
 
 
+AUDIO_RETRY_SECONDS = 600  # an undecided sound test is tried again after this
+
+
 def _input_args(url: str) -> list[str]:
     if url.startswith(("rtsp://", "rtsps://")):
         return ["-rtsp_transport", "tcp", "-timeout", "10000000", "-i", url]
@@ -310,6 +314,9 @@ class ContinuousRecorder:
         # every segment this instance records; a fresh instance after a
         # restart re-resolves it, picking up any camera-side audio change.
         self._audio_mode: str | None = None
+        # Undecided (camera unreachable when tried): try the sound again only
+        # after this (monotonic) - not on every reconnect attempt.
+        self._audio_retry_at = 0.0
         # In-flight segment finalizations (remux-to-seekable + DB register),
         # run in the background so the next segment starts with no gap.
         self._finalize_tasks: set[asyncio.Task] = set()
@@ -320,8 +327,10 @@ class ContinuousRecorder:
         self._exited = asyncio.Event()  # run() has returned (stop() waits for it)
 
     async def _resolve_audio_mode(self) -> str:
-        if self._audio_mode is None:
+        if self._audio_mode is None and time.monotonic() >= self._audio_retry_at:
             self._audio_mode = await _resolve_audio_mode(self.camera_id, self.rtsp_url, self.has_audio)
+            if self._audio_mode is None:
+                self._audio_retry_at = time.monotonic() + AUDIO_RETRY_SECONDS
         # Undecided (camera unreachable): the old default for this attempt.
         return self._audio_mode or "aac"
 
@@ -405,6 +414,11 @@ class ContinuousRecorder:
             self._paused_for_space = False
             await emit_event(self.camera_id, "system", "Recording resumed - cache space available again")
 
+        # A camera that's refusing connections (403) gets a rest from all of
+        # the NVR's connections at once, recording's included.
+        if not await camera_gate.wait(self.camera_id, essential=True, stop=self._stop):
+            return backoff
+
         started_at = datetime.now(timezone.utc)
         ts = started_at.strftime("%Y%m%d_%H%M%S")
         output_path = f"{_camera_dir(self.camera_id)}/{ts}_continuous.mp4"
@@ -454,6 +468,7 @@ class ContinuousRecorder:
             return backoff
 
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            camera_gate.ok(self.camera_id)
             self.last_segment_at = time.monotonic()
             # Still playable (from the registry) while it's being finalized.
             active_segment_registry.close(self.camera_id, output_path, ended_at)
@@ -468,10 +483,13 @@ class ContinuousRecorder:
         active_segment_registry.clear(self.camera_id)
         stderr_tail = stderr.decode(errors="ignore")[-300:].strip()
         logger.warning("Continuous recording failed for camera %s: %s", self.camera_id, stderr_tail)
+        camera_gate.failed(self.camera_id, stderr_tail)
         # The camera's sound may have changed (G.711 <-> AAC in its settings):
-        # try the audio again before the next segment.
-        if self._audio_mode != "none":
+        # try the audio again before the next segment - unless the camera just
+        # wasn't reachable, when trying the sound only adds connections.
+        if self._audio_mode != "none" and not looks_like_connection_problem(stderr_tail):
             self._audio_mode = None
+            self._audio_retry_at = 0.0
         # The ffmpeg error tail is the most specific "why" we ever get
         # (401 Unauthorized, Connection refused, timeout...). mark_offline
         # scrubs any embedded credentials before storing it.

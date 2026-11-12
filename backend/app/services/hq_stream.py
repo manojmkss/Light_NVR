@@ -5,6 +5,8 @@ import time
 
 import cv2
 
+from app.services.camera_gate import camera_gate
+
 from app.services.frame_bus import FrameBus
 from app.services.stream_stats import stream_stats
 
@@ -59,14 +61,20 @@ class _HQDecoder:
         backoff = 2
         while not self._stop.is_set():
             try:
+                # Optional: rests whenever the camera has just failed anyone,
+                # so it never adds to the load on a camera that's struggling.
+                if not camera_gate.wait_thread(self.camera_id, essential=False, stop=self._stop):
+                    break
                 cap = cv2.VideoCapture(self.url)
                 if not cap.isOpened():
                     logger.warning("HQ: could not open main stream for camera %s", self.camera_id)
                     cap.release()
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, 30)
+                    camera_gate.failed(self.camera_id, "could not open")
+                    self._stop.wait(backoff)
+                    backoff = min(backoff * 2, 60)
                     continue
                 backoff = 2
+                camera_gate.ok(self.camera_id)
                 self._decode_loop(cap)
                 cap.release()
             except Exception:

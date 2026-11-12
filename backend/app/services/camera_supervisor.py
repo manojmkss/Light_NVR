@@ -18,8 +18,10 @@ MAX_RESTART_DELAY = 3600.0
 def _live_restart(camera_id: int) -> None:
     """Live viewers reconnect with the camera's new settings (or are told
     it's gone)."""
+    from app.services.camera_gate import camera_gate
     from app.services.media_engine import live_hub
 
+    camera_gate.ok(camera_id)  # new settings (address, password): a fresh start
     live_hub.restart_camera(camera_id)
 
 

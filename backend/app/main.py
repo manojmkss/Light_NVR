@@ -197,7 +197,7 @@ async def lifespan(app: FastAPI):
     await live_hub.shutdown()
 
 
-app = FastAPI(title="LightNVR API", version="0.4.20", lifespan=lifespan)
+app = FastAPI(title="LightNVR API", version="0.4.21", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

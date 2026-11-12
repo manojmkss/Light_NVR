@@ -402,6 +402,8 @@ def _attempts(monkeypatch, outcomes):
 
     monkeypatch.setattr(media_engine.LiveSource, "_camera", fake_camera)
     monkeypatch.setattr(media_engine.LiveSource, "_stream_once", fake_stream)
+    # The sound logic is under test here, not the camera's rests (test_camera_gate.py).
+    monkeypatch.setattr(media_engine.camera_gate, "wait_seconds", lambda *a, **k: 0.0)
 
     async def go():
         src.subs.add(media_engine.Subscriber("main"))

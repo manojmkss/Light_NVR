@@ -6,6 +6,27 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.21] - 2026-11-12
+
+### Fixed
+- **A camera that drops off, or refuses connections, gets a rest instead of
+  being hammered.**
+  - Seen on NVR-New: the CP Plus Wi-Fi camera's daily 04:00 reboot turned into
+    two hours without recording. Afterwards the camera answered "403
+    Forbidden" - too many connections, or a lockout after too many failed
+    attempts - while the recorder, the motion detector, face capture and live
+    view each kept retrying on their own, every few seconds.
+  - They now share one view of each camera. Face capture and live view pause
+    after any failure (10 s, doubling up to 5 min). While a camera answers
+    403, recording and motion detection pause too (15 s, doubling up to
+    2 min). After a pause one connection tries first, and the others follow
+    once it works.
+  - A face-capture stream the camera refuses can never delay a recording.
+- The recording's sound test no longer runs again on every reconnect attempt
+  while a camera is unreachable. It opened up to three extra connections each
+  time. It now runs again only after a sound-related failure, or after 10
+  minutes.
+
 ## [0.4.20] - 2026-11-12
 
 ### Fixed

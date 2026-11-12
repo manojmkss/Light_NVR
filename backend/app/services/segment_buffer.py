@@ -5,6 +5,7 @@ import shutil
 import time
 from dataclasses import dataclass
 
+from app.services.camera_gate import camera_gate, looks_like_connection_problem
 from app.services.status_tracker import heartbeat, mark_offline
 from app.services.storage_manager import storage_manager
 
@@ -100,6 +101,7 @@ class SegmentBuffer:
         # Coroutine returning "copy" | "aac" | "none"; resolved once per buffer.
         self._audio_mode_resolver = audio_mode_resolver
         self._audio_mode: str | None = None
+        self._audio_retry_at = 0.0  # undecided sound test: try again after this (monotonic)
         self.directory = _buffer_dir(camera_id, name)
         self._segments: list[BufferSegment] = []
         self._holds: dict[object, float] = {}
@@ -194,8 +196,14 @@ class SegmentBuffer:
         os.makedirs(self.directory, exist_ok=True)
 
     async def _run_once(self) -> bool:
-        if self._audio_mode is None:
+        # A camera that's refusing connections (403) gets a rest from all of
+        # the NVR's connections at once.
+        if not await camera_gate.wait(self.camera_id, essential=True, stop=self._stop):
+            return False
+        if self._audio_mode is None and time.monotonic() >= self._audio_retry_at:
             self._audio_mode = await self._audio_mode_resolver() if self._audio_mode_resolver else "none"
+            if self._audio_mode is None:
+                self._audio_retry_at = time.monotonic() + 600
         # None: undecided (camera unreachable) - the old default this time.
         audio_mode = self._audio_mode or "aac"
         self._run_no += 1
@@ -268,16 +276,22 @@ class SegmentBuffer:
             async with self._new_segment:
                 self._new_segment.notify_all()
 
+        tail = stderr.decode(errors="ignore")[-300:].strip()
         if not self._stop.is_set():
-            tail = stderr.decode(errors="ignore")[-300:].strip()
             logger.warning(
                 "Segment buffer (%s) for camera %s exited (code %s): %s",
                 self.name, self.camera_id, self._proc.returncode, tail or "no output",
             )
             if self.report_offline and not produced:
                 await mark_offline(self.camera_id, f"Recording failed: {tail[-200:]}" if tail else None)
-        if not produced and self._audio_mode_resolver and self._audio_mode != "none":
+        if produced:
+            camera_gate.ok(self.camera_id)
+        elif not self._stop.is_set():
+            camera_gate.failed(self.camera_id, tail)
+        if (not produced and not self._stop.is_set() and self._audio_mode_resolver
+                and self._audio_mode != "none" and not looks_like_connection_problem(tail)):
             self._audio_mode = None  # the camera's sound may have changed: try it again
+            self._audio_retry_at = 0.0
         return produced
 
     @staticmethod
