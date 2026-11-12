@@ -57,6 +57,14 @@ export function VisitsPage() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [loaded, setLoaded] = useState(false);
   const [playAt, setPlayAt] = useState<{ cameraId: number; at: number; title?: string } | null>(null);
+  // The visit-summary row whose camera picker is open (visits on several cameras).
+  const [pickCamera, setPickCamera] = useState<number | null>(null);
+  const playVisit = (i: IncidentWithEvents, cameraId: number) => {
+    setPickCamera(null);
+    setPlayAt({ cameraId, at: new Date(i.started_at).getTime(), title: "Visit" });
+  };
+  const visitSnapshotUrl = (i: IncidentWithEvents) =>
+    buildMediaUrl(`/security/incidents/${i.id}/snapshot.jpg${i.reviewed_at ? `?v=${encodeURIComponent(i.reviewed_at)}` : ""}`);
   const [showGroups, setShowGroups] = useState(false);
   const [photo, setPhoto] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -234,20 +242,42 @@ export function VisitsPage() {
           return (
             <div key={i.id} className="card">
               <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
-                {i.snapshot_path && (
-                  <img
-                    src={buildMediaUrl(
-                      `/security/incidents/${i.id}/snapshot.jpg${i.reviewed_at ? `?v=${encodeURIComponent(i.reviewed_at)}` : ""}`,
-                    )}
-                    alt=""
-                    title={i.camera_ids?.length ? "Play this visit" : undefined}
-                    style={{ width: 140, borderRadius: 6, cursor: i.camera_ids?.length ? "pointer" : undefined }}
-                    onClick={() =>
-                      i.camera_ids?.length &&
-                      setPlayAt({ cameraId: i.camera_ids[0], at: new Date(i.started_at).getTime(), title: "Visit" })
-                    }
-                  />
-                )}
+                {i.snapshot_path &&
+                  (i.camera_ids?.length ? (
+                    // The picture plays the visit - with a visible ▶ so that's
+                    // discoverable, not a hidden click target.
+                    <button
+                      type="button"
+                      aria-label={`Play this visit from ${fmtTime(i.started_at)}`}
+                      title="Play this visit"
+                      onClick={() => playVisit(i, i.camera_ids![0])}
+                      style={{ position: "relative", padding: 0, border: "none", background: "none", cursor: "pointer", lineHeight: 0 }}
+                    >
+                      <img src={visitSnapshotUrl(i)} alt="" style={{ width: 140, borderRadius: 6 }} />
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          position: "absolute",
+                          left: "50%",
+                          top: "50%",
+                          width: 36,
+                          height: 36,
+                          marginLeft: -18,
+                          marginTop: -18,
+                          borderRadius: 18,
+                          background: "rgba(0,0,0,0.6)",
+                          color: "#fff",
+                          fontSize: 16,
+                          lineHeight: "36px",
+                          textAlign: "center",
+                        }}
+                      >
+                        ▶
+                      </span>
+                    </button>
+                  ) : (
+                    <img src={visitSnapshotUrl(i)} alt="" style={{ width: 140, borderRadius: 6 }} />
+                  ))}
                 <div style={{ flex: 1, minWidth: 240 }}>
                   <div>
                     <strong>{period === "week" ? fmtDateTime(i.started_at) : fmtTime(i.started_at)}</strong> · {duration(i)}
@@ -277,7 +307,8 @@ export function VisitsPage() {
               {events.length > 0 && (
                 <div style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 6 }}>
                   {list.map((e) => (
-                    <div key={e.id} style={{ display: "flex", gap: 8, fontSize: 13, padding: "2px 0" }}>
+                    <div key={e.id}>
+                    <div style={{ display: "flex", gap: 8, fontSize: 13, padding: "2px 0" }}>
                       <span style={{ minWidth: 70, color: "var(--text-dim)" }}>{fmtTime(e.created_at)}</span>
                       {e.camera_id != null ? (
                         <button
@@ -288,12 +319,41 @@ export function VisitsPage() {
                         >
                           ▶
                         </button>
+                      ) : i.camera_ids?.length ? (
+                        // A visit summary belongs to no single camera and is
+                        // written when the review finishes, minutes after the
+                        // visit - so it plays the visit's own start instead.
+                        <button
+                          className="btn btn-sm"
+                          title="Play this visit from its start"
+                          aria-label={`Play this visit from ${fmtTime(i.started_at)}`}
+                          aria-expanded={i.camera_ids.length > 1 ? pickCamera === e.id : undefined}
+                          style={{ padding: "0 6px", lineHeight: "18px" }}
+                          onClick={() =>
+                            i.camera_ids!.length === 1
+                              ? playVisit(i, i.camera_ids![0])
+                              : setPickCamera(pickCamera === e.id ? null : e.id)
+                          }
+                        >
+                          ▶
+                        </button>
                       ) : (
                         <span style={{ width: 26 }} />
                       )}
                       <Link to={`/events/${e.id}`} style={{ flex: 1 }}>
                         {e.message.split("\n")[0]}
                       </Link>
+                    </div>
+                    {pickCamera === e.id && i.camera_ids && i.camera_ids.length > 1 && (
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", margin: "2px 0 6px 78px", fontSize: 13 }}>
+                        <span style={{ color: "var(--text-dim)" }}>Play from {fmtTime(i.started_at)} on:</span>
+                        {i.camera_ids.map((cid) => (
+                          <button key={cid} type="button" className="btn btn-sm" onClick={() => playVisit(i, cid)}>
+                            ▶ {cameraNames[cid] ?? `Camera ${cid}`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     </div>
                   ))}
                 </div>

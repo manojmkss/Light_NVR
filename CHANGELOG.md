@@ -6,6 +6,18 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.20] - 2026-11-12
+
+### Fixed
+- **Every visit can be played from the Visits page.** The "Visit …" summary
+  line had no ▶ because it belongs to no single camera, so a visit made of
+  only that line looked as if it had no recording - though the video was
+  there. It now has a ▶ that plays the visit from its own start (the summary
+  is written minutes later, when the review finishes, so its own time would
+  land after the visit). A visit on several cameras asks which one to play.
+- The visit's picture shows a ▶ so it's clear it plays the visit, and it's a
+  real button that works from the keyboard.
+
 ## [0.4.19] - 2026-11-12
 
 ### Added
