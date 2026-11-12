@@ -6,6 +6,37 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-11-12
+
+### Added
+- **Step-by-step AI setup.** Settings → AI → "Set up smart detection" walks
+  through it in five steps instead of a page of controls:
+  1. Turn it on.
+  2. Tick what to look for in plain words - People, Vehicles, Animals,
+     Bags & parcels - and whether to alert only when one of them is seen.
+  3. The NVR finds its AI devices (CPU, Intel GPU, NVIDIA GPU) and times a
+     real detection on each.
+  4. It recommends a setup for this hardware (device, detection model, how
+     often to check, how sure to be), with the reasons. Accept it, or
+     fine-tune any part. Re-running setup on an NVR that's already set up
+     starts from what it runs today, so nothing is reset by accident.
+  5. One click saves the choices, selects the device, downloads the model if
+     needed, loads it, measures its speed and checks detection end to end -
+     each step shown live, with Try again from the step that failed.
+- **AI status card.** The top of Settings → AI now says in one line whether
+  detection actually works ("Accurate model on the Intel GPU · about 137 ms
+  per check"), or the single reason it doesn't - AI service not answering,
+  model not downloaded, nothing selected - with a Fix it button that reopens
+  the setup. Run setup again and Turn off sit next to it.
+
+### Changed
+- **Settings → AI is reorganised** into Smart detection (status), Alert me
+  when… (the same four plain groups), Extras (event summary, descriptions,
+  faces and plates) and a collapsed Advanced section holding the AI engine,
+  detection model and performance cards, individual objects, check interval,
+  confidence and history. Nothing was removed; the technical parts are just
+  out of the way until wanted.
+
 ## [0.4.18] - 2026-11-10
 
 ### Fixed

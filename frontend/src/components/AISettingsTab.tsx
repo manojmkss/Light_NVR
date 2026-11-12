@@ -9,6 +9,9 @@ import {
 } from "../api/ai";
 import type { AISettings, AITestResult } from "../api/types";
 import { AIEngineCard } from "./AIEngineCard";
+import { AISetupWizard } from "./AISetupWizard";
+import { AIStatusCard } from "./AIStatusCard";
+import { classesFromGroups, DETECT_GROUPS, groupsFromClasses } from "./aiSetup";
 import { AIPerformanceCard } from "./AIPerformanceCard";
 import { DescriberLocalCard } from "./DescriberLocalCard";
 import { DetectionModelCard } from "./DetectionModelCard";
@@ -101,6 +104,10 @@ export function AISettingsTab() {
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   // Where descriptions are written: this NVR's own describer, or another PC / service.
   const [describeWhere, setDescribeWhere] = useState<"local" | "other" | null>(null);
+  // The step-by-step setup takes over the tab while it runs.
+  const [wizard, setWizard] = useState(false);
+  const [statusKey, setStatusKey] = useState(0);
+  const [switching, setSwitching] = useState(false);
 
   useEffect(() => {
     getAISettings().then(setS).catch((e) => setError((e as Error).message));
@@ -110,6 +117,35 @@ export function AISettingsTab() {
   if (error && !s) return <div className="error-text">{error}</div>;
   if (!s) return <p style={{ color: "var(--text-dim)" }}>Loading...</p>;
   const where = describeWhere ?? (s.vlm_url && s.vlm_url !== LOCAL_DESCRIBER_URL ? "other" : "local");
+
+  if (wizard) {
+    return (
+      <div style={{ maxWidth: 760 }}>
+        <AISetupWizard
+          settings={s}
+          onCancel={() => setWizard(false)}
+          onDone={(next) => {
+            setS(next);
+            setWizard(false);
+            setStatusKey((k) => k + 1);
+          }}
+        />
+      </div>
+    );
+  }
+
+  /** Off is applied straight away (no Save needed) - it's a switch, not a setting. */
+  const turnOff = async () => {
+    setSwitching(true);
+    setError(null);
+    try {
+      setS(await updateAISettings({ enabled: false }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSwitching(false);
+    }
+  };
 
   const up = <K extends keyof AISettings>(k: K, v: AISettings[K]) => {
     setS((p) => (p ? { ...p, [k]: v } : p));
@@ -194,28 +230,110 @@ export function AISettingsTab() {
     }
   };
 
+  const groups = groupsFromClasses(s.detection_classes);
+  const toggleGroup = (key: string, on: boolean) =>
+    up("detection_classes", classesFromGroups({ ...groups, [key]: on }, s.detection_classes));
+
   return (
-    <div style={{ display: "grid", gap: 16, maxWidth: 660 }}>
-      {/* ── Master switch ──────────────────────────────────────────────── */}
-      <div className="card">
-        <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={s.enabled}
-            onChange={(e) => up("enabled", e.target.checked)}
-            style={{ marginTop: 4 }}
-          />
-          <span>
-            <strong>Use AI</strong>
+    <div style={{ display: "grid", gap: 16, maxWidth: 760 }}>
+      {/* ── Smart detection: on/off, health and the way to (re)run setup ── */}
+      {s.enabled ? (
+        <AIStatusCard
+          settings={s}
+          refreshKey={statusKey}
+          busy={switching}
+          onSetup={() => setWizard(true)}
+          onTurnOff={turnOff}
+        />
+      ) : (
+        <div className="card" style={{ display: "grid", gap: 12 }}>
+          <div>
+            <strong style={{ fontSize: 17 }}>Smart detection</strong>
             <div style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 2 }}>
-              Motion alone can't tell a person from a swaying tree or passing headlights — which is why
-              motion alerts get ignored. While motion lasts, AI checks the camera picture every half
-              second for real objects, so an alert means something was actually there. Off by default;
-              nothing runs while it's off.
+              Motion alone can&apos;t tell a person from a swaying tree or passing headlights - which is why motion alerts get
+              ignored. Smart detection checks the picture while motion lasts, so an alert means something was really there.
             </div>
-          </span>
-        </label>
-      </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              padding: "12px 14px",
+              borderRadius: 8,
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 5, background: "var(--text-dim)", flex: "none" }} />
+            <span style={{ color: "var(--text-dim)" }}>
+              Off. Alerts fire on any motion. Setup takes about a minute and suggests the best settings for this machine.
+            </span>
+          </div>
+          <div>
+            <button className="btn btn-primary" onClick={() => setWizard(true)}>
+              Set up smart detection
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── What to look for, in plain words ─────────────────────────────── */}
+      {s.enabled && (
+        <div className="card" style={{ display: "grid", gap: 12 }}>
+          <div>
+            <strong>Alert me when…</strong>
+            <div style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 2 }}>What smart detection looks for.</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8 }}>
+            {DETECT_GROUPS.map((g) => (
+              <label
+                key={g.key}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  alignItems: "flex-start",
+                  padding: 10,
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  border: `1px solid ${groups[g.key] ? "var(--accent)" : "var(--border)"}`,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={!!groups[g.key]}
+                  onChange={(e) => toggleGroup(g.key, e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  <strong>{g.label}</strong>
+                  <div style={{ color: "var(--text-dim)", fontSize: 12, marginTop: 2 }}>{g.hint}</div>
+                </span>
+              </label>
+            ))}
+          </div>
+          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={s.alert_on_objects_only}
+              onChange={(e) => up("alert_on_objects_only", e.target.checked)}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              Only alert me when one of these is seen
+              <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 2 }}>
+                <strong>This is the setting that stops false alarms.</strong> Recording is never affected - it still starts
+                the moment motion is seen, so you never lose footage.
+              </div>
+            </span>
+          </label>
+        </div>
+      )}
+
+      <h3 style={{ margin: "8px 0 -4px", fontSize: 16 }}>
+        Extras{" "}
+        <span style={{ color: "var(--text-dim)", fontWeight: 400, fontSize: 13 }}>· optional, each switches on by itself</span>
+      </h3>
 
       {/* ── End-of-event summary (works with or without AI) ─────────── */}
       <div className="card">
@@ -229,11 +347,9 @@ export function AISettingsTab() {
           <span>
             <strong>Send a summary when each motion event ends</strong>
             <div style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 2 }}>
-              One message after things go quiet: when it started and ended, how long it lasted, what was
-              seen (for example "2 people, 1 car") with a timeline, and the clip's time range — with the
-              clearest picture attached. Without AI it reports the duration and how much moved. Uses the
-              same channels as motion alerts (Settings → Alerts). With "Only alert me when one of these
-              is seen" on, events where AI saw nothing are not summarised.
+              One message after things go quiet: when it started and ended, how long it lasted, what was seen (for example
+              &quot;2 people, 1 car&quot;) with a timeline, and the clearest picture attached. Without AI it reports the
+              duration and how much moved. Uses the same channels as motion alerts (Settings → Alerts).
             </div>
           </span>
         </label>
@@ -241,99 +357,6 @@ export function AISettingsTab() {
 
       {s.enabled && (
         <>
-          <AIEngineCard settings={s} onSettings={setS} />
-
-          <DetectionModelCard settings={s} onSettings={setS} />
-
-          <AIPerformanceCard onUseInterval={(ms) => up("monitor_interval_ms", ms)} />
-
-          {/* ── Tier 1: what to look for ─────────────────────────────── */}
-          <div className="card">
-            <strong>What to look for</strong>
-            <div className="field" style={{ marginTop: 10 }}>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {suggested.map((cls) => {
-                  const on = s.detection_classes.includes(cls);
-                  return (
-                    <button
-                      type="button"
-                      key={cls}
-                      onClick={() => toggleClass(cls)}
-                      className={`btn btn-sm ${on ? "btn-primary" : ""}`}
-                      style={{ textTransform: "capitalize" }}
-                    >
-                      {on ? "✓ " : ""}
-                      {cls}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="field">
-              <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <input
-                  type="checkbox"
-                  checked={s.alert_on_objects_only}
-                  onChange={(e) => up("alert_on_objects_only", e.target.checked)}
-                />
-                <span>Only alert me when one of these is seen</span>
-              </label>
-              <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-                <strong>This is the setting that stops false alarms.</strong> Recording is never affected —
-                it still starts the moment motion is seen, so you never lose footage.
-              </p>
-            </div>
-
-            <details>
-              <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-dim)" }}>
-                Advanced
-              </summary>
-              <div style={{ marginTop: 12 }}>
-                <div className="field">
-                  <label>Check the picture every (milliseconds)</label>
-                  <input
-                    type="number"
-                    min={250}
-                    max={5000}
-                    step={50}
-                    value={s.monitor_interval_ms}
-                    onChange={(e) => up("monitor_interval_ms", Math.min(5000, Math.max(250, Number(e.target.value) || 500)))}
-                    style={{ maxWidth: 120 }}
-                  />
-                  <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-                    Only while motion is happening. 500 is a good default. If the computer can't keep up,
-                    checks are skipped rather than queued, so alerts never fall behind.
-                  </p>
-                </div>
-                <div className="field">
-                  <label>How sure it must be: {s.detection_confidence}%</label>
-                  <input
-                    type="range"
-                    min={1}
-                    max={99}
-                    value={s.detection_confidence}
-                    onChange={(e) => up("detection_confidence", Number(e.target.value))}
-                  />
-                  <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-                    Lower catches more but imagines things; higher misses distant or partly hidden objects.
-                  </p>
-                </div>
-                <div className="field">
-                  <label>Keep detection history for (days)</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={3650}
-                    value={s.detection_retention_days}
-                    onChange={(e) => up("detection_retention_days", Number(e.target.value))}
-                    style={{ maxWidth: 120 }}
-                  />
-                </div>
-              </div>
-            </details>
-          </div>
-
           {/* ── Tier 3: descriptions ─────────────────────────────────── */}
           <Section
             title="Describe what's happening (optional)"
@@ -604,6 +627,97 @@ export function AISettingsTab() {
               </p>
             </div>
           </div>
+
+          {/* ── Advanced: everything technical, collapsed by default ──── */}
+          <details className="card">
+            <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+              Advanced{" "}
+              <span style={{ fontWeight: 400, fontSize: 13, color: "var(--text-dim)" }}>
+                · device, detection model, speed, individual objects
+              </span>
+            </summary>
+            <div style={{ display: "grid", gap: 16, marginTop: 14 }}>
+              <AIEngineCard
+                settings={s}
+                onSettings={(n) => {
+                  setS(n);
+                  setStatusKey((k) => k + 1);
+                }}
+              />
+              <DetectionModelCard
+                settings={s}
+                onSettings={(n) => {
+                  setS(n);
+                  setStatusKey((k) => k + 1);
+                }}
+              />
+              <AIPerformanceCard onUseInterval={(ms) => up("monitor_interval_ms", ms)} />
+              <div className="card">
+                <strong>Detection details</strong>
+                <div className="field" style={{ marginTop: 10 }}>
+                  <label>Individual objects</label>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {suggested.map((cls) => {
+                      const on = s.detection_classes.includes(cls);
+                      return (
+                        <button
+                          type="button"
+                          key={cls}
+                          aria-pressed={on}
+                          onClick={() => toggleClass(cls)}
+                          className={`btn btn-sm ${on ? "btn-primary" : ""}`}
+                          style={{ textTransform: "capitalize" }}
+                        >
+                          {on ? "✓ " : ""}
+                          {cls}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Check the picture every (milliseconds)</label>
+                  <input
+                    type="number"
+                    min={250}
+                    max={5000}
+                    step={50}
+                    value={s.monitor_interval_ms}
+                    onChange={(e) => up("monitor_interval_ms", Math.min(5000, Math.max(250, Number(e.target.value) || 500)))}
+                    style={{ maxWidth: 120 }}
+                  />
+                  <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                    Only while motion is happening. 500 is a good default. If the computer can't keep up,
+                    checks are skipped rather than queued, so alerts never fall behind.
+                  </p>
+                </div>
+                <div className="field">
+                  <label>How sure it must be: {s.detection_confidence}%</label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={99}
+                    value={s.detection_confidence}
+                    onChange={(e) => up("detection_confidence", Number(e.target.value))}
+                  />
+                  <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                    Lower catches more but imagines things; higher misses distant or partly hidden objects.
+                  </p>
+                </div>
+                <div className="field">
+                  <label>Keep detection history for (days)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={s.detection_retention_days}
+                    onChange={(e) => up("detection_retention_days", Number(e.target.value))}
+                    style={{ maxWidth: 120 }}
+                  />
+                </div>
+              </div>
+            </div>
+          </details>
 
           {error && <div className="error-text">{error}</div>}
         </>

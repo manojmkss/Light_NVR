@@ -2210,3 +2210,15 @@ tr:last-child td {
   color: #fff;
   cursor: pointer;
 }
+
+/* AI setup wizard: busy indicator */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none !important;
+  }
+}
